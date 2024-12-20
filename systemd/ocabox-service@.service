@@ -1,0 +1,19 @@
+# /etc/systemd/system/ocabox-service@.service
+[Unit]
+Description=OCM %i Service
+After=network.target nats.service tic.service
+StartLimitIntervalSec=200
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=poweruser
+Environment=PYTHONUNBUFFERED=1
+# %i will be service_type-telescope_id e.g. plan_runner-zb08 on OCA
+ExecStart=/usr/local/bin/poetry run service_launcher %i
+WorkingDirectory=/home/poweruser/src/ocabox-services
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

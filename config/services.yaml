@@ -1,0 +1,30 @@
+# config/services.yaml
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+
+services:
+  dumb:
+    type: dumb_permanent
+    log_level: INFO
+    # Service-specific config here
+    interval: 10
+
+#  plan_runner:
+#    type: plan_runner
+#    log_level: INFO
+#    # Service-specific config here
+#    telescope_id: zb08
+#
+#  guider:
+#    type: guider
+#    log_level: INFO
+#    # Service-specific config here
+#    telescope_id: zb08
+#
+#  dome_follower:
+#    type: dome_follower
+#    log_level: INFO
+#    # Service-specific config here
+#    telescope_id: zb08
