@@ -1,60 +1,75 @@
 # base_service.py
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from datetime import datetime
 import asyncio
 
-import param
-import typer
+from markdown_it.common.html_re import attribute
 
 from serverish.messenger import Messenger
 
 from ocabox_tcs.config import ServicesConfigFile
 
 
-class ServiceConfig(param.Parameterized):
-    """Base configuration for all services"""
-    id: str = param.String(doc="Service identifier")
-    type: str = param.String(doc="Service type - corresponds to file name")
-    log_level: str = param.String(default="INFO", doc="Logging level")
-    nats_host: str = param.String(default="nats.oca.lan", doc="NATS server host")
-    nats_port: int = param.Integer(default=4222, doc="NATS server port")
 
-    def _load(self, config_file: str, id: str):
-        self.id = id
+@dataclass
+class BaseServiceConfig:
+    """Base configuration for all services"""
+
+    instance_context: str # Service instance context (e.g., telescope ID)
+    type: str = ""  # Service type identifier (must be overridden by subclass)
+    log_level: str = "INFO" # Logging level name (e.g., "INFO", "DEBUG")
+    nats_host: str = "nats.oca.lan" # NATS server host
+    nats_port: int = 4222 # NATS server port
+
+    def _load(self, config_file: str, instance_context: str):
+        self.instance_context = instance_context
 
         """Load configuration from file"""
         config = ServicesConfigFile()
         config.load_config(config_file)
 
-        try:
-            svc_config = config['services'].get(id)
-        except KeyError:
-            raise ValueError(f"Service {id} not found in config file {config_file}")
+        # Find config section
+        svc_config = None
+        for c in config['services']:
+            if c['type'] == self.type and c.get('instance_context', '') == instance_context:
+                svc_config = c
+                break
+
+        if svc_config is None:
+            raise ValueError(f'Service {self.type}:{instance_context} not found in config file {config_file}')
 
         ## update self with svc_config dict. Use .param.update() instead of .set_param()
-        self.param.update(svc_config)
+        # Update fields from the selected service config
+        for key, value in svc_config.items():
+            setattr(self, key, value)
 
         ## update NATS host and port
-        self.nats_host = config['nats']['host']
-        self.nats_port = config['nats']['port']
+        try:
+            self.nats_host = config['nats']['host']
+            self.nats_port = config['nats']['port']
+        except KeyError:
+            pass
+
+    @property
+    def id(self) -> str:
+        return f'{self.type}:{self.instance_context}'
 
 
 class BaseService(ABC):
     """Base class for OCM automation services"""
 
-    ServiceConfigClass = ServiceConfig
-    app = typer.Typer()
+    ServiceConfigClass = BaseServiceConfig
 
-    def __init__(self, config: ServiceConfig):
+    def __init__(self, config: BaseServiceConfig):
         self.config = config
         self.logger = self._setup_logger()
         self.messenger: Optional[Messenger] = None
-        # self.tic_client: Optional[ClientAPI] = None
         self.running = False
         self._status: Dict[str, Any] = {"state": "init"}
-        
+
     def _setup_logger(self) -> logging.Logger:
         """Setup service logger"""
         logger = logging.getLogger(f"svc:{self.config.id}")
@@ -62,31 +77,27 @@ class BaseService(ABC):
         return logger
 
     async def start(self):
-        """Initialize and start the service"""
+        """Initialize and start the service - called by lifecycle management"""
         try:
             # Initialize NATS messenger
             self.messenger = Messenger(self.config.id)
-            
-            # # Initialize TIC client
-            # self.tic_client = ClientAPI(telescope_id=self.config.telescope_id)
-            # await self.tic_client.connect()
-            
+
             # Start heartbeat and status tasks
             self.running = True
             asyncio.create_task(self._heartbeat_loop())
             asyncio.create_task(self._status_loop())
-            
+
             # Start service-specific tasks
             await self._start_service()
-            
+
             self.logger.info("Service started")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to start service: {str(e)}")
             raise
 
     async def stop(self):
-        """Stop the service"""
+        """Stop the service - called by lifecycle management"""
         self.running = False
         try:
             await self._stop_service()
@@ -130,24 +141,38 @@ class BaseService(ABC):
 
     @abstractmethod
     async def _start_service(self):
-        """Service-specific startup logic"""
+        """Service-specific startup logic - to be implemented by subclasses"""
         pass
 
     @abstractmethod
     async def _stop_service(self):
-        """Service-specific cleanup logic"""
+        """Service-specific cleanup logic - to be implemented by subclasses"""
         pass
 
+    @classmethod
+    def app(cls):
+        """Application entry point"""
+        cls.main()
+
+
     @staticmethod
-    @app.command()
-    def main(config_file: str, service_type: str, service_id: str):
+    def main():
         """Main service entry point"""
+        import argparse
+        parser = argparse.ArgumentParser(description="Start an OCM automation service.")
+        parser.add_argument("config_file", type=str, help="Path to the config file")
+        parser.add_argument("service_type", type=str, help="Type of the service - module name")
+        parser.add_argument("service_id", type=str, help="Service instance context/ID")
+        args = parser.parse_args()
+
+        config_file = args.config_file
+        service_type = args.service_type
+        service_id = args.service_id
 
         svc_cls = getattr(__import__(f"ocabox_tcs.services.{service_type}", fromlist=["service_class"]), "service_class")
         cfg_cls = getattr(__import__(f"ocabox_tcs.services.{service_type}", fromlist=["config_class"]), "config_class")
 
-
-        config = cfg_cls()
+        config = cfg_cls(instance_context=service_id)
         config._load(config_file, service_id)
         logging.basicConfig(level=config.log_level)
         service = svc_cls(config)

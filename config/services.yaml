@@ -5,26 +5,19 @@ nats:
 
 
 services:
-  dumb:
-    type: dumb_permanent
+  - type: dumb_permanent
     log_level: INFO
-    # Service-specific config here
     interval: 10
+    instance_context: dev
 
-#  plan_runner:
-#    type: plan_runner
+#  - type: plan_runner
 #    log_level: INFO
-#    # Service-specific config here
-#    telescope_id: zb08
+#    instance_context: zb08
 #
-#  guider:
-#    type: guider
+#  - type: guider
 #    log_level: INFO
-#    # Service-specific config here
-#    telescope_id: zb08
+#    instance_context: zb08
 #
-#  dome_follower:
-#    type: dome_follower
+#  - type: dome_follower
 #    log_level: INFO
-#    # Service-specific config here
-#    telescope_id: zb08
+#    instance_context: zb08

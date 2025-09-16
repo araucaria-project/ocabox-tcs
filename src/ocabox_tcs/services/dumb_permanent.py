@@ -1,21 +1,24 @@
-"""This is exmaple dumb service, designed to run permanently
+"""This is example dumb service, designed to run permanently
 
-Programm runner, guider or dome-follower probalby should be implemented in this way
+Program runner, guider or dome-follower probably should be implemented in this way
 """
 
 import logging
 import asyncio
+from dataclasses import dataclass
 
-import param
+from ocabox_tcs.base_service import BaseServiceConfig
+from ocabox_tcs.base_service_ocabox import BaseOCABoxService
 
-from ocabox_tcs.base_service import BaseService, ServiceConfig
 logger = logging.getLogger('dumb-svc')
 
-class DumbPermanentServiceConfig(ServiceConfig):
-    interval = param.Number(default=1, doc="Interval in seconds")
+@dataclass
+class DumbPermanentServiceConfig(BaseServiceConfig):
+    type: str = 'dumb_permanent' # Obligatory override
+    interval: float = 1 # Interval in seconds
 
 
-class DumbPermanentService(BaseService):
+class DumbPermanentService(BaseOCABoxService):
     ServiceConfigClass = DumbPermanentServiceConfig
 
     async def _start_service(self):
