@@ -118,3 +118,29 @@ by systemd, and `systemd_launcher.py` is used to start, stop and manage services
 When implementing a new service, it should be added to `services` directory and registered in `services.yaml`.
 The service class should inherit from `BaseService` and implement `start`, `stop`, and `restart` methods.
 
+## Starting and Stopping Services
+
+### Manual start of single service
+Start service file crom commandline.
+```commandline
+usage: dumb_permanent.py [-h] config_file service_type service_id
+
+Start an OCM automation service.
+
+positional arguments:
+  config_file   Path to the config file
+  service_type  Type of the service - module name
+  service_id    Service instance context/ID
+
+options:
+  -h, --help    show this help message and exit
+```
+
+where `service_type` is the name of the service module (e.g. `plan_runner`) and `service_id` is the instance ID (e.g. `dev`).
+Those names must match the names in the `services.yaml` configuration file.
+
+### Start all services from config file as separate processes
+
+```bash
+ poetry run tcs_dev
+```
