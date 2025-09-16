@@ -10,6 +10,11 @@ services:
     interval: 10
     instance_context: dev
 
+  - type: dumb_complex
+    log_level: INFO
+    interval: 3
+    instance_context: main
+
 #  - type: plan_runner
 #    log_level: INFO
 #    instance_context: zb08

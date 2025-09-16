@@ -1,0 +1,1 @@
+from .dumb_complex import service_class, config_class
