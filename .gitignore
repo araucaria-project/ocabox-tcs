@@ -126,8 +126,9 @@ cython_debug/
 # Poetry
 poetry.lock
 
-# VS Code
+# IDEs
 .vscode/
+.idea/
 
 # Dev config
 config/services.json
