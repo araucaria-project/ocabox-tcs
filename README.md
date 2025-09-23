@@ -84,6 +84,11 @@ For full testing before release, use PyCharm Professional's remote development f
 ocabox-tcs/
 ├── pyproject.toml
 ├── README.md
+├── CLAUDE.md
+├── doc/
+│   ├── development-guide.md
+│   ├── architecture.md
+│   └── requirements-analysis.md
 ├── config/
 │   └── services.yaml.example
 ├── scripts/
@@ -102,21 +107,72 @@ ocabox-tcs/
         └── cli.py
 ```
 
-## Concepts
+## Architecture
+
+### Universal Service Framework
+
+This project provides a universal Python service framework for telescope automation:
+
+- **Execution Independence**: Services work with any execution method (manual, subprocess, asyncio, systemd, containers)
+- **Service Types**: Supports permanent, blocking permanent, and single-shot services
+- **Decorator-Based**: Modern Python decorators for clean service registration
+- **Optional Configuration**: Config classes are optional, services can use base config
+- **Distributed Management**: NATS-based service discovery, lifecycle management, and health monitoring
+- **Flexible Deployment**: Services can be local or from external packages
 
 ### Services
 
-Services are individual components that perform specific tasks. They are defined in `config/services.yaml` file
-(or equivalent file from another location).
+Services are individual components that perform specific automation tasks. Each service:
 
-Services are able to run independently and can be started, stopped, and restarted individually, but normally, 
-they are managed by a service launcher that ensures they are running and restarts them if they fail.
+- Uses `@service("name")` decorator for registration
+- Inherits from `BasePermanentService`, `BaseBlockingPermanentService`, or `BaseSingleShotService`
+- Implements `async def start_service()` and `async def stop_service()` (or specialized methods)
+- Optionally uses `@config("name")` decorator for custom configuration
+- Gets automatic NATS integration, health checking, and management
 
-For development, `dev_launcher.py` is used to run services as subprocesses. In production, services are managed 
-by systemd, and `systemd_launcher.py` is used to start, stop and manage services.
+**Example Service**:
+```python
+from ocabox_tcs.base_service import service, BasePermanentService
 
-When implementing a new service, it should be added to `services` directory and registered in `services.yaml`.
-The service class should inherit from `BaseService` and implement `start`, `stop`, and `restart` methods.
+@service("hello_world")
+class HelloWorldService(BasePermanentService):
+    async def start_service(self):
+        self.logger.info("Hello World!")
+```
+
+Services are defined in `config/services.yaml` and can be launched via multiple methods depending on deployment needs.
+
+## Documentation
+
+### [Development Guide](doc/development-guide.md)
+**User Guide for Service Development**
+- Decision tree for choosing the right base class
+- Examples and best practices
+- Migration patterns from old code
+- Quick reference for implementing services
+
+Use this when you need to create a new service or understand how to implement service functionality.
+
+### [Architecture](doc/architecture.md)
+**Technical Architecture Documentation**
+- Comprehensive framework design
+- Implementation details for the universal service framework
+- Component relationships and interactions
+- Detailed implementation matrix
+
+Use this when you need to understand the technical design or modify framework internals.
+
+### [Requirements Analysis](doc/requirements-analysis.md)
+**Original Requirements and Design Analysis**
+- Translated from original Polish planning document
+- Requirements gathering and analysis
+- Design decisions and rationale
+- Historical context for architecture choices
+
+Use this to understand why design decisions were made and the original requirements that drove the architecture.
+
+### [Claude Instance Guide](CLAUDE.md)
+Instructions for Claude instances working on this project
 
 ## Starting and Stopping Services
 

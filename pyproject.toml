@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Telescope Control Services for OCABOX Astronomilacl Observatory Server"
 authors = ["Mikolaj et.al."]
 readme = "README.md"
@@ -11,10 +11,6 @@ repository = "https://github.com/araucaria-project/ocabox-tcs"
 python = "^3.12"
 serverish = {version = "^1.1.1", extras = ["messenger"]}  # for NATS
 ocabox = {git = "https://github.com/araucaria-project/ocabox.git"}
-dynaconf = "^3.2.0"  # for configuration
-click = "^8.1.0"  # for CLI if needed
-param = "^2.0.0"  # for configuration validation
-typer = "^0.15.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
@@ -24,7 +20,8 @@ pylint = "^3.0.0"
 
 [tool.poetry.scripts]
 tcs_launcher = "ocabox_tcs.launcher:main"
-tcs_dev = "ocabox_tcs.dev_launcher:main"  # for macOS development
+tcs_process = "ocabox_tcs.launchers.process_launcher:main"
+tcs_asyncio = "ocabox_tcs.launchers.asyncio_launcher:main"
 
 [build-system]
 requires = ["poetry-core"]

@@ -21,14 +21,14 @@ class DumbPermanentServiceConfig(BaseServiceConfig):
 class DumbPermanentService(BaseOCABoxService):
     ServiceConfigClass = DumbPermanentServiceConfig
 
-    async def _start_service(self):
+    async def start_service(self):
         """dumb loop writing log"""
         self.logger.info("Starting dumb service, with interval: %s", self.config.interval)
         while True:
             logger.info("I'm still alive")
             await asyncio.sleep(self.config.interval)
 
-    async def _stop_service(self):
+    async def stop_service(self):
         self.logger.info("Stopping dumb service")
 
 

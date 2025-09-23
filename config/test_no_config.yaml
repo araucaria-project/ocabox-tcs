@@ -1,0 +1,4 @@
+services:
+  - type: test_no_config
+    instance_context: no_config_test
+    log_level: INFO

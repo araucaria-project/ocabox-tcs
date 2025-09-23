@@ -1,0 +1,5 @@
+services:
+  - type: test_legacy
+    instance_context: legacy_test
+    message: "Legacy approach working!"
+    log_level: INFO

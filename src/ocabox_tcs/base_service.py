@@ -1,57 +1,127 @@
-# base_service.py
+"""Base service classes and configuration for the universal service framework."""
+
 import logging
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
-from datetime import datetime
-import asyncio
+from typing import Optional, Dict, Any, TYPE_CHECKING, Type
 
-from markdown_it.common.html_re import attribute
+if TYPE_CHECKING:
+    from .management.service_controller import ServiceController
 
-from serverish.messenger import Messenger
 
-from ocabox_tcs.config import ServicesConfigFile
+# Registry for decorated classes
+_service_registry: Dict[str, Type["BaseService"]] = {}
+_config_registry: Dict[str, Type["BaseServiceConfig"]] = {}
 
+
+def service(service_type: str = None):
+    """Decorator to register a service class.
+    
+    Args:
+        service_type: Optional service type identifier. If not provided,
+                     uses the class name converted to snake_case.
+    
+    Example:
+        @service("hello_world")
+        class HelloWorldService(BasePermanentService):
+            pass
+            
+        @service()  # Will use "hello_world_service" as type
+        class HelloWorldService(BasePermanentService):
+            pass
+    """
+    def decorator(cls: Type["BaseService"]) -> Type["BaseService"]:
+        # Determine service type
+        if service_type is None:
+            # Convert class name to snake_case
+            type_name = cls.__name__
+            if type_name.endswith('Service'):
+                type_name = type_name[:-7]  # Remove 'Service' suffix
+            # Convert CamelCase to snake_case
+            import re
+            type_id = re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
+        else:
+            type_id = service_type
+        
+        # Register the service
+        _service_registry[type_id] = cls
+        
+        # Store type on the class for reference
+        cls._service_type = type_id
+        
+        return cls
+    return decorator
+
+
+def config(service_type: str = None):
+    """Decorator to register a config class.
+    
+    Args:
+        service_type: Service type this config belongs to. If not provided,
+                     uses the class name converted to snake_case.
+    
+    Example:
+        @config("hello_world")
+        class HelloWorldConfig(BaseServiceConfig):
+            pass
+            
+        @config()  # Will use "hello_world" as type (removes _config suffix)
+        class HelloWorldConfig(BaseServiceConfig):
+            pass
+    """
+    def decorator(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
+        # Determine service type
+        if service_type is None:
+            # Convert class name to snake_case
+            type_name = cls.__name__
+            if type_name.endswith('Config'):
+                type_name = type_name[:-6]  # Remove 'Config' suffix
+            # Convert CamelCase to snake_case
+            import re
+            type_id = re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
+        else:
+            type_id = service_type
+        
+        # Register the config
+        _config_registry[type_id] = cls
+        
+        # Store type on the class and set type field
+        cls._service_type = type_id
+        if hasattr(cls, '__dataclass_fields__') and 'type' in cls.__dataclass_fields__:
+            # Set default value for type field
+            cls.__dataclass_fields__['type'].default = type_id
+        
+        return cls
+    return decorator
+
+
+def get_service_class(service_type: str) -> Optional[Type["BaseService"]]:
+    """Get service class by type from decorator registry."""
+    return _service_registry.get(service_type)
+
+
+def get_config_class(service_type: str) -> Optional[Type["BaseServiceConfig"]]:
+    """Get config class by type from decorator registry."""
+    return _config_registry.get(service_type)
+
+
+def list_registered_services() -> Dict[str, Type["BaseService"]]:
+    """Get all registered services."""
+    return _service_registry.copy()
+
+
+def list_registered_configs() -> Dict[str, Type["BaseServiceConfig"]]:
+    """Get all registered configs."""
+    return _config_registry.copy()
 
 
 @dataclass
 class BaseServiceConfig:
-    """Base configuration for all services"""
-
-    instance_context: str # Service instance context (e.g., telescope ID)
-    type: str = ""  # Service type identifier (must be overridden by subclass)
-    log_level: str = "INFO" # Logging level name (e.g., "INFO", "DEBUG")
-    nats_host: str = "nats.oca.lan" # NATS server host
-    nats_port: int = 4222 # NATS server port
-
-    def _load(self, config_file: str, instance_context: str):
-        self.instance_context = instance_context
-
-        """Load configuration from file"""
-        config = ServicesConfigFile()
-        config.load_config(config_file)
-
-        # Find config section
-        svc_config = None
-        for c in config['services']:
-            if c['type'] == self.type and c.get('instance_context', '') == instance_context:
-                svc_config = c
-                break
-
-        if svc_config is None:
-            raise ValueError(f'Service {self.type}:{instance_context} not found in config file {config_file}')
-
-        ## update self with svc_config dict. Use .param.update() instead of .set_param()
-        # Update fields from the selected service config
-        for key, value in svc_config.items():
-            setattr(self, key, value)
-
-        ## update NATS host and port
-        try:
-            self.nats_host = config['nats']['host']
-            self.nats_port = config['nats']['port']
-        except KeyError:
-            pass
+    """Base configuration for all services."""
+    type: str = ""  # Service type identifier
+    instance_context: str = ""
+    log_level: str = "INFO"
 
     @property
     def id(self) -> str:
@@ -59,128 +129,200 @@ class BaseServiceConfig:
 
 
 class BaseService(ABC):
-    """Base class for OCM automation services"""
+    """Base class for all services in the universal framework."""
 
-    ServiceConfigClass = BaseServiceConfig
+    def __init__(self):
+        # These will be set by ServiceController
+        self.controller: Optional["ServiceController"] = None
+        self.config: Any = None  # Use Any to avoid linter warnings with subclass-specific configs
+        self.logger: Optional[logging.Logger] = None
+        self._is_running = False
+    
+    @property
+    def is_running(self) -> bool:
+        """Check if service is running."""
+        return self._is_running
 
-    def __init__(self, config: BaseServiceConfig):
-        self.config = config
-        self.logger = self._setup_logger()
-        self.messenger: Optional[Messenger] = None
-        self.running = False
-        self._status: Dict[str, Any] = {"state": "init"}
-
-    def _setup_logger(self) -> logging.Logger:
-        """Setup service logger"""
-        logger = logging.getLogger(f"svc:{self.config.id}")
-        logger.setLevel(self.config.log_level)
-        return logger
-
-    async def start(self):
-        """Initialize and start the service - called by lifecycle management"""
-        try:
-            # Initialize NATS messenger
-            self.messenger = Messenger(self.config.id)
-
-            # Start heartbeat and status tasks
-            self.running = True
-            asyncio.create_task(self._heartbeat_loop())
-            asyncio.create_task(self._status_loop())
-
-            # Start service-specific tasks
-            await self._start_service()
-
-            self.logger.info("Service started")
-
-        except Exception as e:
-            self.logger.error(f"Failed to start service: {str(e)}")
-            raise
-
-    async def stop(self):
-        """Stop the service - called by lifecycle management"""
-        self.running = False
-        try:
-            await self._stop_service()
-            # if self.tic_client:
-            #     await self.tic_client.disconnect()
-            if self.messenger:
-                await self.messenger.close()
-            self.logger.info("Service stopped")
-        except Exception as e:
-            self.logger.error(f"Error stopping service: {str(e)}")
-            raise
-
-    async def _heartbeat_loop(self):
-        """Publish heartbeat"""
-        while self.running:
-            try:
-                # await self.messenger.publish(
-                #     f"tic.status.{self.config.telescope_id}.{self.config.service_type}.heartbeat",
-                #     {
-                #         "timestamp": datetime.now().isoformat(),
-                #         "status": self._status
-                #     }
-                # )
-                await asyncio.sleep(5)
-            except Exception as e:
-                self.logger.error(f"Error in heartbeat loop: {str(e)}")
-                await asyncio.sleep(5)
-
-    async def _status_loop(self):
-        """Publish detailed status"""
-        while self.running:
-            try:
-                # await self.messenger.publish(
-                #     f"tic.status.{self.config.telescope_id}.{self.config.service_type}",
-                #     self._status
-                # )
-                await asyncio.sleep(1)
-            except Exception as e:
-                self.logger.error(f"Error in status loop: {str(e)}")
-                await asyncio.sleep(1)
-
+    @property
+    def monitor(self):
+        """Shortcut to controller.monitor for cleaner API."""
+        return self.controller.monitor if self.controller else None
+    
+    async def _internal_start(self):
+        """Internal start method called by ServiceController."""
+        self._is_running = True
+        await self.start_service()
+    
+    async def _internal_stop(self):
+        """Internal stop method called by ServiceController."""
+        await self.stop_service()
+        self._is_running = False
+    
     @abstractmethod
-    async def _start_service(self):
-        """Service-specific startup logic - to be implemented by subclasses"""
+    async def start_service(self):
+        """Service-specific startup logic - override in subclasses."""
         pass
-
+    
     @abstractmethod
-    async def _stop_service(self):
-        """Service-specific cleanup logic - to be implemented by subclasses"""
+    async def stop_service(self):
+        """Service-specific cleanup logic - override in subclasses."""
         pass
-
+    
     @classmethod
-    def app(cls):
-        """Application entry point"""
-        cls.main()
+    def main(cls):
+        """Entry point for running service as a script.
+
+        Usage: python service_file.py config.yaml service_type instance_id
+        """
+        cli_main()
 
 
-    @staticmethod
-    def main():
-        """Main service entry point"""
-        import argparse
-        parser = argparse.ArgumentParser(description="Start an OCM automation service.")
-        parser.add_argument("config_file", type=str, help="Path to the config file")
-        parser.add_argument("service_type", type=str, help="Type of the service - module name")
-        parser.add_argument("service_id", type=str, help="Service instance context/ID")
-        args = parser.parse_args()
+class BasePermanentService(BaseService):
+    """Base class for permanent (continuously running) services."""
+    
+    async def start_service(self):
+        """Default implementation for permanent services - override for custom logic."""
+        self.logger.info("Permanent service started")
+    
+    async def stop_service(self):
+        """Default implementation for permanent services - override for custom cleanup."""
+        self.logger.info("Permanent service stopping")
 
-        config_file = args.config_file
-        service_type = args.service_type
-        service_id = args.service_id
 
-        svc_cls = getattr(__import__(f"ocabox_tcs.services.{service_type}", fromlist=["service_class"]), "service_class")
-        cfg_cls = getattr(__import__(f"ocabox_tcs.services.{service_type}", fromlist=["config_class"]), "config_class")
-
-        config = cfg_cls(instance_context=service_id)
-        config._load(config_file, service_id)
-        logging.basicConfig(level=config.log_level)
-        service = svc_cls(config)
-        asyncio.run(service.start())
+class BaseBlockingPermanentService(BasePermanentService):
+    """Base class for permanent services that block in run_service().
+    
+    This class handles the common pattern of permanent services that:
+    1. Start up (start_service)
+    2. Run continuously in a blocking method (run_service) 
+    3. Clean up when stopped (stop_service)
+    
+    The framework automatically manages the task lifecycle.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self._main_task: Optional[asyncio.Task] = None
+    
+    async def start_service(self):
+        """Start the service and launch the main task."""
+        self.logger.info("Starting blocking permanent service")
+        await self.on_start()
+        
+        # Start the main blocking task
+        self._main_task = asyncio.create_task(self._run_wrapper())
+        self.logger.info("Blocking permanent service started")
+    
+    async def stop_service(self):
+        """Stop the service and cancel the main task."""
+        self.logger.info("Stopping blocking permanent service")
+        
+        # Cancel the main task
+        if self._main_task and not self._main_task.done():
+            self._main_task.cancel()
+            try:
+                await self._main_task
+            except asyncio.CancelledError:
+                pass
+            self._main_task = None
+        
+        await self.on_stop()
+        self.logger.info("Blocking permanent service stopped")
+    
+    async def _run_wrapper(self):
+        """Wrapper that handles the blocking run_service method."""
         try:
-            asyncio.get_event_loop().run_forever()
-        except KeyboardInterrupt:
-            asyncio.run(service.stop())
-            asyncio.get_event_loop().close()
+            await self.run_service()
+        except asyncio.CancelledError:
+            # Expected when service is stopped
+            raise
+        except Exception as e:
+            self.logger.error(f"Error in run_service: {e}")
+            raise
+    
+    async def on_start(self):
+        """Called before run_service starts - override for setup logic."""
+        pass
+    
+    async def on_stop(self):
+        """Called after run_service stops - override for cleanup logic."""
+        pass
+    
+    @abstractmethod
+    async def run_service(self):
+        """Main service logic that runs continuously - override in subclasses.
+        
+        This method should contain the main service loop. It will be called
+        in a separate task and should run until the service is stopped.
+        
+        Example:
+            async def run_service(self):
+                while self.is_running:
+                    # Do work
+                    await asyncio.sleep(1)
+        """
+        pass
 
 
+class BaseSingleShotService(BaseService):
+    """Base class for single-shot/one-time services."""
+    
+    async def start_service(self):
+        """Default implementation - execute and finish."""
+        await self.execute()
+        # Single-shot services typically stop after execution
+    
+    async def stop_service(self):
+        """Default implementation for single-shot services."""
+        self.logger.info("Single-shot service stopped")
+    
+    @abstractmethod
+    async def execute(self):
+        """Execute the single-shot task - override in subclasses."""
+        pass
+
+
+# CLI main function for manual service execution
+def cli_main():
+    """Legacy main entry point for manual service execution."""
+    import argparse
+    from .management import ServiceController
+    
+    parser = argparse.ArgumentParser(description="Start an OCM automation service.")
+    parser.add_argument("config_file", type=str, help="Path to the config file")
+    parser.add_argument("service_type", type=str, help="Type of the service - module name")
+    parser.add_argument("service_id", type=str, help="Service instance context/ID")
+    args = parser.parse_args()
+    
+    async def run_service():
+        # Create controller
+        module_name = f"ocabox_tcs.services.{args.service_type}"
+        controller = ServiceController(
+            module_name=module_name,
+            instance_id=args.service_id
+        )
+        
+        # Initialize and start
+        if await controller.initialize(config_file=args.config_file):
+            if await controller.start_service():
+                try:
+                    # Keep running until interrupted
+                    while controller.is_running:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    await controller.stop_service()
+        
+        await controller.shutdown()
+    
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+    
+    # Run service
+    try:
+        asyncio.run(run_service())
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    cli_main()
