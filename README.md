@@ -142,6 +142,46 @@ class HelloWorldService(BasePermanentService):
 
 Services are defined in `config/services.yaml` and can be launched via multiple methods depending on deployment needs.
 
+## Quick Start
+
+For development/testing:
+
+1. Install dependencies:
+```bash
+poetry install
+```
+
+2. Create a service file `my_service.py`:
+```python
+from ocabox_tcs.base_service import service, BaseBlockingPermanentService
+
+@service
+class MyService(BaseBlockingPermanentService):
+    async def run_service(self):
+        while self.is_running:
+            self.logger.info("Service running...")
+            await asyncio.sleep(5)
+```
+
+3. Add to config file (use filename as service type):
+```yaml
+services:
+  - type: my_service    # Must match filename
+    instance_context: main
+```
+
+4. Run with launcher:
+```bash
+poetry run tcs_process  # Services in separate processes
+# or
+poetry run tcs_asyncio  # Services in same process
+```
+
+5. Or run service directly:
+```bash
+python my_service.py config.yaml main
+```
+
 ## Documentation
 
 ### [Development Guide](doc/development-guide.md)

@@ -25,135 +25,111 @@ def _class_name_to_type(class_name: str) -> str:
     return re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
 
 
-def service(service_type: str | type = None):
+def service(cls: Type["BaseService"]) -> Type["BaseService"]:
     """Decorator to register a service class.
 
-    Args:
-        service_type: Optional service type identifier. If not provided,
-                     derives from the filename where the class is defined.
-                     (In the case decorator is used without parentheses,
-                     the class itself is passed as the first argument.)
+    Service type is automatically derived from the filename where the class is defined.
+    The filename (without .py extension) must match the service type used in config files.
 
     Example:
         # File: hello_world.py
-        @service()  # Will derive "hello_world" from filename
+        @service
         class HelloWorldService(BasePermanentService):
             pass
-
-        @service("custom_name")  # Explicit override
-        class HelloWorldService(BasePermanentService):
-            pass
+        # → Registers as service type "hello_world"
 
         # File: guider_service.py
-        @service  # Without parentheses, derives "guider_service"
-        class HelloWorldService(BasePermanentService):
+        @service
+        class GuiderService(BasePermanentService):
             pass
+        # → Registers as service type "guider_service"
     """
-    if isinstance(service_type, type) and issubclass(service_type, BaseService): # type is actually the class
-        # Decorator used without parentheses
-        cls = service_type
-        service_type = None
-    else:
-        cls = None
+    try:
+        # Get the file where the class is defined
+        import inspect
+        import os
 
-    def decorator(cls: Type["BaseService"]) -> Type["BaseService"]:
-        # Determine service type
-        if service_type is None:
-            try:
-                # Get the file where the class is defined
-                import inspect
-                import os
+        filename = inspect.getfile(cls)
+        module_name = os.path.splitext(os.path.basename(filename))[0]
 
-                filename = inspect.getfile(cls)
-                module_name = os.path.splitext(os.path.basename(filename))[0]
+        # Handle __main__ case (when run as script)
+        if module_name == '__main__':
+            import sys
+            script_path = sys.argv[0] if sys.argv else filename
+            module_name = os.path.splitext(os.path.basename(script_path))[0]
 
-                # Handle __main__ case (when run as script)
-                if module_name == '__main__':
-                    import sys
-                    script_path = sys.argv[0] if sys.argv else filename
-                    module_name = os.path.splitext(os.path.basename(script_path))[0]
+        type_id = module_name
+    except Exception as e:
+        # Fallback to class name conversion
+        import logging
+        type_id = _class_name_to_type(cls.__name__)
+        logger = logging.getLogger("service.decorator")
+        logger.warning(
+            f"Could not derive service type from filename for {cls.__name__}: {e}. "
+            f"Using class-name-derived type '{type_id}' instead. "
+            f"This may cause service discovery issues - ensure filename matches expected service type."
+        )
 
-                type_id = module_name
-            except:
-                # Fallback to class name conversion
-                type_id = _class_name_to_type(cls.__name__)
-        else:
-            type_id = service_type
-        
-        # Register the service
-        _service_registry[type_id] = cls
-        
-        # Store type on the class for reference
-        cls._service_type = type_id
-        
-        return cls
+    # Register the service
+    _service_registry[type_id] = cls
 
-    # Handle decorator without parentheses
-    if cls is not None:
-        return decorator(cls)
-    else:
-        return decorator
+    # Store type on the class for reference
+    cls._service_type = type_id
+
+    return cls
 
 
-def config(service_type: str | type = None):
+def config(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
     """Decorator to register a config class.
-    
-    Args:
-        service_type: Service type this config belongs to. If not provided,
-                     uses the class name converted to snake_case.
-                        (In the case decorator is used without parentheses,
-                        the class itself is passed as the first argument.)
-    
+
+    Service type is automatically derived from the filename where the class is defined.
+    The filename (without .py extension) must match the service type used in config files.
+
     Example:
-        @config("hello_world")
+        # File: hello_world.py
+        @config
         class HelloWorldConfig(BaseServiceConfig):
             pass
-            
-        @config()  # Will use "hello_world" as type (removes _config suffix)
-        class HelloWorldConfig(BaseServiceConfig):
-            pass
+        # → Registers as config for service type "hello_world"
 
-        @config  # Without parentheses also works
-        class HelloWorldConfig(BaseServiceConfig):
+        # File: guider_service.py
+        @config
+        class GuiderConfig(BaseServiceConfig):
             pass
+        # → Registers as config for service type "guider_service"
     """
+    try:
+        # Get the file where the class is defined
+        import inspect
+        import os
 
-    if isinstance(service_type, type) and issubclass(service_type, BaseServiceConfig): # type is actually the class
-        # Decorator used without parentheses
-        cls = service_type
-        service_type = None
-    else:
-        cls = None
+        filename = inspect.getfile(cls)
+        module_name = os.path.splitext(os.path.basename(filename))[0]
 
+        # Handle __main__ case (when run as script)
+        if module_name == '__main__':
+            import sys
+            script_path = sys.argv[0] if sys.argv else filename
+            module_name = os.path.splitext(os.path.basename(script_path))[0]
 
-    def decorator(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
-        # Determine service type
-        if service_type is None:
-            # Convert class name to snake_case
-            type_name = cls.__name__
-            if type_name.endswith('Config'):
-                type_name = type_name[:-6]  # Remove 'Config' suffix
-            # Convert CamelCase to snake_case
-            import re
-            type_id = re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
-        else:
-            type_id = service_type
-        
-        # Register the config
-        _config_registry[type_id] = cls
-        
-        # Store type on the class and set type field
-        cls._service_type = type_id
-        if hasattr(cls, '__dataclass_fields__') and 'type' in cls.__dataclass_fields__:
-            # Set default value for type field
-            cls.__dataclass_fields__['type'].default = type_id
-        
-        return cls
-    # Handle decorator without parentheses
-    if cls is not None:
-        return decorator(cls)
-    else:
-        return decorator
+        type_id = module_name
+    except:
+        # Fallback to class name conversion (remove 'Config' suffix)
+        type_name = cls.__name__
+        if type_name.endswith('Config'):
+            type_name = type_name[:-6]
+        type_id = _class_name_to_type(type_name)
+
+    # Register the config
+    _config_registry[type_id] = cls
+
+    # Store type on the class and set type field
+    cls._service_type = type_id
+    if hasattr(cls, '__dataclass_fields__') and 'type' in cls.__dataclass_fields__:
+        # Set default value for type field
+        cls.__dataclass_fields__['type'].default = type_id
+
+    return cls
 
 
 def get_service_class(service_type: str) -> Optional[Type["BaseService"]]:
@@ -232,7 +208,9 @@ class BaseService(ABC):
     def main(cls):
         """Entry point for running service as a script.
 
-        Usage: python service_file.py config.yaml service_type instance_id
+        Usage: python service_file.py config.yaml instance_context [--runner-id ID]
+
+        The service type is automatically derived from the filename.
         """
         cli_main()
 
@@ -344,24 +322,31 @@ class BaseSingleShotService(BaseService):
 
 # CLI main function for manual service execution
 def cli_main():
-    """Legacy main entry point for manual service execution."""
+    """Main entry point for manual service execution."""
     import argparse
+    import sys
+    import os
     from .management import ServiceController
-    
-    parser = argparse.ArgumentParser(description="Start an OCM automation service.")
+
+    parser = argparse.ArgumentParser(description="Start a TCS service.")
     parser.add_argument("config_file", type=str, help="Path to the config file")
-    parser.add_argument("service_type", type=str, help="Type of the service - module name")
-    parser.add_argument("service_id", type=str, help="Service instance context/ID")
+    parser.add_argument("instance_context", type=str, help="Service instance context/ID")
+    parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
     args = parser.parse_args()
-    
+
+    # Derive service type from the script filename
+    script_name = sys.argv[0]
+    service_type = os.path.splitext(os.path.basename(script_name))[0]
+
     async def run_service():
         # Create controller
-        module_name = f"ocabox_tcs.services.{args.service_type}"
+        module_name = f"ocabox_tcs.services.{service_type}"
         controller = ServiceController(
             module_name=module_name,
-            instance_id=args.service_id
+            instance_id=args.instance_context,
+            runner_id=args.runner_id
         )
-        
+
         # Initialize and start
         if await controller.initialize(config_file=args.config_file):
             if await controller.start_service():
@@ -371,12 +356,12 @@ def cli_main():
                         await asyncio.sleep(1)
                 except KeyboardInterrupt:
                     await controller.stop_service()
-        
+
         await controller.shutdown()
-    
+
     # Setup logging
     logging.basicConfig(level=logging.INFO)
-    
+
     # Run service
     try:
         asyncio.run(run_service())
