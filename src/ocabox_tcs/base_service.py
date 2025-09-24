@@ -15,32 +15,68 @@ _service_registry: Dict[str, Type["BaseService"]] = {}
 _config_registry: Dict[str, Type["BaseServiceConfig"]] = {}
 
 
-def service(service_type: str = None):
+def _class_name_to_type(class_name: str) -> str:
+    """Convert class name to service type (fallback only)."""
+    import re
+    type_name = class_name
+    if type_name.endswith('Service'):
+        type_name = type_name[:-7]  # Remove 'Service' suffix
+    # Convert CamelCase to snake_case
+    return re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
+
+
+def service(service_type: str | type = None):
     """Decorator to register a service class.
-    
+
     Args:
         service_type: Optional service type identifier. If not provided,
-                     uses the class name converted to snake_case.
-    
+                     derives from the filename where the class is defined.
+                     (In the case decorator is used without parentheses,
+                     the class itself is passed as the first argument.)
+
     Example:
-        @service("hello_world")
+        # File: hello_world.py
+        @service()  # Will derive "hello_world" from filename
         class HelloWorldService(BasePermanentService):
             pass
-            
-        @service()  # Will use "hello_world_service" as type
+
+        @service("custom_name")  # Explicit override
+        class HelloWorldService(BasePermanentService):
+            pass
+
+        # File: guider_service.py
+        @service  # Without parentheses, derives "guider_service"
         class HelloWorldService(BasePermanentService):
             pass
     """
+    if isinstance(service_type, type) and issubclass(service_type, BaseService): # type is actually the class
+        # Decorator used without parentheses
+        cls = service_type
+        service_type = None
+    else:
+        cls = None
+
     def decorator(cls: Type["BaseService"]) -> Type["BaseService"]:
         # Determine service type
         if service_type is None:
-            # Convert class name to snake_case
-            type_name = cls.__name__
-            if type_name.endswith('Service'):
-                type_name = type_name[:-7]  # Remove 'Service' suffix
-            # Convert CamelCase to snake_case
-            import re
-            type_id = re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
+            try:
+                # Get the file where the class is defined
+                import inspect
+                import os
+
+                filename = inspect.getfile(cls)
+                module_name = os.path.splitext(os.path.basename(filename))[0]
+
+                # Handle __main__ case (when run as script)
+                if module_name == '__main__':
+                    import sys
+                    script_path = sys.argv[0] if sys.argv else filename
+                    module_name = os.path.splitext(os.path.basename(script_path))[0]
+
+                type_id = module_name
+            except:
+                # Fallback to class name conversion
+                type_id = _class_name_to_type(cls.__name__)
         else:
             type_id = service_type
         
@@ -51,15 +87,22 @@ def service(service_type: str = None):
         cls._service_type = type_id
         
         return cls
-    return decorator
+
+    # Handle decorator without parentheses
+    if cls is not None:
+        return decorator(cls)
+    else:
+        return decorator
 
 
-def config(service_type: str = None):
+def config(service_type: str | type = None):
     """Decorator to register a config class.
     
     Args:
         service_type: Service type this config belongs to. If not provided,
                      uses the class name converted to snake_case.
+                        (In the case decorator is used without parentheses,
+                        the class itself is passed as the first argument.)
     
     Example:
         @config("hello_world")
@@ -69,7 +112,20 @@ def config(service_type: str = None):
         @config()  # Will use "hello_world" as type (removes _config suffix)
         class HelloWorldConfig(BaseServiceConfig):
             pass
+
+        @config  # Without parentheses also works
+        class HelloWorldConfig(BaseServiceConfig):
+            pass
     """
+
+    if isinstance(service_type, type) and issubclass(service_type, BaseServiceConfig): # type is actually the class
+        # Decorator used without parentheses
+        cls = service_type
+        service_type = None
+    else:
+        cls = None
+
+
     def decorator(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
         # Determine service type
         if service_type is None:
@@ -93,7 +149,11 @@ def config(service_type: str = None):
             cls.__dataclass_fields__['type'].default = type_id
         
         return cls
-    return decorator
+    # Handle decorator without parentheses
+    if cls is not None:
+        return decorator(cls)
+    else:
+        return decorator
 
 
 def get_service_class(service_type: str) -> Optional[Type["BaseService"]]:
@@ -322,7 +382,3 @@ def cli_main():
         asyncio.run(run_service())
     except KeyboardInterrupt:
         pass
-
-
-if __name__ == "__main__":
-    cli_main()

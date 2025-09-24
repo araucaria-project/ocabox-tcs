@@ -7,7 +7,8 @@ from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceCon
 from ocabox_tcs.monitoring import Status
 
 
-@config("hello_world")
+# @config("hello_world")
+@config
 @dataclass
 class HelloWorldConfig(BaseServiceConfig):
     """Configuration for HelloWorld service."""
@@ -15,7 +16,8 @@ class HelloWorldConfig(BaseServiceConfig):
     message: str = "Hello World!"
 
 
-@service("hello_world")
+# @service("hello_world")
+@service
 class HelloWorldService(BaseBlockingPermanentService):
     """Simple service that logs a message periodically."""
     
