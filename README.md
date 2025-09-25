@@ -27,12 +27,25 @@ cd ocabox-tas
 poetry install
 ```
 
-3. Create configuration:
+3. Configuration:
+Configuration files are located in the `config/` directory of the project.
+
+**Create your configuration file:**
 ```bash
-sudo mkdir -p /etc/ocabox
-sudo cp config/tcs.yaml.example /etc/ocabox/tcs.yaml
+# Copy example configuration
+cp config/services.example.yaml config/services.yaml
+
+# Edit configuration as needed
+# config/services.yaml is gitignored - customize for your environment
 ```
-Edit `/etc/ocabox/tcs.yaml` according to your needs.
+
+**Available example configurations:**
+```bash
+ls config/
+# services.example.yaml - Main configuration template
+# test_services.yaml - Configuration for testing
+# test_*.yaml - Individual service test configurations
+```
 
 4. Install systemd services:
 ```bash
@@ -72,11 +85,15 @@ For development on macOS where systemd is not available:
 ```bash
 poetry install
 ```
-Run development service manager:
+Run development service managers:
 ```bash
-poetry run tas_dev
+# Process launcher (separate processes)
+poetry run tcs_process
+
+# Asyncio launcher (same process)
+poetry run tcs_asyncio
 ```
-This will start services defined in config/services.yaml using subprocesses instead of systemd.
+These launchers will start services defined in config/services.yaml instead of using systemd.
 For full testing before release, use PyCharm Professional's remote development feature to develop and test directly on observatory machine.
 
 ### Project structure
@@ -170,7 +187,7 @@ services:
     instance_context: main
 ```
 
-4. Run with launcher:
+4. Run with launchers:
 ```bash
 poetry run tcs_process  # Services in separate processes
 # or
@@ -181,6 +198,56 @@ poetry run tcs_asyncio  # Services in same process
 ```bash
 python my_service.py config.yaml main
 ```
+
+## Configuration
+
+### Configuration System Overview
+
+The universal service framework supports multiple configuration sources with clear precedence:
+
+1. **Command-line arguments** (highest priority)
+2. **NATS configuration** (planned, not implemented yet)
+3. **YAML config file** (specified via CLI)
+4. **Default values** (lowest priority)
+
+### Configuration File Structure
+
+**Location**: `config/services.yaml` (created by copying `config/services.example.yaml`)
+
+```yaml
+# Global configuration (applies to all services)
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+# Service-specific configuration
+services:
+  - type: hello_world         # Must match service filename (hello_world.py)
+    instance_context: main    # Instance identifier
+    interval: 5              # Service-specific config options
+    message: "Hello World!"  # Service-specific config options
+    log_level: INFO          # Optional log level override
+
+  - type: hello_world         # Same service, different instance
+    instance_context: fast   # Different instance identifier
+    interval: 1              # Different configuration values
+    message: "Fast hello!"
+    log_level: DEBUG
+```
+
+### Configuration Resolution
+
+1. **Service Type**: Automatically derived from filename (`hello_world.py` → `hello_world`)
+2. **Instance Matching**: Finds service entry with matching `type` and `instance_context`
+3. **Config Merging**: Global config is merged with service-specific config
+4. **Precedence**: Service-specific values override global values
+
+### Available Configuration Files
+
+- `config/services.example.yaml` - Template for main configuration (copy to `services.yaml`)
+- `config/services.yaml` - Your customized configuration (gitignored, create from example)
+- `config/test_services.yaml` - Configuration for testing
+- `config/test_*.yaml` - Individual service test configurations
 
 ## Documentation
 
@@ -217,26 +284,33 @@ Instructions for Claude instances working on this project
 ## Starting and Stopping Services
 
 ### Manual start of single service
-Start service file crom commandline.
+Start service file from command line.
 ```commandline
-usage: dumb_permanent.py [-h] config_file service_type service_id
+usage: hello_world.py [-h] [--runner-id RUNNER_ID] config_file instance_context
 
-Start an OCM automation service.
+Start a TCS service.
 
 positional arguments:
-  config_file   Path to the config file
-  service_type  Type of the service - module name
-  service_id    Service instance context/ID
+  config_file       Path to the config file
+  instance_context  Service instance context/ID
 
 options:
-  -h, --help    show this help message and exit
+  -h, --help        show this help message and exit
+  --runner-id RUNNER_ID
+                    Optional runner ID for monitoring
 ```
 
-where `service_type` is the name of the service module (e.g. `plan_runner`) and `service_id` is the instance ID (e.g. `dev`).
-Those names must match the names in the `services.yaml` configuration file.
+The service type is automatically derived from the filename (e.g. `hello_world.py` → service type `hello_world`).
+The `instance_context` must match an entry in the `services.yaml` configuration file.
 
-### Start all services from config file as separate processes
+### Start all services from config file
 
+**As separate processes:**
 ```bash
- poetry run tcs_dev
+poetry run tcs_process
+```
+
+**In same process (asyncio):**
+```bash
+poetry run tcs_asyncio
 ```

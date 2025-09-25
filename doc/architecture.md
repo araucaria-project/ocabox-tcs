@@ -79,15 +79,16 @@ MonitoredObject (base)
 
 ### Decorator-Based Discovery (Primary)
 ```python
+# File: hello_world.py
 from ocabox_tcs.base_service import service, config, BasePermanentService, BaseServiceConfig
 
-@config("hello_world")  # Optional - config classes can be omitted
+@config  # Optional - config classes can be omitted, service type derived from filename
 @dataclass
 class HelloWorldConfig(BaseServiceConfig):
     interval: int = 5
     message: str = "Hello World!"
 
-@service("hello_world")  # Required  
+@service  # Required - service type automatically derived from filename (hello_world.py → hello_world)
 class HelloWorldService(BasePermanentService):
     async def start_service(self):
         while self.is_running:

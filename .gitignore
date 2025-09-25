@@ -131,4 +131,4 @@ poetry.lock
 .idea/
 
 # Dev config
-config/services.json
+config/services.yaml
