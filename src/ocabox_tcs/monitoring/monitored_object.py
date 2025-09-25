@@ -30,11 +30,13 @@ class MonitoredObject:
         self._status = status
         self._message = message
         self.logger.debug(f"Status set to {status}: {message or ''}")
+        # TODO: Call on_new_status if new. by default notify parent, RaportingMonitoredObject should publish immediately after any monitor in the tree changes status.
     
     def add_healthcheck_cb(self, callback: Callable[[], Optional[Status]]):
         """Add healthcheck callback."""
         self._healthcheck_callbacks.append(callback)
-    
+
+    # TODO: Remove status callback. Status have to be set explicite to monitor, monitor should raport it immediately.
     def add_status_cb(self, callback: Callable[[], Optional[Status]]):
         """Add status callback."""
         self._status_callbacks.append(callback)
@@ -55,6 +57,7 @@ class MonitoredObject:
     def get_status(self) -> Status:
         """Get current status with callback evaluation."""
         # Check status callbacks first
+        #TODO: No callbacks. Status have to be set explicite to monitor, monitor should raport it immediately.
         for callback in self._status_callbacks:
             try:
                 status = callback()
@@ -149,7 +152,7 @@ class ReportingMonitoredObject(MonitoredObject):
             try:
                 # Perform health check
                 status = self.healthcheck()
-                if status != self.get_status():
+                if status != self.get_status():  # TODO Rethink status management, maybe is OK.
                     self.set_status(status, "Updated from healthcheck")
                 
                 # Send report

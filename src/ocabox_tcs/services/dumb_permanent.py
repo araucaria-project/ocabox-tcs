@@ -1,43 +1,43 @@
-"""This is example dumb service, designed to run permanently
+"""Example permanent service using the new framework.
 
-Program runner, guider or dome-follower probably should be implemented in this way
+This demonstrates a continuously running service that logs periodically.
 """
 
-import logging
 import asyncio
 from dataclasses import dataclass
 
-from ocabox_tcs.base_service import BaseServiceConfig
-from ocabox_tcs.base_service_ocabox import BaseOCABoxService
+from ocabox_tcs.base_service import BaseServiceConfig, BaseBlockingPermanentService, service, config
 
-logger = logging.getLogger('dumb-svc')
 
+@config
 @dataclass
 class DumbPermanentServiceConfig(BaseServiceConfig):
-    type: str = 'dumb_permanent' # Obligatory override
-    interval: float = 1 # Interval in seconds
+    """Configuration for DumbPermanent service."""
+    interval: float = 1.0  # Interval in seconds
 
 
-class DumbPermanentService(BaseOCABoxService):
-    ServiceConfigClass = DumbPermanentServiceConfig
+@service
+class DumbPermanentService(BaseBlockingPermanentService):
+    """Simple service that logs a message periodically."""
 
-    async def start_service(self):
-        """dumb loop writing log"""
-        self.logger.info("Starting dumb service, with interval: %s", self.config.interval)
-        while True:
-            logger.info("I'm still alive")
-            await asyncio.sleep(self.config.interval)
+    async def on_start(self):
+        """Setup before main loop starts."""
+        self.logger.info(f"Starting dumb service, with interval: {self.config.interval}")
 
-    async def stop_service(self):
+    async def run_service(self):
+        """Main service loop."""
+        while self.is_running:
+            try:
+                self.logger.info("I'm still alive")
+                await asyncio.sleep(self.config.interval)
+            except asyncio.CancelledError:
+                break
+
+    async def on_stop(self):
+        """Cleanup after main loop stops."""
         self.logger.info("Stopping dumb service")
 
 
-service_class = DumbPermanentService
-config_class = DumbPermanentServiceConfig
-
-
-# run:
-#       python dumb_permanent /abs-path/ocabox-tcs/config/services.yaml dumb_permanent dumb
 
 if __name__ == '__main__':
-    DumbPermanentService.app()
+    DumbPermanentService.main()

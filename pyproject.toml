@@ -20,8 +20,8 @@ pylint = "^3.0.0"
 
 [tool.poetry.scripts]
 tcs_launcher = "ocabox_tcs.launcher:main"
-tcs_process = "ocabox_tcs.launchers.process_launcher:main"
-tcs_asyncio = "ocabox_tcs.launchers.asyncio_launcher:main"
+tcs_process = "ocabox_tcs.launchers.process:main"
+tcs_asyncio = "ocabox_tcs.launchers.asyncio:main"
 
 [build-system]
 requires = ["poetry-core"]

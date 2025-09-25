@@ -49,10 +49,7 @@ class ProcessRunner(BaseRunner):
                 config_path = os.path.abspath(self.config.config_file)
                 args.append(config_path)
 
-            args.append(self.config.service_type)
-
-            if self.config.instance_context:
-                args.append(self.config.instance_context)
+            args.append(self.config.instance_context or "main")
 
             self.logger.info(f"Starting service: {' '.join(args)}")
 

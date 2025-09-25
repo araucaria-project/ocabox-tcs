@@ -245,7 +245,7 @@ class ServiceController:
         """Setup configuration management."""
         try:
             # Create configuration manager
-            self._config_manager = create_configuration_manager(
+            self._config_manager = create_configuration_manager(  # TODO: Is it really service specific? Or process specific?
                 config_file=config_file,
                 args_config=args_config,
                 messenger=self.process.messenger

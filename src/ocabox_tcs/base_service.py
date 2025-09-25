@@ -166,6 +166,7 @@ class BaseServiceConfig:
 
 class BaseService(ABC):
     """Base class for all services in the universal framework."""
+    _service_type: str = None  # To be set by decorator
 
     def __init__(self):
         # These will be set by ServiceController
@@ -212,7 +213,57 @@ class BaseService(ABC):
 
         The service type is automatically derived from the filename.
         """
-        cli_main()
+        import argparse
+        from .management import ServiceController
+
+        parser = argparse.ArgumentParser(description="Start a TCS service.")
+        parser.add_argument("config_file", type=str, help="Path to the config file")
+        parser.add_argument("instance_context", type=str, help="Service instance context/ID")
+        parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
+        args = parser.parse_args()
+
+        service_type = cls._service_type
+
+        async def run_service():
+            # Create controller
+            module_name = f"ocabox_tcs.services.{service_type}"
+            controller = ServiceController(
+                module_name=module_name,
+                instance_id=args.instance_context,
+                runner_id=args.runner_id
+            )
+
+            # Initialize and start
+            if await controller.initialize(config_file=args.config_file):
+                if await controller.start_service():
+                    try:
+                        # Wait for shutdown signal instead of polling
+                        shutdown_event = asyncio.Event()
+
+                        def signal_handler():
+                            shutdown_event.set()
+
+                        # Set up signal handlers
+                        import signal
+                        signal.signal(signal.SIGINT, lambda s, f: signal_handler())
+                        signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
+
+                        # Wait for shutdown signal
+                        await shutdown_event.wait()
+                        await controller.stop_service()
+                    except KeyboardInterrupt:
+                        await controller.stop_service()
+
+            await controller.shutdown()
+
+        # Setup logging
+        logging.basicConfig(level=logging.INFO)
+
+        # Run service
+        try:
+            asyncio.run(run_service())
+        except KeyboardInterrupt:
+            pass
 
 
 class BasePermanentService(BaseService):
@@ -319,51 +370,3 @@ class BaseSingleShotService(BaseService):
         """Execute the single-shot task - override in subclasses."""
         pass
 
-
-# CLI main function for manual service execution
-def cli_main():
-    """Main entry point for manual service execution."""
-    import argparse
-    import sys
-    import os
-    from .management import ServiceController
-
-    parser = argparse.ArgumentParser(description="Start a TCS service.")
-    parser.add_argument("config_file", type=str, help="Path to the config file")
-    parser.add_argument("instance_context", type=str, help="Service instance context/ID")
-    parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
-    args = parser.parse_args()
-
-    # Derive service type from the script filename
-    script_name = sys.argv[0]
-    service_type = os.path.splitext(os.path.basename(script_name))[0]
-
-    async def run_service():
-        # Create controller
-        module_name = f"ocabox_tcs.services.{service_type}"
-        controller = ServiceController(
-            module_name=module_name,
-            instance_id=args.instance_context,
-            runner_id=args.runner_id
-        )
-
-        # Initialize and start
-        if await controller.initialize(config_file=args.config_file):
-            if await controller.start_service():
-                try:
-                    # Keep running until interrupted
-                    while controller.is_running:
-                        await asyncio.sleep(1)
-                except KeyboardInterrupt:
-                    await controller.stop_service()
-
-        await controller.shutdown()
-
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
-
-    # Run service
-    try:
-        asyncio.run(run_service())
-    except KeyboardInterrupt:
-        pass

@@ -44,7 +44,7 @@ class ServicesProcess:
         
         try:
             self._messenger = Messenger()
-            await self._messenger.connect(nats_url)
+            await self._messenger.connect(nats_url) # TODO: use config file for NATS host and port. Use Messanger.open properly instead od nonexisting connect
             self.logger.info(f"Connected to NATS at {nats_url}")
         except Exception as e:
             self.logger.error(f"Failed to connect to NATS: {e}")
@@ -53,7 +53,7 @@ class ServicesProcess:
     async def shutdown_messenger(self):
         """Shutdown NATS messenger."""
         if self._messenger:
-            await self._messenger.disconnect()
+            await self._messenger.disconnect() # TODO: disconnect does not exist
             self._messenger = None
             self.logger.info("Disconnected from NATS")
     
