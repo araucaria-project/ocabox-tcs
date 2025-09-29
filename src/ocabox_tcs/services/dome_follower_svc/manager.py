@@ -68,7 +68,7 @@ class Manager:
             if not dome_slew:
                 diff = abs(dome_az - mount_az) % 360
                 if min(diff, 360 - diff) > self.follow_tolerance:
-                    self.logger.info(f"Dome slewing: {dome_az} -> {mount_az}")
+                    self.logger.info(f"Dome slewing: {dome_az:.3f} -> {mount_az:.3f}")
                     try:
                         await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
                     except OcaboxServerError:
