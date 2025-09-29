@@ -1,0 +1,44 @@
+from typing import Optional
+
+from ob.planrunner import ConfigGeneral
+from ocaboxapi import Telescope, Observatory, Dome, Mount, AccessGrantor
+
+
+class TicConn:
+    """
+    Class is responsible for nats server connections
+    """
+
+    def __init__(self, manager = None):
+        self.manager = manager
+        self.obs: Optional[Observatory] = None
+        self.telescope: Optional[Telescope] = None
+        self.dome: Optional[Dome] = None
+        self.mount: Optional[Mount] = None
+        self.access_grantor: Optional[AccessGrantor] = None
+        super().__init__()
+
+    async def init_peripherals(self, telescope_id: str) -> None:
+        self.obs = Observatory(
+            client_name=self.manager.client_name,
+            software_id=self.manager.software_id,
+            config_stream=self.manager.obs_config_stream
+        )
+        self.telescope = self.obs.get_telescope(telescope_id=telescope_id)
+        self.dome = self.telescope.get_dome()
+        self.mount = self.telescope.get_mount()
+        self.access_grantor = self.telescope.get_access_grantor()
+
+    async def get_obs_cfg(self):
+        self.manager.logger.info(f'Loading client config...')
+        try:
+            await self.obs.load_client_cfg(timeout=5.0)
+        except TimeoutError:
+            self.manager.logger.error(f"Can not load client config from nats - timeout.")
+            raise
+        self.manager.logger.info(f'Client config loaded.')
+        self.obs.connect()
+        self.manager.obs_cfg = ConfigGeneral(
+            telescope=self.telescope,
+            client_config_dict=self.obs.get_client_configuration()
+        )
