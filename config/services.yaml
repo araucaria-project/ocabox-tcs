@@ -26,4 +26,4 @@ services:
   - type: dome_follower
     log_level: INFO
     instance_context: dev
-    interval: 3.0  # Interval in seconds
+    interval: 0.5  # Interval in seconds
