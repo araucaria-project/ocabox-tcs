@@ -214,7 +214,7 @@ class BaseService(ABC):
         The service type is automatically derived from the filename.
         """
         import argparse
-        from .management import ServiceController
+        from ocabox_tcs.management.service_controller import ServiceController
 
         parser = argparse.ArgumentParser(description="Start a TCS service.")
         parser.add_argument("config_file", type=str, help="Path to the config file")
@@ -225,6 +225,10 @@ class BaseService(ABC):
         service_type = cls._service_type
 
         async def run_service():
+            # TODO: Initialize Servicess Process (config, messenger, etc.) here, this is once per process moment.
+            # TODO: Make it easy for AsyncioLauncher to do the same thing.
+            # TODO: Distinguish between single service process and multi-service process.
+
             # Create controller
             module_name = f"ocabox_tcs.services.{service_type}"
             controller = ServiceController(

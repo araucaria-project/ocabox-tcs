@@ -1,7 +1,8 @@
 """Monitoring framework for service status and health checking."""
 
 from .status import Status, StatusReport, aggregate_status
-from .monitored_object import MonitoredObject, ReportingMonitoredObject, MessengerMonitoredObject
+from .monitored_object import MonitoredObject, ReportingMonitoredObject
+from .monitored_object_nats import MessengerMonitoredObject
 
 __all__ = [
     "Status",

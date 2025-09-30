@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Optional, Any, List
 from dataclasses import dataclass
 
-from .base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
+from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.config import ServicesConfigFile
 
 

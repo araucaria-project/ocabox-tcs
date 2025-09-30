@@ -7,6 +7,8 @@ from typing import Dict, Any, Optional, List, Union
 from pathlib import Path
 from abc import ABC, abstractmethod
 
+from serverish.messenger import Messenger
+
 
 class ConfigSource(ABC):
     """Base class for configuration sources."""
@@ -65,9 +67,9 @@ class ArgsConfigSource(ConfigSource):
 class NATSConfigSource(ConfigSource):
     """Configuration from NATS (future implementation)."""
     
-    def __init__(self, topic: str, messenger: Any = None, priority: int = 20):
+    def __init__(self, subject: str, messenger: Any = None, priority: int = 20):
         super().__init__(priority)
-        self.topic = topic
+        self.subject = subject
         self.messenger = messenger
     
     def load(self) -> Dict[str, Any]:
@@ -111,8 +113,10 @@ class ConfigurationManager:
         self.sources.sort(key=lambda s: s.priority, reverse=True)
         self.logger.debug(f"Added config source with priority {source.priority}")
     
-    def resolve_config(self, service_module: str, instance_id: str) -> Dict[str, Any]:
-        """Resolve configuration for a service from all sources."""
+    def resolve_config(self, service_module: Optional[str] = None, instance_id: Optional[str] = None) -> Dict[str, Any]:
+        """Resolve configuration for a service from all sources.
+
+        if service_module is None, return global configuration only."""
         merged_config = {}
         
         # Start with lowest priority sources and merge up
@@ -136,12 +140,12 @@ class ConfigurationManager:
         return merged_config
     
     def _extract_service_config(self, config: Dict[str, Any], 
-                               module: str, instance: str) -> Dict[str, Any]:
-        """Extract service-specific configuration."""
+                               module: Optional[str], instance: Optional[str]) -> Dict[str, Any]:
+        """Extract service-specific configuration, or global if module is None."""
         service_config = {}
         
         # Look for exact match: services.module.instance
-        if "services" in config:
+        if "services" in config and module and instance:
             services = config["services"]
             if isinstance(services, list):
                 # List format: find matching service entry
@@ -181,11 +185,11 @@ class ConfigurationManager:
         return result
 
 
-def create_configuration_manager(
+async def create_configuration_manager(
     config_file: Optional[Union[str, Path]] = None,
     args_config: Optional[Dict[str, Any]] = None,
-    nats_topic: Optional[str] = None,
-    messenger: Any = None,
+    config_subject: Optional[str] = None,
+    config_messenger: Any = None,
     defaults: Optional[Dict[str, Any]] = None
 ) -> ConfigurationManager:
     """Create a configuration manager with standard sources."""
@@ -198,13 +202,29 @@ def create_configuration_manager(
     # Add file config
     if config_file:
         manager.add_source(FileConfigSource(config_file))
-    
+
+    # check for NATS config in already added sources
+    if config_subject and config_messenger is None:
+        if args_config:
+            manager.add_source(ArgsConfigSource(args_config)) # may contain nats config
+
+        try:
+            global_config = manager.resolve_config()
+            nats_host = global_config.get("nats", {}).get("host", "localhost")
+            nats_port = global_config.get("nats", {}).get("port", 4222)
+            config_messenger = Messenger(host=nats_host, port=nats_port)
+            if not config_messenger.is_open:
+                await config_messenger.open(host=nats_host, port=nats_port)
+        except Exception as e:
+            logging.getLogger('config').warning(f"Failed to create NATS messenger for config: {e}")
+            config_messenger = None
+
     # Add NATS config  
-    if nats_topic and messenger:
-        manager.add_source(NATSConfigSource(nats_topic, messenger))
+    if config_subject and config_messenger:
+        manager.add_source(NATSConfigSource(config_subject, config_messenger))
     
-    # Add args config (highest priority)
+    # Add args config - highest priority
     if args_config:
         manager.add_source(ArgsConfigSource(args_config))
-    
+
     return manager

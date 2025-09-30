@@ -10,9 +10,9 @@ import signal
 from typing import Dict, Optional, Any
 from datetime import datetime
 
-from .base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
+from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.config import ServicesConfigFile
-from ocabox_tcs.management import ServiceController
+from ocabox_tcs.management.service_controller import ServiceController
 
 
 class AsyncioRunner(BaseRunner):

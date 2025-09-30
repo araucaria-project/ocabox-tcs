@@ -1,10 +1,14 @@
 """ServiceController for managing individual service instances."""
 
+from __future__ import annotations
 import asyncio
 import logging
 import importlib
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, TYPE_CHECKING
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from serverish.messenger import Messenger
 
 from ..base_service import BaseService, BaseServiceConfig
 from ..monitoring import MessengerMonitoredObject, Status
@@ -46,26 +50,35 @@ class ServiceController:
         self.logger.info(f"Created controller for {self.service_id}")
     
     async def initialize(self, config_file: Optional[str] = None,
-                        args_config: Optional[Dict[str, Any]] = None) -> bool:
+                        args_config: Optional[Dict[str, Any]] = None,
+                        config_messenger: Optional[Messenger] = None,
+                        config_subject: Optional[str] = None ) -> bool:
         """Initialize the controller and discover service classes."""
         if self._initialized:
             return True
         
         try:
-            # Initialize monitoring first
-            await self._initialize_monitoring()
-            self.monitor.set_status(Status.STARTUP, "Initializing controller")
-            
             # Discover service and config classes
             if not await self._discover_classes():
                 self.monitor.set_status(Status.FAILED, "Failed to discover service classes")
                 return False
-            
+
             # Setup configuration
-            if not await self._setup_configuration(config_file, args_config):
-                self.monitor.set_status(Status.FAILED, "Failed to setup configuration")
-                return False
+            await self._setup_configuration(
+                config_file=config_file,
+                args_config=args_config,
+                config_messenger=config_messenger or self.process.messenger,
+                config_subject=config_subject
+            )
+
+
+            # TODO: pass NATS config somewhere. May be lazy Messenger open, may be not.
+
+            # Initialize monitoring
+            await self._initialize_monitoring()
+            self.monitor.set_status(Status.STARTUP, "Initializing controller")
             
+
             self._initialized = True
             self.monitor.set_status(Status.OK, "Controller initialized")
             self.logger.info("Controller initialized successfully")
@@ -81,8 +94,10 @@ class ServiceController:
     async def start_service(self) -> bool:
         """Create and start the service."""
         if not self._initialized:
-            if not await self.initialize():
-                return False
+            self.logger.error("Controller not initialized, cannot start service")
+            return False
+            # if not await self.initialize():
+            #     return False
         
         if self._running:
             self.logger.warning("Service already running")
@@ -162,7 +177,7 @@ class ServiceController:
         try:
             # Try to ensure messenger is available
             if not self.process.messenger:
-                await self.process.initialize_messenger()
+                self.logger.warning("No NATS messenger configured, cannot initialize monitoring publication")
             
             # Create monitor
             self.monitor = MessengerMonitoredObject(
@@ -241,14 +256,17 @@ class ServiceController:
             return False
     
     async def _setup_configuration(self, config_file: Optional[str] = None,
-                                  args_config: Optional[Dict[str, Any]] = None) -> bool:
+                                  args_config: Optional[Dict[str, Any]] = None,
+                                  config_messenger: Optional[Messenger] = None,
+                                  config_subject: Optional[str] = None) -> None:
         """Setup configuration management."""
         try:
             # Create configuration manager
-            self._config_manager = create_configuration_manager(  # TODO: Is it really service specific? Or process specific?
+            self._config_manager = await self.process.get_configuration_manager(
                 config_file=config_file,
                 args_config=args_config,
-                messenger=self.process.messenger
+                config_messenger=config_messenger,
+                config_subject=config_subject
             )
             
             # Resolve configuration
@@ -279,11 +297,10 @@ class ServiceController:
                         setattr(self._config, key, value)
             
             self.logger.debug("Configuration setup complete")
-            return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to setup configuration: {e}")
-            return False
+            raise
     
     async def _create_service(self) -> bool:
         """Create service instance."""
