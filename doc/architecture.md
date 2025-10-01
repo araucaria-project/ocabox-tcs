@@ -4,14 +4,17 @@
 
 This architecture provides a clean, non-redundant framework supporting the complete implementation matrix with proper separation of concerns between service processes and launcher processes.
 
+**See also:** [Initialization Flow Diagrams](initialization-flow.md) for detailed visualization of all three execution scenarios.
+
 ## Core Design Principles
 
 1. **Execution Independence**: One service works everywhere (manual/process/asyncio/systemd/containers)
 2. **Minimal Service Implementation**: `HelloWorld` service requires minimum code
 3. **Clear Separation**: Service process concerns vs launcher process concerns
-4. **Unified Monitoring**: Hierarchical status reporting via NATS
-5. **Flexible Configuration**: Multiple config sources with clear precedence
-6. **Decorator-Based**: Modern Python decorators for clean service registration
+4. **Unified Initialization**: `ProcessContext.initialize()` - one clear entry point
+5. **Unified Monitoring**: Hierarchical status reporting via NATS
+6. **Flexible Configuration**: Multiple config sources with clear precedence
+7. **Decorator-Based**: Modern Python decorators for clean service registration
 
 ## Core Classes and Responsibilities
 
@@ -56,11 +59,21 @@ This architecture provides a clean, non-redundant framework supporting the compl
 - **Responsibilities**: Maintains launching system
 - **Specialized Subclasses**: ProcessLauncher, AsyncioLauncher, SystemdLauncher
 
-### ServicesProcess  
-- **Functionality**: Singleton containing common functionality for all ServiceControllers in process
+### ProcessContext
+- **Functionality**: Singleton context for all services in a process
 - **Lifetime**: Process lifetime
-- **Instance Count**: One per service process
-- **Responsibilities**: Shared resources, NATS connections, process-wide coordination
+- **Instance Count**: One per OS process (singleton)
+- **Initialization**: `ProcessContext.initialize(config_file, args_config)` - dispatcher pattern
+- **Responsibilities**:
+  - Configuration management (file → NATS bootstrap)
+  - NATS Messenger (singleton, shared)
+  - Service registry (controllers in this process)
+  - Two-phase config bootstrap (file/args → NATS)
+- **Key Methods**:
+  - `initialize()` - Main initialization dispatcher
+  - `_init_config_manager()` - Phase 1: File + args config
+  - `_init_messenger()` - Phase 2: NATS connection
+  - `_add_nats_config_source()` - Phase 3: NATS config source
 
 ### MonitoredObject Hierarchy
 ```
@@ -213,11 +226,12 @@ src/ocabox_tcs/
 │   └── systemd_launcher.py   # Systemd-based launcher & runner
 ├── management/               # Service process components
 │   ├── service_controller.py # ServiceController
-│   ├── services_process.py   # ServicesProcess singleton
+│   ├── process_context.py    # ProcessContext singleton (process-wide initialization)
 │   └── configuration.py      # Configuration management
 ├── monitoring/               # Monitoring framework
-│   ├── monitored_object.py   # MonitoredObject hierarchy
-│   └── status.py            # Status enums and utilities
+│   ├── monitored_object.py      # MonitoredObject hierarchy
+│   ├── monitored_object_nats.py # NATS-enabled monitoring
+│   └── status.py                # Status enums and utilities
 └── services/                 # Built-in services
     ├── hello_world.py        # Minimal example
     ├── dumb_permanent.py     # Current example

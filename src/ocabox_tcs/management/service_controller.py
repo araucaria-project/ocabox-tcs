@@ -12,8 +12,7 @@ if TYPE_CHECKING:
 
 from ..base_service import BaseService, BaseServiceConfig
 from ..monitoring import MessengerMonitoredObject, Status
-from .services_process import ServicesProcess
-from .configuration import create_configuration_manager, ConfigurationManager
+from ocabox_tcs.management.process_context import ProcessContext
 
 
 class ServiceController:
@@ -28,7 +27,7 @@ class ServiceController:
         self.service_id = f"{module_name}:{instance_id}"
         
         self.logger = logging.getLogger(f"controller.{self.service_id}")
-        self.process = ServicesProcess()
+        self.process = ProcessContext()
         
         # Initialize monitoring
         self.monitor: Optional[MessengerMonitoredObject] = None
@@ -49,41 +48,33 @@ class ServiceController:
         
         self.logger.info(f"Created controller for {self.service_id}")
     
-    async def initialize(self, config_file: Optional[str] = None,
-                        args_config: Optional[Dict[str, Any]] = None,
-                        config_messenger: Optional[Messenger] = None,
-                        config_subject: Optional[str] = None ) -> bool:
-        """Initialize the controller and discover service classes."""
+    async def initialize(self) -> bool:
+        """Initialize the controller and discover service classes.
+
+        Note: ProcessContext must already be initialized before calling this.
+        """
         if self._initialized:
             return True
-        
+
         try:
             # Discover service and config classes
             if not await self._discover_classes():
-                self.monitor.set_status(Status.FAILED, "Failed to discover service classes")
                 return False
 
-            # Setup configuration
-            await self._setup_configuration(
-                config_file=config_file,
-                args_config=args_config,
-                config_messenger=config_messenger or self.process.messenger,
-                config_subject=config_subject
-            )
-
-
-            # TODO: pass NATS config somewhere. May be lazy Messenger open, may be not.
+            # Setup configuration (uses ProcessContext.config_manager)
+            await self._setup_configuration()
 
             # Initialize monitoring
             await self._initialize_monitoring()
-            self.monitor.set_status(Status.STARTUP, "Initializing controller")
-            
+            if self.monitor:
+                self.monitor.set_status(Status.STARTUP, "Initializing controller")
 
             self._initialized = True
-            self.monitor.set_status(Status.OK, "Controller initialized")
+            if self.monitor:
+                self.monitor.set_status(Status.OK, "Controller initialized")
             self.logger.info("Controller initialized successfully")
             return True
-            
+
         except Exception as e:
             error_msg = f"Failed to initialize controller: {e}"
             self.logger.error(error_msg)
@@ -255,29 +246,27 @@ class ServiceController:
             self.logger.error(f"Failed to discover classes: {e}")
             return False
     
-    async def _setup_configuration(self, config_file: Optional[str] = None,
-                                  args_config: Optional[Dict[str, Any]] = None,
-                                  config_messenger: Optional[Messenger] = None,
-                                  config_subject: Optional[str] = None) -> None:
-        """Setup configuration management."""
+    async def _setup_configuration(self) -> None:
+        """Setup configuration management.
+
+        Uses ProcessContext's config_manager which is already initialized.
+        """
         try:
-            # Create configuration manager
-            self._config_manager = await self.process.get_configuration_manager(
-                config_file=config_file,
-                args_config=args_config,
-                config_messenger=config_messenger,
-                config_subject=config_subject
-            )
-            
-            # Resolve configuration
+            # Use ProcessContext's config manager
+            if not self.process.config_manager:
+                raise RuntimeError("ProcessContext.config_manager not initialized. Call ProcessContext.initialize() first.")
+
+            self._config_manager = self.process.config_manager
+
+            # Resolve configuration for this service
             config_dict = self._config_manager.resolve_config(
                 self.module_name, self.instance_id
             )
-            
+
             # Extract service type for config
             module_parts = self.module_name.split('.')
             service_type = module_parts[-1]
-            
+
             # Create config instance
             if issubclass(self._config_class, BaseServiceConfig):
                 # Ensure type and instance_context are set
@@ -285,7 +274,7 @@ class ServiceController:
                     config_dict['type'] = service_type
                 if 'instance_context' not in config_dict:
                     config_dict['instance_context'] = self.instance_id
-                
+
                 # Filter config_dict to only include fields the config class accepts
                 filtered_config = self._filter_config_for_class(config_dict, self._config_class)
                 self._config = self._config_class(**filtered_config)
@@ -295,7 +284,7 @@ class ServiceController:
                 for key, value in config_dict.items():
                     if hasattr(self._config, key):
                         setattr(self._config, key, value)
-            
+
             self.logger.debug("Configuration setup complete")
 
         except Exception as e:

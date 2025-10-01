@@ -74,6 +74,8 @@ docs/_build/
 # PyBuilder
 target/
 
+/CLAUDE.md
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -132,3 +134,4 @@ poetry.lock
 
 # Dev config
 config/services.yaml
+

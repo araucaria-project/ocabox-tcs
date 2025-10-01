@@ -2,6 +2,8 @@
 nats:
   host: nats.oca.lan
   port: 4222
+  # required: true   # If true (default), block startup until NATS is available
+                     # If false, use 2s timeout and continue without NATS if unavailable
 
 
 services:

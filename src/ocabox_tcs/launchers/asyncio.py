@@ -11,8 +11,8 @@ from typing import Dict, Optional, Any
 from datetime import datetime
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
-from ocabox_tcs.config import ServicesConfigFile
 from ocabox_tcs.management.service_controller import ServiceController
+from ocabox_tcs.management.process_context import ProcessContext
 
 
 class AsyncioRunner(BaseRunner):
@@ -24,7 +24,10 @@ class AsyncioRunner(BaseRunner):
         self.start_time: Optional[datetime] = None
 
     async def start(self) -> bool:
-        """Start service in current process."""
+        """Start service in current process.
+
+        Note: ProcessContext must already be initialized by AsyncioLauncher.
+        """
         if self._is_running:
             self.logger.warning(f"Service {self.service_id} already running")
             return False
@@ -38,7 +41,8 @@ class AsyncioRunner(BaseRunner):
                 instance_id=instance_id
             )
 
-            if not await self.controller.initialize(config_file=self.config.config_file):
+            # ProcessContext already initialized - just initialize controller
+            if not await self.controller.initialize():
                 self.logger.error(f"Failed to initialize {self.service_id}")
                 return False
 
@@ -108,22 +112,38 @@ class AsyncioLauncher(BaseLauncher):
     def __init__(self, launcher_id: str = "asyncio-launcher"):
         super().__init__(launcher_id)
         self._shutdown_event = asyncio.Event()
+        self.process_ctx: Optional[ProcessContext] = None
 
-    async def initialize(self, config: ServicesConfigFile) -> bool:
-        """Initialize launcher from services config file.
+    async def initialize(self, process_ctx: ProcessContext) -> bool:
+        """Initialize launcher from ProcessContext.
+
+        Uses already-initialized ProcessContext (shared by all services in this process).
 
         Args:
-            config: ServicesConfigFile instance
+            process_ctx: Already-initialized ProcessContext
 
         Returns:
             True if initialization successful
         """
         try:
-            for service_cfg in config['services']:
+            # Store ProcessContext reference (shared by all services)
+            self.process_ctx = process_ctx
+            self.logger.info("Using ProcessContext for asyncio launcher")
+
+            # Get services list from config_manager (use raw config to include 'services' key)
+            raw_config = process_ctx.config_manager.get_raw_config()
+            services_list = raw_config.get('services', [])
+
+            if not services_list:
+                self.logger.warning("No services found in configuration")
+                return True
+
+            # Register runners for each service
+            for service_cfg in services_list:
                 runner_config = ServiceRunnerConfig(
                     service_type=service_cfg['type'],
                     instance_context=service_cfg.get('instance_context'),
-                    config_file=config.source,
+                    config_file=process_ctx.config_file,  # Not used by AsyncioRunner, but keep for consistency
                     runner_id=f"{self.launcher_id}.{service_cfg['type']}"
                 )
 
@@ -171,31 +191,50 @@ class AsyncioLauncher(BaseLauncher):
         self.logger.info("Launcher shutdown complete")
 
     async def _shutdown(self):
-        """Shutdown all services."""
+        """Shutdown all services and process context."""
         self.logger.info("Stopping all services...")
         await self.stop_all()
+
+        if self.process_ctx:
+            await self.process_ctx.shutdown()
+
         self._shutdown_event.set()
 
 
 async def amain():
     """Asyncio launcher entry point."""
+    import argparse
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    config = ServicesConfigFile()
-    config.load_config()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Start TCS asyncio launcher")
+    parser.add_argument(
+        "--config",
+        default="config/services.yaml",
+        help="Path to services config file (default: config/services.yaml)"
+    )
+    args = parser.parse_args()
 
+    # Initialize ProcessContext (handles config loading, shared by all services)
+    process_ctx = await ProcessContext.initialize(config_file=args.config)
+
+    # Create and initialize launcher
     launcher = AsyncioLauncher()
-    if not await launcher.initialize(config):
+    if not await launcher.initialize(process_ctx):
         logging.error("Failed to initialize launcher")
+        await process_ctx.shutdown()
         return
 
+    # Start services and run
     if not await launcher.start_all():
         logging.error("Failed to start services")
         await launcher.stop_all()
+        await process_ctx.shutdown()
         return
 
     await launcher.run()

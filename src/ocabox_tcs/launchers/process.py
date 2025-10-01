@@ -13,7 +13,7 @@ from typing import Dict, Optional, Any, List
 from dataclasses import dataclass
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
-from ocabox_tcs.config import ServicesConfigFile
+from ocabox_tcs.management.process_context import ProcessContext
 
 
 @dataclass
@@ -158,22 +158,39 @@ class ProcessLauncher(BaseLauncher):
         super().__init__(launcher_id)
         self.terminate_delay = terminate_delay
         self._shutdown_event = asyncio.Event()
+        self.process_ctx: Optional[ProcessContext] = None
 
-    async def initialize(self, config: ServicesConfigFile) -> bool:
-        """Initialize launcher from services config file.
+    async def initialize(self, process_ctx: ProcessContext) -> bool:
+        """Initialize launcher from ProcessContext.
+
+        Uses already-initialized ProcessContext to get services configuration
+        and registers runners for spawning services.
 
         Args:
-            config: ServicesConfigFile instance
+            process_ctx: Already-initialized ProcessContext
 
         Returns:
             True if initialization successful
         """
         try:
-            for service_cfg in config['services']:
+            # Store ProcessContext reference
+            self.process_ctx = process_ctx
+            self.logger.info("Using ProcessContext for process launcher")
+
+            # Get services list from config_manager (use raw config to include 'services' key)
+            raw_config = process_ctx.config_manager.get_raw_config()
+            services_list = raw_config.get('services', [])
+
+            if not services_list:
+                self.logger.warning("No services found in configuration")
+                return True
+
+            # Register runners for each service
+            for service_cfg in services_list:
                 runner_config = ServiceRunnerConfig(
                     service_type=service_cfg['type'],
                     instance_context=service_cfg.get('instance_context'),
-                    config_file=config.source,
+                    config_file=process_ctx.config_file,  # Use stored config file path
                     runner_id=f"{self.launcher_id}.{service_cfg['type']}"
                 )
 
@@ -221,15 +238,20 @@ class ProcessLauncher(BaseLauncher):
         self.logger.info("Launcher shutdown complete")
 
     async def _shutdown(self):
-        """Shutdown all services."""
+        """Shutdown all services and process context."""
         self.logger.info("Stopping all services...")
         await self.stop_all()
+
+        if self.process_ctx:
+            await self.process_ctx.shutdown()
+
         self._shutdown_event.set()
 
 
 async def amain():
     """Process launcher entry point."""
     import logging
+    import argparse
 
     logging.basicConfig(
         level=logging.INFO,
@@ -237,17 +259,30 @@ async def amain():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    config = ServicesConfigFile()
-    config.load_config()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Start TCS process launcher")
+    parser.add_argument(
+        "--config",
+        default="config/services.yaml",
+        help="Path to services config file (default: config/services.yaml)"
+    )
+    args = parser.parse_args()
 
+    # Initialize ProcessContext (handles config loading)
+    process_ctx = await ProcessContext.initialize(config_file=args.config)
+
+    # Create and initialize launcher
     launcher = ProcessLauncher()
-    if not await launcher.initialize(config):
+    if not await launcher.initialize(process_ctx):
         logging.error("Failed to initialize launcher")
+        await process_ctx.shutdown()
         return
 
+    # Start services and run
     if not await launcher.start_all():
         logging.error("Failed to start services")
         await launcher.stop_all()
+        await process_ctx.shutdown()
         return
 
     await launcher.run()

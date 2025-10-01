@@ -118,12 +118,12 @@ class ConfigurationManager:
 
         if service_module is None, return global configuration only."""
         merged_config = {}
-        
+
         # Start with lowest priority sources and merge up
         for source in reversed(self.sources):
             if not source.is_available():
                 continue
-            
+
             try:
                 source_config = source.load()
                 if source_config:
@@ -136,7 +136,29 @@ class ConfigurationManager:
                         self.logger.debug(f"Merged config from {type(source).__name__}")
             except Exception as e:
                 self.logger.error(f"Error loading from {type(source).__name__}: {e}")
-        
+
+        return merged_config
+
+    def get_raw_config(self) -> Dict[str, Any]:
+        """Get raw merged configuration from all sources without service filtering.
+
+        Useful for launchers that need to access the services list.
+        """
+        merged_config = {}
+
+        # Start with lowest priority sources and merge up
+        for source in reversed(self.sources):
+            if not source.is_available():
+                continue
+
+            try:
+                source_config = source.load()
+                if source_config:
+                    merged_config = self._deep_merge(merged_config, source_config)
+                    self.logger.debug(f"Merged raw config from {type(source).__name__}")
+            except Exception as e:
+                self.logger.error(f"Error loading from {type(source).__name__}: {e}")
+
         return merged_config
     
     def _extract_service_config(self, config: Dict[str, Any], 

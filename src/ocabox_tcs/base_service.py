@@ -212,8 +212,15 @@ class BaseService(ABC):
         Usage: python service_file.py config.yaml instance_context [--runner-id ID]
 
         The service type is automatically derived from the filename.
+
+        This is a thin wrapper that:
+        1. Initializes ProcessContext (once per process)
+        2. Creates and runs ServiceController
+        3. Waits for shutdown
         """
         import argparse
+        import signal
+        from ocabox_tcs.management.process_context import ProcessContext
         from ocabox_tcs.management.service_controller import ServiceController
 
         parser = argparse.ArgumentParser(description="Start a TCS service.")
@@ -225,9 +232,8 @@ class BaseService(ABC):
         service_type = cls._service_type
 
         async def run_service():
-            # TODO: Initialize Servicess Process (config, messenger, etc.) here, this is once per process moment.
-            # TODO: Make it easy for AsyncioLauncher to do the same thing.
-            # TODO: Distinguish between single service process and multi-service process.
+            # Initialize ProcessContext (once per process)
+            process_ctx = await ProcessContext.initialize(config_file=args.config_file)
 
             # Create controller
             module_name = f"ocabox_tcs.services.{service_type}"
@@ -237,28 +243,28 @@ class BaseService(ABC):
                 runner_id=args.runner_id
             )
 
-            # Initialize and start
-            if await controller.initialize(config_file=args.config_file):
+            # Initialize and start service
+            if await controller.initialize():
                 if await controller.start_service():
                     try:
-                        # Wait for shutdown signal instead of polling
+                        # Wait for shutdown signal
                         shutdown_event = asyncio.Event()
 
-                        def signal_handler():
+                        def signal_handler(signum, frame):
                             shutdown_event.set()
 
                         # Set up signal handlers
-                        import signal
-                        signal.signal(signal.SIGINT, lambda s, f: signal_handler())
-                        signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
+                        signal.signal(signal.SIGINT, signal_handler)
+                        signal.signal(signal.SIGTERM, signal_handler)
 
-                        # Wait for shutdown signal
+                        # Wait for shutdown
                         await shutdown_event.wait()
                         await controller.stop_service()
                     except KeyboardInterrupt:
                         await controller.stop_service()
 
             await controller.shutdown()
+            await process_ctx.shutdown()
 
         # Setup logging
         logging.basicConfig(level=logging.INFO)
