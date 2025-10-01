@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "0.2.0"
+version = "0.3.0"
 description = "Telescope Control Services for OCABOX Astronomilacl Observatory Server"
-authors = ["Mikolaj et.al."]
+authors = ["Mikolaj et.al.", "Claude Code <noreply@anthropic.com>"]
 readme = "README.md"
 packages = [{include = "ocabox_tcs", from = "src"}]
 repository = "https://github.com/araucaria-project/ocabox-tcs"
