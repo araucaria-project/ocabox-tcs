@@ -2,7 +2,8 @@
 
 import asyncio
 import logging
-from typing import Optional, Callable, Dict, List
+from collections.abc import Callable
+from typing import Optional
 
 from .status import Status, StatusReport, aggregate_status
 
@@ -13,29 +14,29 @@ class MonitoredObject:
     def __init__(self, name: str, parent: Optional["MonitoredObject"] = None):
         self.name = name
         self.parent = parent
-        self.children: Dict[str, "MonitoredObject"] = {}
+        self.children: dict[str, MonitoredObject] = {}
         self._status = Status.UNKNOWN
-        self._message: Optional[str] = None
-        self._healthcheck_callbacks: List[Callable[[], Optional[Status]]] = []
-        self._status_callbacks: List[Callable[[], Optional[Status]]] = []
-        self.logger = logging.getLogger(f"monitored.{name}")
+        self._message: str | None = None
+        self._healthcheck_callbacks: list[Callable[[], Status | None]] = []
+        self._status_callbacks: list[Callable[[], Status | None]] = []
+        self.logger = logging.getLogger(f"mon.{name}")
         
         if parent:
             parent.add_submonitor(self)
     
-    def set_status(self, status: Status, message: Optional[str] = None):
+    def set_status(self, status: Status, message: str | None = None):
         """Set status directly."""
         self._status = status
         self._message = message
         self.logger.debug(f"Status set to {status}: {message or ''}")
         # TODO: Call on_new_status if new. by default notify parent, RaportingMonitoredObject should publish immediately after any monitor in the tree changes status.
     
-    def add_healthcheck_cb(self, callback: Callable[[], Optional[Status]]):
+    def add_healthcheck_cb(self, callback: Callable[[], Status | None]):
         """Add healthcheck callback."""
         self._healthcheck_callbacks.append(callback)
 
     # TODO: Remove status callback. Status have to be set explicite to monitor, monitor should raport it immediately.
-    def add_status_cb(self, callback: Callable[[], Optional[Status]]):
+    def add_status_cb(self, callback: Callable[[], Status | None]):
         """Add status callback."""
         self._status_callbacks.append(callback)
     
@@ -116,11 +117,11 @@ class MonitoredObject:
 class ReportingMonitoredObject(MonitoredObject):
     """MonitoredObject that actively checks status periodically."""
     
-    def __init__(self, name: str, parent: Optional[MonitoredObject] = None, 
+    def __init__(self, name: str, parent: MonitoredObject | None = None, 
                  check_interval: float = 30.0):
         super().__init__(name, parent)
         self.check_interval = check_interval
-        self._check_task: Optional[asyncio.Task] = None
+        self._check_task: asyncio.Task | None = None
         self._running = False
     
     async def start_monitoring(self):

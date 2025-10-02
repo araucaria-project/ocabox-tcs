@@ -1,9 +1,9 @@
 """Status enums and utilities for monitoring system."""
 
-from enum import Enum
-from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+from typing import Any
 
 
 class Status(Enum):
@@ -35,15 +35,15 @@ class StatusReport:
     """Status report for a monitored component."""
     name: str
     status: Status
-    message: Optional[str] = None
-    timestamp: Optional[datetime] = None
-    details: Optional[Dict[str, Any]] = None
+    message: str | None = None
+    timestamp: datetime | None = None
+    details: dict[str, Any] | None = None
     
     def __post_init__(self):
         if self.timestamp is None:
             self.timestamp = datetime.utcnow()
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         result = {
             "name": self.name,
@@ -57,7 +57,7 @@ class StatusReport:
         return result
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StatusReport":
+    def from_dict(cls, data: dict[str, Any]) -> "StatusReport":
         """Create from dictionary."""
         return cls(
             name=data["name"],

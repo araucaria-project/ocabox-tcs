@@ -3,7 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 
-from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, service, config
+from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
 from ocabox_tcs.monitoring import Status
 
 

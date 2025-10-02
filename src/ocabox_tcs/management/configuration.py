@@ -1,12 +1,11 @@
 """Configuration management with multiple sources and precedence."""
 
-import os
-import yaml
 import logging
-from typing import Dict, Any, Optional, List, Union
-from pathlib import Path
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
 
+import yaml
 from serverish.messenger import Messenger
 
 
@@ -17,7 +16,7 @@ class ConfigSource(ABC):
         self.priority = priority  # Higher number = higher priority
     
     @abstractmethod
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """Load configuration data."""
         pass
     
@@ -30,17 +29,17 @@ class ConfigSource(ABC):
 class FileConfigSource(ConfigSource):
     """Configuration from YAML file."""
     
-    def __init__(self, file_path: Union[str, Path], priority: int = 10):
+    def __init__(self, file_path: str | Path, priority: int = 10):
         super().__init__(priority)
         self.file_path = file_path
     
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """Load configuration from file."""
         try:
-            with open(self.file_path, 'r') as f:
+            with open(self.file_path) as f:
                 return yaml.safe_load(f) or {}
         except Exception as e:
-            logging.getLogger(__name__).warning(f"Failed to load config from {self.file_path}: {e}")
+            logging.getLogger("cfg").warning(f"Failed to load config from {self.file_path}: {e}")
             return {}
     
     def is_available(self) -> bool:
@@ -51,11 +50,11 @@ class FileConfigSource(ConfigSource):
 class ArgsConfigSource(ConfigSource):
     """Configuration from command line arguments or dict."""
     
-    def __init__(self, config_dict: Dict[str, Any], priority: int = 30):
+    def __init__(self, config_dict: dict[str, Any], priority: int = 30):
         super().__init__(priority)
         self.config_dict = config_dict
     
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """Return provided configuration."""
         return self.config_dict
     
@@ -72,10 +71,10 @@ class NATSConfigSource(ConfigSource):
         self.subject = subject
         self.messenger = messenger
     
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """Load configuration from NATS (placeholder)."""
         # TODO: Implement NATS configuration loading
-        logging.getLogger(__name__).warning("NATS configuration not yet implemented")
+        logging.getLogger("cfg").warning("NATS configuration not yet implemented")
         return {}
     
     def is_available(self) -> bool:
@@ -86,11 +85,11 @@ class NATSConfigSource(ConfigSource):
 class DefaultConfigSource(ConfigSource):
     """Default configuration values."""
     
-    def __init__(self, defaults: Dict[str, Any] = None, priority: int = 0):
+    def __init__(self, defaults: dict[str, Any] = None, priority: int = 0):
         super().__init__(priority)
         self.defaults = defaults or {}
     
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """Return default configuration."""
         return self.defaults
     
@@ -103,8 +102,8 @@ class ConfigurationManager:
     """Manages configuration from multiple sources with precedence."""
     
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.sources: List[ConfigSource] = []
+        self.logger = logging.getLogger("cfg")
+        self.sources: list[ConfigSource] = []
     
     def add_source(self, source: ConfigSource):
         """Add a configuration source."""
@@ -113,7 +112,7 @@ class ConfigurationManager:
         self.sources.sort(key=lambda s: s.priority, reverse=True)
         self.logger.debug(f"Added config source with priority {source.priority}")
     
-    def resolve_config(self, service_module: Optional[str] = None, instance_id: Optional[str] = None) -> Dict[str, Any]:
+    def resolve_config(self, service_module: str | None = None, instance_id: str | None = None) -> dict[str, Any]:
         """Resolve configuration for a service from all sources.
 
         if service_module is None, return global configuration only."""
@@ -139,7 +138,7 @@ class ConfigurationManager:
 
         return merged_config
 
-    def get_raw_config(self) -> Dict[str, Any]:
+    def get_raw_config(self) -> dict[str, Any]:
         """Get raw merged configuration from all sources without service filtering.
 
         Useful for launchers that need to access the services list.
@@ -161,8 +160,8 @@ class ConfigurationManager:
 
         return merged_config
     
-    def _extract_service_config(self, config: Dict[str, Any], 
-                               module: Optional[str], instance: Optional[str]) -> Dict[str, Any]:
+    def _extract_service_config(self, config: dict[str, Any], 
+                               module: str | None, instance: str | None) -> dict[str, Any]:
         """Extract service-specific configuration, or global if module is None."""
         service_config = {}
         
@@ -192,7 +191,7 @@ class ConfigurationManager:
         
         return service_config
     
-    def _deep_merge(self, base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+    def _deep_merge(self, base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
         """Deep merge two dictionaries."""
         result = base.copy()
         
@@ -208,11 +207,11 @@ class ConfigurationManager:
 
 
 async def create_configuration_manager(
-    config_file: Optional[Union[str, Path]] = None,
-    args_config: Optional[Dict[str, Any]] = None,
-    config_subject: Optional[str] = None,
+    config_file: str | Path | None = None,
+    args_config: dict[str, Any] | None = None,
+    config_subject: str | None = None,
     config_messenger: Any = None,
-    defaults: Optional[Dict[str, Any]] = None
+    defaults: dict[str, Any] | None = None
 ) -> ConfigurationManager:
     """Create a configuration manager with standard sources."""
     manager = ConfigurationManager()

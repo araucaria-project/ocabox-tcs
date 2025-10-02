@@ -1,17 +1,19 @@
 """ProcessContext singleton for shared resources within a process."""
 from __future__ import annotations
-import logging
+
 import asyncio
-from pathlib import Path
-from typing import Optional, Dict, Any, TYPE_CHECKING, Union
+import logging
+from typing import TYPE_CHECKING, Any
+
+from serverish.messenger import Messenger
 
 from ocabox_tcs.management.configuration import (
+    ArgsConfigSource,
     ConfigurationManager,
     FileConfigSource,
-    ArgsConfigSource,
-    NATSConfigSource
+    NATSConfigSource,
 )
-from serverish.messenger import Messenger
+
 
 if TYPE_CHECKING:
     from ocabox_tcs.management.service_controller import ServiceController
@@ -26,7 +28,7 @@ class ProcessContext:
     - Service registry (controllers in this process)
     """
 
-    _instance: Optional[ProcessContext] = None
+    _instance: ProcessContext | None = None
     _lock = asyncio.Lock()
 
     def __new__(cls) -> ProcessContext:
@@ -39,17 +41,17 @@ class ProcessContext:
         if self._initialized:
             return
 
-        self.logger = logging.getLogger("process_ctx")
-        self._messenger: Optional[Messenger] = None
-        self._controllers: Dict[str, ServiceController] = {}
-        self.config_manager: Optional[ConfigurationManager] = None
-        self.config_file: Optional[str] = None  # Store original config file path
-        self._config_cache: Dict[str, Any] = {}
+        self.logger = logging.getLogger("ctx")
+        self._messenger: Messenger | None = None
+        self._controllers: dict[str, ServiceController] = {}
+        self.config_manager: ConfigurationManager | None = None
+        self.config_file: str | None = None  # Store original config file path
+        self._config_cache: dict[str, Any] = {}
         self._initialized = True
         self.logger.info("ProcessContext singleton initialized")
     
     @property
-    def messenger(self) -> Optional[Messenger]:
+    def messenger(self) -> Messenger | None:
         """Get shared NATS messenger."""
         return self._messenger
     
@@ -63,10 +65,10 @@ class ProcessContext:
             self._messenger = Messenger()
             if self._messenger.is_open:
                 if not force_reopen:
-                    self.logger.warning(f"Messenger already open")
+                    self.logger.warning("Messenger already open")
                     return
                 else:
-                    self.logger.warning(f"Messenger already open, reopening")
+                    self.logger.warning("Messenger already open, reopening")
                     await self._messenger.close()
 
 
@@ -89,20 +91,20 @@ class ProcessContext:
                 self.logger.info("Closed NATS messenger")
             self._messenger = None
     
-    def register_controller(self, controller: "ServiceController"):
+    def register_controller(self, controller: ServiceController):
         """Register a service controller."""
         service_id = f"{controller.module_name}:{controller.instance_id}"
         self._controllers[service_id] = controller
         self.logger.info(f"Registered controller: {service_id}")
     
-    def unregister_controller(self, controller: "ServiceController"):
+    def unregister_controller(self, controller: ServiceController):
         """Unregister a service controller."""
         service_id = f"{controller.module_name}:{controller.instance_id}"
         if service_id in self._controllers:
             del self._controllers[service_id]
             self.logger.info(f"Unregistered controller: {service_id}")
     
-    def get_controller(self, module_name: str, instance_id: str) -> Optional["ServiceController"]:
+    def get_controller(self, module_name: str, instance_id: str) -> ServiceController | None:
         """Get a registered controller."""
         service_id = f"{module_name}:{instance_id}"
         return self._controllers.get(service_id)
@@ -112,7 +114,7 @@ class ProcessContext:
         self._config_cache[key] = config
         self.logger.debug(f"Cached config for: {key}")
     
-    def get_cached_config(self, key: str) -> Optional[Any]:
+    def get_cached_config(self, key: str) -> Any | None:
         """Get cached configuration data."""
         return self._config_cache.get(key)
     
@@ -122,7 +124,7 @@ class ProcessContext:
         self.logger.debug("Cleared config cache")
     
     @classmethod
-    async def initialize(cls, config_file: str, args_config: Optional[Dict[str, Any]] = None) -> ProcessContext:
+    async def initialize(cls, config_file: str, args_config: dict[str, Any] | None = None) -> ProcessContext:
         """Initialize process-wide resources. Call once per OS process.
 
         Used by:
@@ -162,7 +164,7 @@ class ProcessContext:
         instance.logger.info("ProcessContext initialized")
         return instance
 
-    async def _init_config_manager(self, config_file: str, args_config: Optional[Dict[str, Any]] = None):
+    async def _init_config_manager(self, config_file: str, args_config: dict[str, Any] | None = None):
         """Initialize configuration manager from file and args."""
         self.config_manager = ConfigurationManager()
 
@@ -176,7 +178,7 @@ class ProcessContext:
 
         self.logger.debug("Configuration manager initialized")
 
-    async def _init_messenger(self, nats_config: Dict[str, Any]):
+    async def _init_messenger(self, nats_config: dict[str, Any]):
         """Initialize NATS messenger from config.
 
         If 'required' is True in config, will block until NATS is available.
@@ -203,7 +205,7 @@ class ProcessContext:
                 self.logger.warning(f"Failed to initialize NATS messenger: {e}")
                 # Continue without NATS - not critical
 
-    async def _add_nats_config_source(self, nats_config: Dict[str, Any]):
+    async def _add_nats_config_source(self, nats_config: dict[str, Any]):
         """Add NATS as a configuration source if configured."""
         config_subject = nats_config.get("config_subject")
 

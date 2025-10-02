@@ -32,8 +32,8 @@ Configuration files are located in the `config/` directory of the project.
 
 **Create your configuration file:**
 ```bash
-# Copy example configuration
-cp config/services.example.yaml config/services.yaml
+# Copy sample configuration
+cp config/services.sample.yaml config/services.yaml
 
 # Edit configuration as needed
 # config/services.yaml is gitignored - customize for your environment
@@ -42,9 +42,8 @@ cp config/services.example.yaml config/services.yaml
 **Available example configurations:**
 ```bash
 ls config/
-# services.example.yaml - Main configuration template
-# test_services.yaml - Configuration for testing
-# test_*.yaml - Individual service test configurations
+# services.sample.yaml - Main configuration template
+# examples.yaml - Tutorial examples configuration
 ```
 
 4. Install systemd services:
@@ -88,12 +87,15 @@ poetry install
 Run development service managers:
 ```bash
 # Process launcher (separate processes)
-poetry run tcs_process
+poetry run tcs_process --config config/services.yaml
 
 # Asyncio launcher (same process)
-poetry run tcs_asyncio
+poetry run tcs_asyncio --config config/services.yaml
+
+# Tutorial examples
+poetry run tcs_asyncio --config config/examples.yaml
 ```
-These launchers will start services defined in config/services.yaml instead of using systemd.
+These launchers will start services defined in config files instead of using systemd.
 For full testing before release, use PyCharm Professional's remote development feature to develop and test directly on observatory machine.
 
 ### Project structure
@@ -107,7 +109,8 @@ ocabox-tcs/
 │   ├── architecture.md
 │   └── requirements-analysis.md
 ├── config/
-│   └── services.yaml.example
+│   ├── services.sample.yaml   # Configuration template
+│   └── examples.yaml           # Tutorial examples
 ├── scripts/
 │   ├── ocabox-services-launcher.service
 │   └── ocabox-service@.service
@@ -115,13 +118,23 @@ ocabox-tcs/
     └── ocabox_tcs/
         ├── __init__.py
         ├── base_service.py
-        ├── launcher.py
+        ├── launchers/
+        │   ├── process.py          # Process launcher
+        │   ├── asyncio.py          # Asyncio launcher
+        │   └── base_launcher.py
         ├── services/
         │   ├── __init__.py
-        │   ├── plan_runner.py
-        │   ├── guider.py
-        │   └── dome_follower.py
-        └── cli.py
+        │   ├── hello_world.py
+        │   └── examples/           # Tutorial examples
+        │       ├── 01_minimal.py
+        │       ├── 02_basic.py
+        │       ├── 03_logging.py
+        │       ├── 04_monitoring.py
+        │       └── README.md       # ← Start here!
+        └── management/
+            ├── process_context.py
+            ├── service_controller.py
+            └── configuration.py
 ```
 
 ## Architecture
@@ -141,17 +154,17 @@ This project provides a universal Python service framework for telescope automat
 
 Services are individual components that perform specific automation tasks. Each service:
 
-- Uses `@service("name")` decorator for registration
+- Uses `@service` decorator for registration (service type derived from filename)
 - Inherits from `BasePermanentService`, `BaseBlockingPermanentService`, or `BaseSingleShotService`
 - Implements `async def start_service()` and `async def stop_service()` (or specialized methods)
-- Optionally uses `@config("name")` decorator for custom configuration
+- Optionally uses `@config` decorator for custom configuration
 - Gets automatic NATS integration, health checking, and management
 
-**Example Service**:
+**Example Service** (File: `hello_world.py`):
 ```python
 from ocabox_tcs.base_service import service, BasePermanentService
 
-@service("hello_world")
+@service
 class HelloWorldService(BasePermanentService):
     async def start_service(self):
         self.logger.info("Hello World!")
@@ -161,7 +174,27 @@ Services are defined in `config/services.yaml` and can be launched via multiple 
 
 ## Quick Start
 
-For development/testing:
+### For Learning the Framework
+
+**New to ocabox-tcs?** Start with the tutorial examples:
+
+```bash
+# View the Getting Started guide
+cat src/ocabox_tcs/services/examples/README.md
+
+# Run all tutorial examples
+poetry run tcs_asyncio --config config/examples.yaml
+```
+
+The tutorial includes:
+- `01_minimal.py` - Simplest possible service (< 30 lines)
+- `02_basic.py` - Service with configuration
+- `03_logging.py` - Logging best practices
+- `04_monitoring.py` - Monitoring and health checks
+
+See [Tutorial Examples README](src/ocabox_tcs/services/examples/README.md) for detailed walkthrough.
+
+### For Development/Testing
 
 1. Install dependencies:
 ```bash
@@ -189,14 +222,16 @@ services:
 
 4. Run with launchers:
 ```bash
-poetry run tcs_process  # Services in separate processes
-# or
-poetry run tcs_asyncio  # Services in same process
+# Services in separate processes
+poetry run tcs_process --config config/services.yaml
+
+# Services in same process
+poetry run tcs_asyncio --config config/services.yaml
 ```
 
 5. Or run service directly:
 ```bash
-python my_service.py config.yaml main
+python my_service.py config/services.yaml main
 ```
 
 ## Configuration
@@ -212,7 +247,7 @@ The universal service framework supports multiple configuration sources with cle
 
 ### Configuration File Structure
 
-**Location**: `config/services.yaml` (created by copying `config/services.example.yaml`)
+**Location**: `config/services.yaml` (created by copying `config/services.sample.yaml`)
 
 ```yaml
 # Global configuration (applies to all services)
@@ -244,12 +279,18 @@ services:
 
 ### Available Configuration Files
 
-- `config/services.example.yaml` - Template for main configuration (copy to `services.yaml`)
-- `config/services.yaml` - Your customized configuration (gitignored, create from example)
-- `config/test_services.yaml` - Configuration for testing
-- `config/test_*.yaml` - Individual service test configurations
+- `config/services.sample.yaml` - Template for main configuration (copy to `services.yaml`)
+- `config/services.yaml` - Your customized configuration (gitignored, create from sample)
+- `config/examples.yaml` - Tutorial examples configuration
 
 ## Documentation
+
+### [Tutorial Examples](src/ocabox_tcs/services/examples/README.md) 📚 **START HERE**
+**Getting Started Guide**
+- Progressive examples from simple → complex
+- Step-by-step instructions
+- Copy-paste ready code
+- Best for learning the framework
 
 ### [Development Guide](doc/development-guide.md)
 **User Guide for Service Development**
@@ -307,10 +348,10 @@ The `instance_context` must match an entry in the `services.yaml` configuration 
 
 **As separate processes:**
 ```bash
-poetry run tcs_process
+poetry run tcs_process --config config/services.yaml
 ```
 
 **In same process (asyncio):**
 ```bash
-poetry run tcs_asyncio
+poetry run tcs_asyncio --config config/services.yaml
 ```

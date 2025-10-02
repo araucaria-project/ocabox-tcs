@@ -1,0 +1,30 @@
+# Example configuration for tutorial services
+# This config demonstrates how to configure multiple services with different settings
+
+nats:
+  host: localhost
+  port: 4222
+  required: false  # Optional for examples - won't block if NATS unavailable
+
+services:
+  # 01_minimal - Simplest possible service
+  - type: examples.01_minimal
+    instance_context: minimal
+
+  # 02_basic - Service with custom configuration
+  - type: examples.02_basic
+    instance_context: basic
+    interval: 2.0
+    message: "Basic service running"
+
+  # 03_logging - Demonstrates logging best practices
+  - type: examples.03_logging
+    instance_context: logging
+    interval: 3.0
+    simulate_errors: true
+
+  # 04_monitoring - Shows monitoring and health checks
+  - type: examples.04_monitoring
+    instance_context: monitoring
+    interval: 2.0
+    max_errors: 5

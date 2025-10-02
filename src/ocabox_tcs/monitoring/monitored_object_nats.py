@@ -1,13 +1,12 @@
 from datetime import datetime
-from typing import Optional
 
-from ocabox_tcs.monitoring import ReportingMonitoredObject, MonitoredObject
+from ocabox_tcs.monitoring import MonitoredObject, ReportingMonitoredObject
 
 
 class MessengerMonitoredObject(ReportingMonitoredObject):
     """MonitoredObject that sends reports to NATS via serverish.Messenger."""
 
-    def __init__(self, name: str, messenger, parent: Optional[MonitoredObject] = None,
+    def __init__(self, name: str, messenger, parent: MonitoredObject | None = None,
                  check_interval: float = 30.0, topic_prefix: str = "services"):
         super().__init__(name, parent, check_interval)
         self.messenger = messenger

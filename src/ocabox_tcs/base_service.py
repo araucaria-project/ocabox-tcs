@@ -1,18 +1,19 @@
 """Base service classes and configuration for the universal service framework."""
 
-import logging
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, TYPE_CHECKING, Type
+from typing import TYPE_CHECKING, Any
+
 
 if TYPE_CHECKING:
     from .management.service_controller import ServiceController
 
 
 # Registry for decorated classes
-_service_registry: Dict[str, Type["BaseService"]] = {}
-_config_registry: Dict[str, Type["BaseServiceConfig"]] = {}
+_service_registry: dict[str, type["BaseService"]] = {}
+_config_registry: dict[str, type["BaseServiceConfig"]] = {}
 
 
 def _class_name_to_type(class_name: str) -> str:
@@ -25,7 +26,7 @@ def _class_name_to_type(class_name: str) -> str:
     return re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
 
 
-def service(cls: Type["BaseService"]) -> Type["BaseService"]:
+def service(cls: type["BaseService"]) -> type["BaseService"]:
     """Decorator to register a service class.
 
     Service type is automatically derived from the filename where the class is defined.
@@ -48,17 +49,36 @@ def service(cls: Type["BaseService"]) -> Type["BaseService"]:
         # Get the file where the class is defined
         import inspect
         import os
+        from pathlib import Path
 
         filename = inspect.getfile(cls)
-        module_name = os.path.splitext(os.path.basename(filename))[0]
+        file_path = Path(filename).resolve()
 
         # Handle __main__ case (when run as script)
-        if module_name == '__main__':
+        if os.path.splitext(os.path.basename(filename))[0] == '__main__':
             import sys
             script_path = sys.argv[0] if sys.argv else filename
-            module_name = os.path.splitext(os.path.basename(script_path))[0]
+            file_path = Path(script_path).resolve()
 
-        type_id = module_name
+        # Try to detect if service is in a subdirectory under services/
+        # e.g., services/examples/01_minimal.py → examples.01_minimal
+        try:
+            # Find 'services' directory in path
+            parts = file_path.parts
+            if 'services' in parts:
+                services_idx = len(parts) - list(reversed(parts)).index('services') - 1
+                # Get relative path from services/ directory
+                rel_parts = parts[services_idx + 1:]
+                # Remove .py extension from last part
+                rel_parts = list(rel_parts[:-1]) + [Path(rel_parts[-1]).stem]
+                # Join with dots
+                type_id = '.'.join(rel_parts)
+            else:
+                # Fallback to just filename
+                type_id = file_path.stem
+        except (ValueError, IndexError):
+            # Fallback to just filename
+            type_id = file_path.stem
     except Exception as e:
         # Fallback to class name conversion
         import logging
@@ -79,7 +99,7 @@ def service(cls: Type["BaseService"]) -> Type["BaseService"]:
     return cls
 
 
-def config(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
+def config(cls: type["BaseServiceConfig"]) -> type["BaseServiceConfig"]:
     """Decorator to register a config class.
 
     Service type is automatically derived from the filename where the class is defined.
@@ -102,23 +122,48 @@ def config(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
         # Get the file where the class is defined
         import inspect
         import os
+        from pathlib import Path
 
         filename = inspect.getfile(cls)
-        module_name = os.path.splitext(os.path.basename(filename))[0]
+        file_path = Path(filename).resolve()
 
         # Handle __main__ case (when run as script)
-        if module_name == '__main__':
+        if os.path.splitext(os.path.basename(filename))[0] == '__main__':
             import sys
             script_path = sys.argv[0] if sys.argv else filename
-            module_name = os.path.splitext(os.path.basename(script_path))[0]
+            file_path = Path(script_path).resolve()
 
-        type_id = module_name
-    except:
+        # Try to detect if service is in a subdirectory under services/
+        # e.g., services/examples/02_basic.py → examples.02_basic
+        try:
+            # Find 'services' directory in path
+            parts = file_path.parts
+            if 'services' in parts:
+                services_idx = len(parts) - list(reversed(parts)).index('services') - 1
+                # Get relative path from services/ directory
+                rel_parts = parts[services_idx + 1:]
+                # Remove .py extension from last part
+                rel_parts = list(rel_parts[:-1]) + [Path(rel_parts[-1]).stem]
+                # Join with dots
+                type_id = '.'.join(rel_parts)
+            else:
+                # Fallback to just filename
+                type_id = file_path.stem
+        except (ValueError, IndexError):
+            # Fallback to just filename
+            type_id = file_path.stem
+    except Exception as e:
         # Fallback to class name conversion (remove 'Config' suffix)
+        import logging
         type_name = cls.__name__
         if type_name.endswith('Config'):
             type_name = type_name[:-6]
         type_id = _class_name_to_type(type_name)
+        logger = logging.getLogger("config.decorator")
+        logger.warning(
+            f"Could not derive config type from filename for {cls.__name__}: {e}. "
+            f"Using class-name-derived type '{type_id}' instead."
+        )
 
     # Register the config
     _config_registry[type_id] = cls
@@ -132,22 +177,22 @@ def config(cls: Type["BaseServiceConfig"]) -> Type["BaseServiceConfig"]:
     return cls
 
 
-def get_service_class(service_type: str) -> Optional[Type["BaseService"]]:
+def get_service_class(service_type: str) -> type["BaseService"] | None:
     """Get service class by type from decorator registry."""
     return _service_registry.get(service_type)
 
 
-def get_config_class(service_type: str) -> Optional[Type["BaseServiceConfig"]]:
+def get_config_class(service_type: str) -> type["BaseServiceConfig"] | None:
     """Get config class by type from decorator registry."""
     return _config_registry.get(service_type)
 
 
-def list_registered_services() -> Dict[str, Type["BaseService"]]:
+def list_registered_services() -> dict[str, type["BaseService"]]:
     """Get all registered services."""
     return _service_registry.copy()
 
 
-def list_registered_configs() -> Dict[str, Type["BaseServiceConfig"]]:
+def list_registered_configs() -> dict[str, type["BaseServiceConfig"]]:
     """Get all registered configs."""
     return _config_registry.copy()
 
@@ -170,9 +215,9 @@ class BaseService(ABC):
 
     def __init__(self):
         # These will be set by ServiceController
-        self.controller: Optional["ServiceController"] = None
+        self.controller: ServiceController | None = None
         self.config: Any = None  # Use Any to avoid linter warnings with subclass-specific configs
-        self.logger: Optional[logging.Logger] = None
+        self.logger: logging.Logger | None = None
         self._is_running = False
     
     @property
@@ -220,6 +265,7 @@ class BaseService(ABC):
         """
         import argparse
         import signal
+
         from ocabox_tcs.management.process_context import ProcessContext
         from ocabox_tcs.management.service_controller import ServiceController
 
@@ -231,7 +277,8 @@ class BaseService(ABC):
 
         service_type = cls._service_type
 
-        async def run_service():
+        async def amain():
+            """Async main function for service."""
             # Initialize ProcessContext (once per process)
             process_ctx = await ProcessContext.initialize(config_file=args.config_file)
 
@@ -266,12 +313,15 @@ class BaseService(ABC):
             await controller.shutdown()
             await process_ctx.shutdown()
 
-        # Setup logging
-        logging.basicConfig(level=logging.INFO)
+        # Setup logging - basic format for subprocess output
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[%(levelname)-5s] %(name)-12s: %(message)s'
+        )
 
         # Run service
         try:
-            asyncio.run(run_service())
+            asyncio.run(amain())
         except KeyboardInterrupt:
             pass
 
@@ -301,7 +351,7 @@ class BaseBlockingPermanentService(BasePermanentService):
     
     def __init__(self):
         super().__init__()
-        self._main_task: Optional[asyncio.Task] = None
+        self._main_task: asyncio.Task | None = None
     
     async def start_service(self):
         """Start the service and launch the main task."""

@@ -6,11 +6,11 @@ development and testing environments.
 
 import asyncio
 import os
-import subprocess
 import signal
-from datetime import datetime
-from typing import Dict, Optional, Any, List
+import subprocess
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.management.process_context import ProcessContext
@@ -21,7 +21,7 @@ class ProcessInfo:
     """Information about a running service process."""
     process: subprocess.Popen
     start_time: datetime
-    args: List[str]
+    args: list[str]
 
 
 class ProcessRunner(BaseRunner):
@@ -29,9 +29,9 @@ class ProcessRunner(BaseRunner):
 
     def __init__(self, config: ServiceRunnerConfig, terminate_delay: float = 1.0):
         super().__init__(config)
-        self.process_info: Optional[ProcessInfo] = None
+        self.process_info: ProcessInfo | None = None
         self.terminate_delay = terminate_delay
-        self._log_monitor_task: Optional[asyncio.Task] = None
+        self._log_monitor_task: asyncio.Task | None = None
 
     async def start(self) -> bool:
         """Start service in subprocess."""
@@ -118,7 +118,7 @@ class ProcessRunner(BaseRunner):
             return await self.start()
         return False
 
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get service status."""
         if not self._is_running or not self.process_info:
             return {
@@ -158,7 +158,7 @@ class ProcessLauncher(BaseLauncher):
         super().__init__(launcher_id)
         self.terminate_delay = terminate_delay
         self._shutdown_event = asyncio.Event()
-        self.process_ctx: Optional[ProcessContext] = None
+        self.process_ctx: ProcessContext | None = None
 
     async def initialize(self, process_ctx: ProcessContext) -> bool:
         """Initialize launcher from ProcessContext.
@@ -250,12 +250,12 @@ class ProcessLauncher(BaseLauncher):
 
 async def amain():
     """Process launcher entry point."""
-    import logging
     import argparse
+    import logging
 
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
+        format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 

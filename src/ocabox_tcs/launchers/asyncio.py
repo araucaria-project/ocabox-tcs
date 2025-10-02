@@ -7,12 +7,12 @@ suitable for development and resource-constrained environments.
 import asyncio
 import logging
 import signal
-from typing import Dict, Optional, Any
 from datetime import datetime
+from typing import Any
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
-from ocabox_tcs.management.service_controller import ServiceController
 from ocabox_tcs.management.process_context import ProcessContext
+from ocabox_tcs.management.service_controller import ServiceController
 
 
 class AsyncioRunner(BaseRunner):
@@ -20,8 +20,8 @@ class AsyncioRunner(BaseRunner):
 
     def __init__(self, config: ServiceRunnerConfig):
         super().__init__(config)
-        self.controller: Optional[ServiceController] = None
-        self.start_time: Optional[datetime] = None
+        self.controller: ServiceController | None = None
+        self.start_time: datetime | None = None
 
     async def start(self) -> bool:
         """Start service in current process.
@@ -88,7 +88,7 @@ class AsyncioRunner(BaseRunner):
             return await self.start()
         return False
 
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get service status."""
         if not self._is_running or not self.controller or not self.start_time:
             return {
@@ -112,7 +112,7 @@ class AsyncioLauncher(BaseLauncher):
     def __init__(self, launcher_id: str = "asyncio-launcher"):
         super().__init__(launcher_id)
         self._shutdown_event = asyncio.Event()
-        self.process_ctx: Optional[ProcessContext] = None
+        self.process_ctx: ProcessContext | None = None
 
     async def initialize(self, process_ctx: ProcessContext) -> bool:
         """Initialize launcher from ProcessContext.
@@ -207,7 +207,7 @@ async def amain():
 
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
+        format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 

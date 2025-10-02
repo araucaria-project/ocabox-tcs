@@ -20,9 +20,9 @@
 
 **Override**: `async def execute(self)`
 
-**Example**:
+**Example** (File: `data_importer.py`):
 ```python
-@service("data_importer")
+@service
 class DataImporterService(BaseSingleShotService):
     async def execute(self):
         # Import data once
@@ -46,21 +46,21 @@ class DataImporterService(BaseSingleShotService):
 - ✅ Error handling
 - ✅ No manual `asyncio.create_task()`
 
-**Example**:
+**Example** (File: `telescope_monitor.py`):
 ```python
-@service("telescope_monitor")
+@service
 class TelescopeMonitorService(BaseBlockingPermanentService):
     async def on_start(self):
         # Setup connections, initialize hardware
         await self.connect_to_telescope()
-    
+
     async def run_service(self):
         while self.is_running:
             # Main monitoring loop
             status = await self.check_telescope_status()
             await self.process_status(status)
             await asyncio.sleep(1)
-    
+
     async def on_stop(self):
         # Cleanup
         await self.disconnect_from_telescope()
@@ -81,16 +81,16 @@ class TelescopeMonitorService(BaseBlockingPermanentService):
 - Custom task lifecycle needs
 - Advanced patterns
 
-**Example**:
+**Example** (File: `complex_processor.py`):
 ```python
-@service("complex_processor")
+@service
 class ComplexProcessorService(BasePermanentService):
     async def start_service(self):
         # Start multiple concurrent tasks
         self.task1 = asyncio.create_task(self.process_queue_a())
         self.task2 = asyncio.create_task(self.process_queue_b())
         self.monitor_task = asyncio.create_task(self.monitor_health())
-    
+
     async def stop_service(self):
         # Custom cleanup for multiple tasks
         for task in [self.task1, self.task2, self.monitor_task]:
@@ -107,8 +107,9 @@ class ComplexProcessorService(BasePermanentService):
 ### Optional Config Classes
 Config classes are **optional**. If you don't need custom configuration:
 
+**Example** (File: `simple_service.py`):
 ```python
-@service("simple_service")  # No @config needed
+@service  # No @config needed
 class SimpleService(BaseBlockingPermanentService):
     async def run_service(self):
         # Uses BaseServiceConfig automatically
@@ -118,15 +119,16 @@ class SimpleService(BaseBlockingPermanentService):
 ### Custom Config Classes
 Add custom configuration when needed:
 
+**Example** (File: `advanced_service.py`):
 ```python
-@config("advanced_service")
+@config
 @dataclass
 class AdvancedConfig(BaseServiceConfig):
     timeout: int = 30
     max_retries: int = 3
     api_url: str = "https://api.example.com"
 
-@service("advanced_service")
+@service
 class AdvancedService(BaseBlockingPermanentService):
     async def run_service(self):
         # Access custom config
