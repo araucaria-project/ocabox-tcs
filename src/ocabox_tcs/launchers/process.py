@@ -51,6 +51,9 @@ class ProcessRunner(BaseRunner):
 
             args.append(self.config.instance_context or "main")
 
+            # Suppress banner in subprocesses (launcher already showed one)
+            args.append("--no-banner")
+
             self.logger.info(f"Starting service: {' '.join(args)}")
 
             process = subprocess.Popen(
@@ -259,6 +262,8 @@ async def amain():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+    logger = logging.getLogger("launch")
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Start TCS process launcher")
     parser.add_argument(
@@ -266,7 +271,15 @@ async def amain():
         default="config/services.yaml",
         help="Path to services config file (default: config/services.yaml)"
     )
+    parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
     args = parser.parse_args()
+
+    # Print startup banner (unless suppressed)
+    if not args.no_banner:
+        logger.info("=" * 60)
+        logger.info("TCS - Telescope Control Services")
+        logger.info("Launcher: Process (each service in separate subprocess)")
+        logger.info("=" * 60)
 
     # Initialize ProcessContext (handles config loading)
     process_ctx = await ProcessContext.initialize(config_file=args.config)

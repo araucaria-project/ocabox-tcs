@@ -161,6 +161,9 @@ class ProcessContext:
             await instance._init_messenger(nats_config)
             await instance._add_nats_config_source(nats_config)
 
+        # Log all configuration sources
+        instance.config_manager.log_sources()
+
         instance.logger.info("ProcessContext initialized")
         return instance
 

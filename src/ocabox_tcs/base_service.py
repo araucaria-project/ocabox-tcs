@@ -273,9 +273,24 @@ class BaseService(ABC):
         parser.add_argument("config_file", type=str, help="Path to the config file")
         parser.add_argument("instance_context", type=str, help="Service instance context/ID")
         parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
+        parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
         args = parser.parse_args()
 
         service_type = cls._service_type
+
+        # Setup logging first - basic format for subprocess output
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[%(levelname)-5s] %(name)-12s: %(message)s'
+        )
+
+        # Print startup banner (unless suppressed)
+        if not args.no_banner:
+            logger = logging.getLogger("launch")
+            logger.info("=" * 60)
+            logger.info("TCS - Telescope Control Services")
+            logger.info(f"Standalone Service: {service_type}:{args.instance_context}")
+            logger.info("=" * 60)
 
         async def amain():
             """Async main function for service."""
@@ -312,12 +327,6 @@ class BaseService(ABC):
 
             await controller.shutdown()
             await process_ctx.shutdown()
-
-        # Setup logging - basic format for subprocess output
-        logging.basicConfig(
-            level=logging.INFO,
-            format='[%(levelname)-5s] %(name)-12s: %(message)s'
-        )
 
         # Run service
         try:

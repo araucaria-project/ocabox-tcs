@@ -111,6 +111,29 @@ class ConfigurationManager:
         # Sort by priority (highest first)
         self.sources.sort(key=lambda s: s.priority, reverse=True)
         self.logger.debug(f"Added config source with priority {source.priority}")
+
+    def log_sources(self):
+        """Log all configuration sources and their availability."""
+        if not self.sources:
+            self.logger.info("Configuration sources: none")
+            return
+
+        self.logger.info("Configuration sources (priority order, highest first):")
+        for source in self.sources:
+            source_name = type(source).__name__.replace("ConfigSource", "")
+            is_available = source.is_available()
+            status = "✓ available" if is_available else "✗ unavailable"
+
+            # Get source details
+            details = ""
+            if isinstance(source, FileConfigSource):
+                details = f" ({source.file_path})"
+            elif isinstance(source, NATSConfigSource):
+                details = f" ({source.subject})"
+            elif isinstance(source, ArgsConfigSource):
+                details = " (command-line args)"
+
+            self.logger.info(f"  [{source.priority:2d}] {source_name:15s} {status}{details}")
     
     def resolve_config(self, service_module: str | None = None, instance_id: str | None = None) -> dict[str, Any]:
         """Resolve configuration for a service from all sources.
