@@ -1,9 +1,10 @@
 """Status enums and utilities for monitoring system."""
 
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
 from typing import Any
+
+from serverish.base import dt_from_array, dt_utcnow_array
 
 
 class Status(Enum):
@@ -36,19 +37,25 @@ class StatusReport:
     name: str
     status: Status
     message: str | None = None
-    timestamp: datetime | None = None
+    timestamp: list[int] | None = None  # UTC timestamp in array format [Y, M, D, h, m, s, us]
     details: dict[str, Any] | None = None
-    
+
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.utcnow()
+            self.timestamp = dt_utcnow_array()
     
+    def get_timestamp_dt(self):
+        """Get timestamp as datetime object (for display/logging)."""
+        if self.timestamp is None:
+            return None
+        return dt_from_array(self.timestamp)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         result = {
             "name": self.name,
             "status": self.status.value,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "timestamp": self.timestamp,  # Already in array format
         }
         if self.message:
             result["message"] = self.message
@@ -63,7 +70,7 @@ class StatusReport:
             name=data["name"],
             status=Status(data["status"]),
             message=data.get("message"),
-            timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else None,
+            timestamp=data.get("timestamp"),  # Already in array format
             details=data.get("details")
         )
 

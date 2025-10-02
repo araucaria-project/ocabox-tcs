@@ -1,4 +1,4 @@
-from datetime import datetime
+from serverish.base import dt_utcnow_array
 
 from ocabox_tcs.monitoring import MonitoredObject, ReportingMonitoredObject
 
@@ -7,7 +7,7 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
     """MonitoredObject that sends reports to NATS via serverish.Messenger."""
 
     def __init__(self, name: str, messenger, parent: MonitoredObject | None = None,
-                 check_interval: float = 30.0, topic_prefix: str = "services"):
+                 check_interval: float = 30.0, topic_prefix: str = "svc"):
         super().__init__(name, parent, check_interval)
         self.messenger = messenger
         self.topic_prefix = topic_prefix
@@ -36,7 +36,7 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             message = {
                 "action": "register",
                 "name": self.name,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": dt_utcnow_array(),
                 "status": self.get_status().value
             }
             await self.messenger.publish(topic, message)
@@ -54,7 +54,7 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             message = {
                 "action": "shutdown",
                 "name": self.name,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": dt_utcnow_array()
             }
             await self.messenger.publish(topic, message)
             self.logger.info(f"Sent shutdown message to {topic}")
