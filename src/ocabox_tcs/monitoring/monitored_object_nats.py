@@ -8,14 +8,15 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
     """MonitoredObject that sends reports to NATS via serverish.Messenger.
 
     Conforms to NATS subject schema from nats.md:
-    - Status updates: <prefix>.status.<service_name>
+    - Status updates: <prefix>.status.<service_name> (on status change)
+    - Heartbeat: <prefix>.heartbeat.<service_name> (periodic, default 10s)
     - Registry events: <prefix>.registry.<event>.<service_name>
 
     Args:
         name: Service name (e.g., "guider.jk15")
         messenger: Serverish Messenger instance
         parent: Parent MonitoredObject (optional)
-        check_interval: Health check interval in seconds (default: 30.0)
+        check_interval: Heartbeat interval in seconds (default: 10.0)
         subject_prefix: NATS subject prefix (default: "svc")
             Can be configured for different installations (e.g., "ocm.svc")
     """
@@ -26,20 +27,38 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
         self.messenger = messenger
         self.subject_prefix = subject_prefix
 
-        # Publisher for repeated status messages
+        # Publisher for status changes (sent immediately on status change)
         self._status_publisher = None
+        # Publisher for periodic heartbeats (sent every check_interval)
+        self._heartbeat_publisher = None
+
         if messenger is not None:
             status_subject = f"{self.subject_prefix}.status.{self.name}"
             self._status_publisher = get_publisher(status_subject)
 
-    async def _send_report(self):
-        """Send status report to NATS.
+            heartbeat_subject = f"{self.subject_prefix}.heartbeat.{self.name}"
+            self._heartbeat_publisher = get_publisher(heartbeat_subject)
+
+    def _on_status_changed(self):
+        """Called when status changes - trigger immediate status send."""
+        # Use asyncio to schedule the async send (called from sync context)
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._send_status_report())
+        except RuntimeError:
+            # No event loop running - skip status send
+            pass
+
+    async def _send_status_report(self):
+        """Send status report to NATS (called when status changes).
 
         Subject: <prefix>.status.<service_name>
-        Uses MsgPublisher for repeated status updates.
+        Uses MsgPublisher for status updates.
         """
         if self._status_publisher is None:
-            self.logger.debug("Status publisher not set, cannot send report")
+            self.logger.debug("Status publisher not set, cannot send status report")
             return
         try:
             report = self.get_full_report()
@@ -47,6 +66,26 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             self.logger.debug(f"Sent STATUS report to {self._status_publisher.subject}")
         except Exception as e:
             self.logger.error(f"Failed to send STATUS report: {e}")
+
+    async def _send_heartbeat(self):
+        """Send heartbeat to NATS (periodic alive signal).
+
+        Subject: <prefix>.heartbeat.<service_name>
+        Uses MsgPublisher for periodic heartbeat messages.
+        """
+        if self._heartbeat_publisher is None:
+            self.logger.debug("Heartbeat publisher not set, cannot send heartbeat")
+            return
+        try:
+            data = {
+                "service_id": self.name,
+                "timestamp": dt_utcnow_array(),
+                "status": self.get_status().value  # Include current status in heartbeat
+            }
+            await self._heartbeat_publisher.publish(data=data)
+            self.logger.debug(f"Sent HEARTBEAT to {self._heartbeat_publisher.subject}")
+        except Exception as e:
+            self.logger.error(f"Failed to send HEARTBEAT: {e}")
 
     async def send_registration(self):
         """Send start event to NATS registry.

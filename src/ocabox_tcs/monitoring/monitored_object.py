@@ -25,12 +25,20 @@ class MonitoredObject:
             parent.add_submonitor(self)
     
     def set_status(self, status: Status, message: str | None = None):
-        """Set status directly."""
+        """Set status directly and trigger status change notification."""
+        old_status = self._status
         self._status = status
         self._message = message
         self.logger.debug(f"Status set to {status}: {message or ''}")
-        # TODO: Call on_new_status if new. by default notify parent, RaportingMonitoredObject should publish immediately after any monitor in the tree changes status.
+
+        # Notify if status changed
+        if old_status != status:
+            self._on_status_changed()
     
+    def _on_status_changed(self):
+        """Called when status changes. Override in subclasses to send status updates."""
+        pass
+
     def add_healthcheck_cb(self, callback: Callable[[], Status | None]):
         """Add healthcheck callback."""
         self._healthcheck_callbacks.append(callback)
@@ -115,12 +123,12 @@ class MonitoredObject:
 
 
 class ReportingMonitoredObject(MonitoredObject):
-    """MonitoredObject that actively checks status periodically."""
-    
-    def __init__(self, name: str, parent: MonitoredObject | None = None, 
-                 check_interval: float = 30.0):
+    """MonitoredObject that actively sends heartbeats and performs health checks."""
+
+    def __init__(self, name: str, parent: MonitoredObject | None = None,
+                 check_interval: float = 10.0):
         super().__init__(name, parent)
-        self.check_interval = check_interval
+        self.check_interval = check_interval  # Heartbeat interval (default 10s)
         self._check_task: asyncio.Task | None = None
         self._running = False
     
@@ -146,27 +154,31 @@ class ReportingMonitoredObject(MonitoredObject):
         self.logger.info("Stopped monitoring")
     
     async def _monitoring_loop(self):
-        """Main monitoring loop."""
+        """Main monitoring loop - performs healthchecks and sends heartbeats."""
         while self._running:
             try:
-                # Perform health check
+                # Perform health check - if status changed, it will auto-send via _on_status_changed()
                 status = self.healthcheck()
-                if status != self.get_status():  # TODO Rethink status management, maybe is OK.
+                if status != self.get_status():
                     self.set_status(status, "Updated from healthcheck")
-                
-                # Send report
-                await self._send_report()
-                
+
+                # Send heartbeat (periodic alive signal)
+                await self._send_heartbeat()
+
                 await asyncio.sleep(self.check_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self.logger.error(f"Monitoring loop error: {e}")
                 await asyncio.sleep(min(self.check_interval, 10.0))
-    
-    async def _send_report(self):
-        """Send status report. Override in subclasses."""
+
+    async def _send_heartbeat(self):
+        """Send heartbeat message. Override in subclasses for NATS publishing."""
+        self.logger.debug(f"Heartbeat from {self.name}")
+
+    async def _send_status_report(self):
+        """Send status report (called when status changes). Override in subclasses."""
         report = self.get_full_report()
-        self.logger.debug(f"Status report: {report.status} - {report.message or 'OK'}")
+        self.logger.debug(f"Status changed to {report.status} - {report.message or 'OK'}")
 
 

@@ -28,3 +28,9 @@ services:
     instance_context: monitoring
     interval: 2.0
     max_errors: 5
+
+  # 05_nonblocking - Non-blocking permanent service with background workers
+  - type: examples.05_nonblocking
+    instance_context: nonblocking
+    worker_count: 3
+    interval: 2.0

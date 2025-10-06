@@ -12,6 +12,7 @@ class Status(Enum):
     UNKNOWN = "unknown"
     STARTUP = "startup"
     OK = "ok"
+    DEGRADED = "degraded"
     WARNING = "warning"
     ERROR = "error"
     SHUTDOWN = "shutdown"
@@ -19,16 +20,16 @@ class Status(Enum):
 
     def __str__(self) -> str:
         return self.value
-    
+
     @property
     def is_healthy(self) -> bool:
         """Check if status indicates healthy state."""
-        return self in (Status.OK, Status.WARNING)
-    
+        return self in (Status.OK, Status.DEGRADED, Status.WARNING)
+
     @property
     def is_operational(self) -> bool:
         """Check if status indicates service is operational."""
-        return self in (Status.STARTUP, Status.OK, Status.WARNING)
+        return self in (Status.STARTUP, Status.OK, Status.DEGRADED, Status.WARNING)
 
 
 @dataclass
@@ -79,32 +80,36 @@ def aggregate_status(reports: list[StatusReport]) -> Status:
     """Aggregate multiple status reports into single status."""
     if not reports:
         return Status.UNKNOWN
-    
+
     statuses = [report.status for report in reports]
-    
+
     # If any failed, overall is failed
     if Status.FAILED in statuses:
         return Status.FAILED
-    
+
     # If any error, overall is error
     if Status.ERROR in statuses:
         return Status.ERROR
-    
+
     # If any warning, overall is warning
     if Status.WARNING in statuses:
         return Status.WARNING
-    
+
+    # If any degraded, overall is degraded
+    if Status.DEGRADED in statuses:
+        return Status.DEGRADED
+
     # If any starting up, overall is startup
     if Status.STARTUP in statuses:
         return Status.STARTUP
-    
+
     # If any shutting down, overall is shutdown
     if Status.SHUTDOWN in statuses:
         return Status.SHUTDOWN
-    
+
     # If all OK, overall is OK
     if all(s == Status.OK for s in statuses):
         return Status.OK
-    
+
     # Mixed states, default to warning
     return Status.WARNING

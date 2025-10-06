@@ -171,18 +171,21 @@ class ServiceController:
             # Try to ensure messenger is available
             if not self.process.messenger:
                 self.logger.warning("No NATS messenger configured, cannot initialize monitoring publication")
-            
-            # Create monitor
+
+            # Create monitor (check_interval is heartbeat interval, default 10s)
             self.monitor = MessengerMonitoredObject(
                 name=self.service_id,
                 messenger=self.process.messenger,
-                check_interval=30.0
+                check_interval=10.0
             )
-            
+
+            # Set initial status BEFORE starting monitoring (to avoid initial "unknown" report)
+            self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
+
             # Start monitoring
             await self.monitor.start_monitoring()
             await self.monitor.send_registration()
-            
+
             self.logger.debug("Monitoring initialized with NATS")
         except Exception as e:
             # Fall back to basic monitoring without NATS
@@ -190,8 +193,10 @@ class ServiceController:
             from ..monitoring import ReportingMonitoredObject
             self.monitor = ReportingMonitoredObject(
                 name=self.service_id,
-                check_interval=30.0
+                check_interval=10.0
             )
+            # Set initial status BEFORE starting monitoring
+            self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
             await self.monitor.start_monitoring()
             self.logger.debug("Monitoring initialized without NATS")
     
