@@ -97,13 +97,23 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             self.logger.warning("Messenger not set, cannot send registration")
             return
         try:
+            import socket
+            import os
+
             subject = f"{self.subject_prefix}.registry.start.{self.name}"
             data = {
                 "event": "start",
                 "service_id": self.name,
                 "timestamp": dt_utcnow_array(),
-                "status": self.get_status().value
+                "status": self.get_status().value,
+                "hostname": socket.gethostname(),
+                "pid": os.getpid()
             }
+
+            # Add runner_id if available (set by ServiceController)
+            if hasattr(self, 'runner_id') and self.runner_id:
+                data["runner_id"] = self.runner_id
+
             await single_publish(subject, data)
             self.logger.info(f"Sent START message to {subject}")
         except Exception as e:

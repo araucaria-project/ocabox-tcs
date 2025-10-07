@@ -15,14 +15,32 @@ Collection of automation services for OCM telescopes.
 
 ### Installation Steps
 
+#### For Library Use Only
+
+```bash
+pip install ocabox-tcs
+```
+
+This installs the core framework without CLI tools (minimal dependencies).
+
+#### For Library + CLI Tools
+
+```bash
+pip install ocabox-tcs[cli]
+```
+
+This includes the `tcsctl` command-line tool for service monitoring.
+
+#### For Development
+
 1. Clone the repository:
 ```bash
 cd ~/src
 git clone https://github.com/araucaria-project/ocabox-tcs.git
-cd ocabox-tas
+cd ocabox-tcs
 ```
 
-2. Install dependencies:
+2. Install dependencies (includes CLI tools automatically):
 ```bash
 poetry install
 ```
@@ -57,9 +75,30 @@ sudo systemctl enable ocabox-services-launcher
 sudo systemctl start ocabox-services-launcher
 ```
 
-### Service Control
+### Service Control and Monitoring
 
-Services can be controlled either through `oca` CLI:
+**Monitor services with `tcsctl`:**
+```bash
+# List running services
+tcsctl
+
+# Show all services including stopped
+tcsctl --all
+
+# Detailed view with metadata
+tcsctl --detailed
+
+# Filter specific service
+tcsctl hello_world
+
+# Show collection statistics
+tcsctl --verbose
+
+# Show legend
+tcsctl --legend
+```
+
+**Control via `oca` CLI:**
 ```bash
 # Start plan runner for ZB08
 oca tas start plan_runner zb08
@@ -68,7 +107,7 @@ oca tas start plan_runner zb08
 oca tas status
 ```
 
-Or directly through systemctl:
+**Or directly through systemctl:**
 ```bash
 systemctl start ocabox-service@plan_runner-zb08.service
 systemctl status ocabox-service@plan_runner-zb08.service
@@ -115,26 +154,37 @@ ocabox-tcs/
 │   ├── ocabox-services-launcher.service
 │   └── ocabox-service@.service
 └── src/
-    └── ocabox_tcs/
+    ├── ocabox_tcs/             # Core service framework
+    │   ├── __init__.py
+    │   ├── base_service.py
+    │   ├── launchers/
+    │   │   ├── process.py      # Process launcher
+    │   │   ├── asyncio.py      # Asyncio launcher
+    │   │   └── base_launcher.py
+    │   ├── services/
+    │   │   ├── __init__.py
+    │   │   ├── hello_world.py
+    │   │   └── examples/       # Tutorial examples
+    │   │       ├── 01_minimal.py
+    │   │       ├── 02_basic.py
+    │   │       ├── 03_logging.py
+    │   │       ├── 04_monitoring.py
+    │   │       └── README.md   # ← Start here!
+    │   ├── management/
+    │   │   ├── process_context.py
+    │   │   ├── service_controller.py
+    │   │   └── configuration.py
+    │   └── monitoring/
+    │       ├── status.py
+    │       ├── monitored_object.py
+    │       └── monitored_object_nats.py
+    └── tcsctl/                 # CLI tool (optional)
         ├── __init__.py
-        ├── base_service.py
-        ├── launchers/
-        │   ├── process.py          # Process launcher
-        │   ├── asyncio.py          # Asyncio launcher
-        │   └── base_launcher.py
-        ├── services/
-        │   ├── __init__.py
-        │   ├── hello_world.py
-        │   └── examples/           # Tutorial examples
-        │       ├── 01_minimal.py
-        │       ├── 02_basic.py
-        │       ├── 03_logging.py
-        │       ├── 04_monitoring.py
-        │       └── README.md       # ← Start here!
-        └── management/
-            ├── process_context.py
-            ├── service_controller.py
-            └── configuration.py
+        ├── app.py              # Main entry point
+        ├── collector.py        # NATS data collection
+        ├── display.py          # Rich terminal output
+        └── commands/
+            └── list.py         # List command
 ```
 
 ## Architecture

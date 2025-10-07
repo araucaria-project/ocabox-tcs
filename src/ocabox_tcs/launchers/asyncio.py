@@ -38,7 +38,8 @@ class AsyncioRunner(BaseRunner):
 
             self.controller = ServiceController(
                 module_name=module_name,
-                instance_id=instance_id
+                instance_id=instance_id,
+                runner_id=self.config.runner_id
             )
 
             # ProcessContext already initialized - just initialize controller

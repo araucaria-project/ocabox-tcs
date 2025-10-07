@@ -51,6 +51,10 @@ class ProcessRunner(BaseRunner):
 
             args.append(self.config.instance_context or "main")
 
+            # Add runner_id if available
+            if self.config.runner_id:
+                args.extend(["--runner-id", self.config.runner_id])
+
             # Suppress banner in subprocesses (launcher already showed one)
             args.append("--no-banner")
 

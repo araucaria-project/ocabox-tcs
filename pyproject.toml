@@ -1,27 +1,41 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "0.3.2"
+version = "0.3.3"
 description = "Telescope Control Services for OCABOX Astronomilacl Observatory Server"
 authors = ["Mikolaj et.al.", "Claude Code <noreply@anthropic.com>"]
 readme = "README.md"
-packages = [{include = "ocabox_tcs", from = "src"}]
+packages = [
+    {include = "ocabox_tcs", from = "src"},
+    {include = "tcsctl", from = "src"}
+]
 repository = "https://github.com/araucaria-project/ocabox-tcs"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-serverish = {version = "^1.1.1", extras = ["messenger"]}  # for NATS
+serverish = {version = "^1.4.3", extras = ["messenger"]}  # for NATS
 ocabox = {git = "https://github.com/araucaria-project/ocabox.git"}
+# CLI dependencies are optional (install with: pip install ocabox-tcs[cli])
+typer = {version = "^0.19.2", optional = true}  # CLI framework
+rich = {version = "^13.0.0", optional = true}  # For colorful terminal output
+textual = {version = "^0.40.0", optional = true}  # For future monitor mode
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 pytest-asyncio = "^0.21.0"
 black = "^23.0.0"
 ruff = "^0.13.2"
+# CLI dependencies for development
+typer = "^0.19.2"
+rich = "^13.0.0"
 
 [tool.poetry.scripts]
 tcs_launcher = "ocabox_tcs.launcher:main"
 tcs_process = "ocabox_tcs.launchers.process:main"
 tcs_asyncio = "ocabox_tcs.launchers.asyncio:main"
+tcsctl = "tcsctl.app:main"
+
+[tool.poetry.extras]
+cli = ["typer", "rich", "textual"]  # CLI tools (tcsctl command)
 
 [build-system]
 requires = ["poetry-core"]

@@ -179,6 +179,10 @@ class ServiceController:
                 check_interval=10.0
             )
 
+            # Pass runner_id to monitor so it can include it in registry messages
+            if self.runner_id:
+                self.monitor.runner_id = self.runner_id
+
             # Set initial status BEFORE starting monitoring (to avoid initial "unknown" report)
             self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
 
