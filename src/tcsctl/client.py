@@ -322,9 +322,10 @@ class ServiceControlClient:
             elapsed = time.time() - start_time
             logger.debug(f"read_heartbeats: {msg_count} messages in {elapsed:.3f}s")
 
-        # Run all three reads in parallel for faster collection
+        # Read registry first to populate service entries, then read status/heartbeats in parallel
+        # This ensures services dict is populated before status and heartbeats try to update it
+        await read_registry()
         await asyncio.gather(
-            read_registry(),
             read_status(),
             read_heartbeats()
         )
