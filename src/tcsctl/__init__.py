@@ -1,3 +1,8 @@
-"""tcsctl - Command-line interface for TCS services."""
+"""tcsctl - Command-line interface and monitoring client for TCS services."""
 
-__version__ = "0.3.2"
+from tcsctl.client import ServiceControlClient
+from tcsctl.collector import ServiceInfo
+
+__version__ = "0.3.3"
+
+__all__ = ["ServiceControlClient", "ServiceInfo"]

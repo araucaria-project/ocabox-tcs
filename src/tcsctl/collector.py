@@ -99,14 +99,18 @@ async def collect_services_info(host: str = 'localhost', port: int = 4222,
         # This finishes immediately when all existing messages are consumed
 
         async def read_registry():
-            """Read all service lifecycle events."""
+            """Read service lifecycle events (last per service).
+
+            Uses last_per_subject to get only the most recent start/stop event
+            for each service. This is much faster than reading entire history.
+            """
             start_time = time.time()
             msg_count = 0
 
             registry_reader = MsgReader(
                 subject=f"{subject_prefix}.registry.>",
                 parent=messenger,
-                deliver_policy="all",
+                deliver_policy="last_per_subject",  # Only get latest per subject
                 nowait=True,
             )
             async with registry_reader:
@@ -149,16 +153,18 @@ async def collect_services_info(host: str = 'localhost', port: int = 4222,
             logger.info(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
 
         async def read_status():
-            """Read status updates from last 24h."""
+            """Read latest status update for each service.
+
+            Uses last_per_subject to get only the most recent status message
+            for each service. Much faster than reading 24h of history.
+            """
             start_time = time.time()
             msg_count = 0
 
-            since_time = datetime.now(timezone.utc) - timedelta(hours=24)
             status_reader = MsgReader(
                 subject=f'{subject_prefix}.status.>',
                 parent=messenger,
-                deliver_policy='by_start_time',
-                opt_start_time=since_time,
+                deliver_policy='last_per_subject',  # Only get latest per service
                 nowait=True
             )
             async with status_reader:
@@ -184,16 +190,18 @@ async def collect_services_info(host: str = 'localhost', port: int = 4222,
             logger.info(f"read_status: {msg_count} messages in {elapsed:.3f}s")
 
         async def read_heartbeats():
-            """Read heartbeats from last 10 minutes."""
+            """Read latest heartbeat for each service.
+
+            Uses last_per_subject to get only the most recent heartbeat
+            for each service. Much faster than reading 10min window.
+            """
             start_time = time.time()
             msg_count = 0
 
-            since_time = datetime.now(timezone.utc) - timedelta(minutes=10)
             heartbeat_reader = MsgReader(
                 subject=f"{subject_prefix}.heartbeat.>",
                 parent=messenger,
-                deliver_policy="by_start_time",
-                opt_start_time=since_time,
+                deliver_policy="last_per_subject",  # Only get latest per service
                 nowait=True,
             )
             async with heartbeat_reader:
@@ -214,9 +222,10 @@ async def collect_services_info(host: str = 'localhost', port: int = 4222,
             elapsed = time.time() - start_time
             logger.info(f"read_heartbeats: {msg_count} messages in {elapsed:.3f}s")
 
-        # Run all three reads in parallel for faster collection
+        # Read registry first to populate service entries, then read status/heartbeats in parallel
+        # This ensures services dict is populated before status and heartbeats try to update it
+        await read_registry()
         await asyncio.gather(
-            read_registry(),
             read_status(),
             read_heartbeats()
         )

@@ -5,9 +5,31 @@ import logging
 from typing import Annotated
 
 import typer
+from serverish.messenger import Messenger
 
-from tcsctl.collector import collect_services_info
+from tcsctl.client import ServiceControlClient
 from tcsctl.display import display_services_table, display_services_detailed, display_legend
+
+
+async def _list_services_async(
+    all: bool = False,
+    detailed: bool = False,
+    service: str | None = None,
+    host: str = "localhost",
+    port: int = 4222,
+    subject_prefix: str = "svc"
+):
+    """Async implementation of list_services."""
+    messenger = Messenger()
+    async with messenger.context(host=host, port=port):
+        client = ServiceControlClient(messenger, subject_prefix=subject_prefix)
+        services = await client.list_services(include_stopped=all)
+
+    # Display results
+    if detailed:
+        display_services_detailed(services, show_all=all, service_filter=service)
+    else:
+        display_services_table(services, show_all=all, service_filter=service)
 
 
 def list_services(
@@ -29,21 +51,15 @@ def list_services(
     else:
         logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
 
-    # Collect data from NATS
+    # Collect data from NATS using ServiceControlClient
     try:
-        services = asyncio.run(
-            collect_services_info(host=host, port=port, subject_prefix=subject_prefix)
-        )
+        asyncio.run(_list_services_async(
+            all=all, detailed=detailed, service=service,
+            host=host, port=port, subject_prefix=subject_prefix
+        ))
     except Exception as e:
         typer.secho(f"Error connecting to NATS: {e}", fg=typer.colors.RED, err=True)
         raise
-        # raise typer.Exit(1)
-
-    # Display results
-    if detailed:
-        display_services_detailed(services, show_all=all, service_filter=service)
-    else:
-        display_services_table(services, show_all=all, service_filter=service)
 
 
 def list_services_cmd(
