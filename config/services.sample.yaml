@@ -1,0 +1,25 @@
+# Sample configuration for ocabox-tcs services
+# Copy this file to services.yaml and customize for your deployment
+
+nats:
+  host: localhost
+  port: 4222
+  required: true  # Block startup until NATS is available
+  # required: false  # For development: continue without NATS
+
+services:
+  # Hello World - canonical example service
+  - type: hello_world
+    instance_context: main
+    interval: 5
+    message: "Hello World!"
+    log_level: INFO
+
+  # Uncomment to run multiple instances
+  # - type: hello_world
+  #   instance_context: dev
+  #   interval: 3
+  #   message: "Dev instance"
+
+# For tutorial examples, see config/examples.yaml
+# To learn the framework, see src/ocabox_tcs/services/examples/README.md

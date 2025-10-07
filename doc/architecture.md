@@ -4,14 +4,17 @@
 
 This architecture provides a clean, non-redundant framework supporting the complete implementation matrix with proper separation of concerns between service processes and launcher processes.
 
+**See also:** [Initialization Flow Diagrams](initialization-flow.md) for detailed visualization of all three execution scenarios.
+
 ## Core Design Principles
 
-1. **Execution Independence**: One service works everywhere (manual/process/asyncio/systemd/containers)
+1. **Execution Independence**: One service works everywhere (manual/process/asyncio, with support for additional launchers)
 2. **Minimal Service Implementation**: `HelloWorld` service requires minimum code
 3. **Clear Separation**: Service process concerns vs launcher process concerns
-4. **Unified Monitoring**: Hierarchical status reporting via NATS
-5. **Flexible Configuration**: Multiple config sources with clear precedence
-6. **Decorator-Based**: Modern Python decorators for clean service registration
+4. **Unified Initialization**: `ProcessContext.initialize()` - one clear entry point
+5. **Unified Monitoring**: Hierarchical status reporting via NATS
+6. **Flexible Configuration**: Multiple config sources with clear precedence
+7. **Decorator-Based**: Modern Python decorators for clean service registration
 
 ## Core Classes and Responsibilities
 
@@ -48,19 +51,29 @@ This architecture provides a clean, non-redundant framework supporting the compl
   - Specialized subclasses handle different execution methods
 - **Instance Count**: One per service (may be different process than service)
 - **Process**: Launcher process
-- **Note**: For manually started services, ServiceRunner does not exist initially. Future extension could add DefaultServiceRunner if needed.
+- **Note**: For manually started services, ServiceRunner does not exist
 
 ### ServicesLauncher
 - **Functionality**: Manages collection of ServiceRunners from config
 - **Lifetime**: Persistent launcher process
 - **Responsibilities**: Maintains launching system
-- **Specialized Subclasses**: ProcessLauncher, AsyncioLauncher, SystemdLauncher
+- **Specialized Subclasses**: ProcessLauncher, AsyncioLauncher
 
-### ServicesProcess  
-- **Functionality**: Singleton containing common functionality for all ServiceControllers in process
+### ProcessContext
+- **Functionality**: Singleton context for all services in a process
 - **Lifetime**: Process lifetime
-- **Instance Count**: One per service process
-- **Responsibilities**: Shared resources, NATS connections, process-wide coordination
+- **Instance Count**: One per OS process (singleton)
+- **Initialization**: `ProcessContext.initialize(config_file, args_config)` - dispatcher pattern
+- **Responsibilities**:
+  - Configuration management (file → NATS bootstrap)
+  - NATS Messenger (singleton, shared)
+  - Service registry (controllers in this process)
+  - Two-phase config bootstrap (file/args → NATS)
+- **Key Methods**:
+  - `initialize()` - Main initialization dispatcher
+  - `_init_config_manager()` - Phase 1: File + args config
+  - `_init_messenger()` - Phase 2: NATS connection
+  - `_add_nats_config_source()` - Phase 3: NATS config source
 
 ### MonitoredObject Hierarchy
 ```
@@ -97,13 +110,10 @@ class HelloWorldService(BasePermanentService):
 ```
 
 ### Discovery Priority
-1. **Decorator registry** (highest priority)
-2. **Legacy exports** (`service_class`, `config_class` variables)  
+1. **Decorator registry** (primary method)
+2. **Module exports** (`service_class`, `config_class` variables if present)
 3. **Convention-based** (class name patterns)
 4. **Default fallback** (BaseServiceConfig if no config found)
-
-### Legacy Support
-Existing services with `service_class` and `config_class` exports continue working unchanged.
 
 ## Monitoring Integration Example
 
@@ -138,8 +148,8 @@ class MyService(BaseService):
    - Signal shutdown
    - RPC commands via serverish (health-check, stats)
 
-2. **ServiceController**: 
-   - Future: RPC controlling commands for service-specific functionality
+2. **ServiceController**:
+   - RPC controlling commands for service-specific functionality (planned)
 
 3. **ServiceLauncher**:
    - Publishes "declared" services (including non-running ones)
@@ -173,8 +183,7 @@ launchers:
 ### Runner ID Passing
 - ServiceRunner constructs ID: `launcher_id.runner_id`
 - ID passed to service as optional parameter
-- ServiceController stores runner ID for future use
-- **Note**: No DefaultServiceRunner implementation yet - reserved for future extension
+- ServiceController stores runner ID for reference
 
 ## Service Base Classes
 
@@ -197,7 +206,6 @@ BaseService (abstract)
 | Permanent | Local | Manual | File | ✓ | ✗ |
 | Blocking | Local | Process | File | ✓ | ProcessRunner |
 | SingleShot | Local | Asyncio | File | ✓ | AsyncioRunner |
-| Any | Local | Systemd | File | ✓ | SystemdRunner |
 | Any | External | Any | Any | ✓ | Any |
 | Any | Any | Any | NATS | ✓ | Any |
 
@@ -206,31 +214,27 @@ BaseService (abstract)
 ```
 src/ocabox_tcs/
 ├── base_service.py           # BaseService, BaseServiceConfig, decorators
-├── launchers/                # ServiceLauncher + ServiceRunner classes  
+├── launchers/                # ServiceLauncher + ServiceRunner classes
 │   ├── base_launcher.py      # Abstract launcher classes
-│   ├── process_launcher.py   # Process-based launcher & runner
-│   ├── asyncio_launcher.py   # Asyncio-based launcher & runner
-│   └── systemd_launcher.py   # Systemd-based launcher & runner
+│   ├── process.py            # Process-based launcher & runner
+│   └── asyncio.py            # Asyncio-based launcher & runner
 ├── management/               # Service process components
 │   ├── service_controller.py # ServiceController
-│   ├── services_process.py   # ServicesProcess singleton
+│   ├── process_context.py    # ProcessContext singleton (process-wide initialization)
 │   └── configuration.py      # Configuration management
 ├── monitoring/               # Monitoring framework
-│   ├── monitored_object.py   # MonitoredObject hierarchy
-│   └── status.py            # Status enums and utilities
+│   ├── monitored_object.py      # MonitoredObject hierarchy
+│   ├── monitored_object_nats.py # NATS-enabled monitoring
+│   └── status.py                # Status enums and utilities
 └── services/                 # Built-in services
-    ├── hello_world.py        # Minimal example
-    ├── dumb_permanent.py     # Current example
+    ├── hello_world.py        # Canonical template service
+    ├── examples/             # Tutorial examples
+    │   ├── 01_minimal.py     # Simplest service
+    │   ├── 02_basic.py       # With configuration
+    │   ├── 03_logging.py     # Logging best practices
+    │   ├── 04_monitoring.py  # Monitoring & health checks
+    │   └── README.md         # Getting Started guide
     └── ...
 ```
-
-## Migration Path
-
-1. **Phase 1**: Implement MonitoredObject hierarchy and ServiceController
-2. **Phase 2**: Add decorator-based discovery with legacy support
-3. **Phase 3**: Create launcher/runner separation (keep existing dev_launcher compatibility)
-4. **Phase 4**: Add NATS monitoring integration
-5. **Phase 5**: Migrate existing services to new pattern
-6. **Phase 6**: Add additional launcher types (systemd, containers)
 
 This architecture provides clean separation of concerns while maintaining simplicity for service implementers and supporting all execution scenarios.
