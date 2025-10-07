@@ -13,6 +13,7 @@ class NatsConn:
     def __init__(self, manager = None):
         self.manager = manager
         self.messenger: Optional[Messenger] = None
+        self.messenger_self_managed = False
         self.connected: bool = False
         super().__init__()
 
@@ -26,6 +27,7 @@ class NatsConn:
             await self.messenger.open(host=host, port=port)
             self.manager.logger.info(f'Nats connected to {host}:{port}')
             self.connected = True
+            self.messenger_self_managed = True
         else:
             self.manager.logger.info(f'Nats already connected')
             self.connected = True
@@ -96,7 +98,7 @@ class NatsConn:
         self.manager.logger.info(f'Rpc responder for {subject} started')
 
     async def close(self) -> None:
-        if self.connected:
+        if self.connected and self.messenger_self_managed:
             await self.messenger.close()
             self.connected = False
             self.manager.logger.info(f'Nats disconnected.')
