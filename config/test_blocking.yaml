@@ -1,6 +1,0 @@
-services:
-  - type: test_blocking
-    instance_context: blocking_test
-    interval: 1
-    max_iterations: 3
-    log_level: INFO
