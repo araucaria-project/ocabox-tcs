@@ -15,17 +15,21 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
     Args:
         name: Service name (e.g., "guider.jk15")
         messenger: Serverish Messenger instance
-        parent: Parent MonitoredObject (optional)
+        parent: Parent MonitoredObject (optional, for internal hierarchy)
         check_interval: Heartbeat interval in seconds (default: 10.0)
         subject_prefix: NATS subject prefix (default: "svc")
             Can be configured for different installations (e.g., "ocm.svc")
+        parent_name: Optional parent name for grouping in displays (default: None)
+            Used by monitoring tools to group entities hierarchically
     """
 
     def __init__(self, name: str, messenger, parent: MonitoredObject | None = None,
-                 check_interval: float = 10.0, subject_prefix: str = "svc"):
+                 check_interval: float = 10.0, subject_prefix: str = "svc",
+                 parent_name: str | None = None):
         super().__init__(name, parent, check_interval)
         self.messenger = messenger
         self.subject_prefix = subject_prefix
+        self.parent_name = parent_name  # For display grouping (e.g., launcher name)
 
         # Publisher for status changes (sent immediately on status change)
         self._status_publisher = None
@@ -62,7 +66,11 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             return
         try:
             report = self.get_full_report()
-            await self._status_publisher.publish(data=report.to_dict())
+            data = report.to_dict()
+            # Add parent_name if set (for display grouping)
+            if self.parent_name:
+                data["parent"] = self.parent_name
+            await self._status_publisher.publish(data=data)
             self.logger.debug(f"Sent STATUS report to {self._status_publisher.subject}")
         except Exception as e:
             self.logger.error(f"Failed to send STATUS report: {e}")
@@ -113,6 +121,10 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             # Add runner_id if available (set by ServiceController)
             if hasattr(self, 'runner_id') and self.runner_id:
                 data["runner_id"] = self.runner_id
+
+            # Add parent_name if set (for display grouping)
+            if self.parent_name:
+                data["parent"] = self.parent_name
 
             await single_publish(subject, data)
             self.logger.info(f"Sent START message to {subject}")

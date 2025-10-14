@@ -40,6 +40,7 @@ class StatusReport:
     message: str | None = None
     timestamp: list[int] | None = None  # UTC timestamp in array format [Y, M, D, h, m, s, us]
     details: dict[str, Any] | None = None
+    parent: str | None = None  # Optional parent name for hierarchical grouping
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -62,6 +63,8 @@ class StatusReport:
             result["message"] = self.message
         if self.details:
             result["details"] = self.details
+        if self.parent:
+            result["parent"] = self.parent
         return result
     
     @classmethod
@@ -72,7 +75,8 @@ class StatusReport:
             status=Status(data["status"]),
             message=data.get("message"),
             timestamp=data.get("timestamp"),  # Already in array format
-            details=data.get("details")
+            details=data.get("details"),
+            parent=data.get("parent")
         )
 
 

@@ -110,7 +110,15 @@ class AsyncioRunner(BaseRunner):
 class AsyncioLauncher(BaseLauncher):
     """Launcher that manages services within the same process using asyncio."""
 
-    def __init__(self, launcher_id: str = "asyncio-launcher"):
+    def __init__(self, launcher_id: str | None = None):
+        # Generate unique launcher ID: launcher-type.hostname.random-suffix
+        if launcher_id is None:
+            import socket
+            from serverish.base.idmanger import gen_uid
+            hostname_short = socket.gethostname().split('.')[0]
+            unique_suffix = gen_uid("asyncio-launcher").split("asyncio-launcher", 1)[1]
+            launcher_id = f"asyncio-launcher.{hostname_short}{unique_suffix}"
+
         super().__init__(launcher_id)
         self._shutdown_event = asyncio.Event()
         self.process_ctx: ProcessContext | None = None
@@ -130,6 +138,12 @@ class AsyncioLauncher(BaseLauncher):
             # Store ProcessContext reference (shared by all services)
             self.process_ctx = process_ctx
             self.logger.info("Using ProcessContext for asyncio launcher")
+
+            # Initialize launcher monitoring
+            if process_ctx.messenger:
+                await self.initialize_monitoring(process_ctx.messenger, subject_prefix="svc")
+            else:
+                self.logger.warning("No messenger available, launcher monitoring disabled")
 
             # Get services list from config_manager (use raw config to include 'services' key)
             raw_config = process_ctx.config_manager.get_raw_config()
@@ -165,6 +179,11 @@ class AsyncioLauncher(BaseLauncher):
             if not await runner.start():
                 self.logger.error(f"Failed to start {service_id}")
                 success = False
+
+        # Start launcher monitoring after services are started
+        if success:
+            await self.start_monitoring()
+
         return success
 
     async def stop_all(self) -> bool:
@@ -193,6 +212,9 @@ class AsyncioLauncher(BaseLauncher):
 
     async def _shutdown(self):
         """Shutdown all services and process context."""
+        # Stop launcher monitoring first
+        await self.stop_monitoring()
+
         self.logger.info("Stopping all services...")
         await self.stop_all()
 

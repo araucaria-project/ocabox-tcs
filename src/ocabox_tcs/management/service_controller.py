@@ -172,11 +172,33 @@ class ServiceController:
             if not self.process.messenger:
                 self.logger.warning("No NATS messenger configured, cannot initialize monitoring publication")
 
+            # Determine parent name from runner_id (for hierarchical display)
+            # runner_id format: "{launcher-id}.{service-type}" → parent: "launcher.{launcher-id}"
+            # Note: Both launcher-id and service-type may contain dots
+            # (e.g., "asyncio-launcher.majkmacc0h2L4D6Qc.examples.01_minimal")
+            # So we need to extract service-type from module_name and strip it from runner_id
+            parent_name = None
+            if self.runner_id and '.' in self.runner_id:
+                # Extract service type from module_name (same logic as _discover_classes)
+                module_parts = self.module_name.split('.')
+                if 'services' in module_parts:
+                    services_idx = module_parts.index('services')
+                    service_type_with_path = '.'.join(module_parts[services_idx + 1:])
+                else:
+                    service_type_with_path = module_parts[-1]
+
+                # Strip service type from end of runner_id to get launcher_id
+                if self.runner_id.endswith(f".{service_type_with_path}"):
+                    launcher_id = self.runner_id[:-len(f".{service_type_with_path}")]
+                    parent_name = f"launcher.{launcher_id}"
+                    self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
+
             # Create monitor (check_interval is heartbeat interval, default 10s)
             self.monitor = MessengerMonitoredObject(
                 name=self.service_id,
                 messenger=self.process.messenger,
-                check_interval=10.0
+                check_interval=10.0,
+                parent_name=parent_name  # For hierarchical grouping in displays
             )
 
             # Pass runner_id to monitor so it can include it in registry messages

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from rich.console import Console
 from rich.text import Text
 
-from tcsctl.collector import ServiceInfo
+from tcsctl.client import ServiceInfo
 from ocabox_tcs.monitoring import Status
 
 
@@ -160,7 +160,9 @@ def _format_timestamp(dt: datetime | None) -> tuple[str, str]:
 
 
 def display_services_detailed(services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None):
-    """Display services in detailed multi-line format.
+    """Display services in detailed multi-line format with hierarchical grouping.
+
+    Services with a parent are grouped under their parent.
 
     Args:
         services: List of ServiceInfo objects
@@ -184,13 +186,22 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
             console.print("No services found", style="dim")
         return
 
-    # Sort services by name
-    services = sorted(services, key=lambda s: s.service_id)
+    # Group services by parent for hierarchical display
+    parent_to_children: dict[str | None, list[ServiceInfo]] = {}
+    for service in services:
+        parent = service.parent
+        if parent not in parent_to_children:
+            parent_to_children[parent] = []
+        parent_to_children[parent].append(service)
+
+    # Sort children within each group
+    for children in parent_to_children.values():
+        children.sort(key=lambda s: s.service_id)
 
     console.print()
 
-    # Print each service in detailed format
-    for i, service in enumerate(services):
+    # Helper to print a single service in detailed format
+    def print_service_detailed(service: ServiceInfo, show_separator: bool = True):
         # Status symbol and service name (same logic as normal view)
         if not service.is_running:
             status_symbol = "○"
@@ -221,14 +232,15 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
         main_line.append(name_text)
         main_line.append(f" [{service.status.value}]", style=status_color)
 
-        # Heartbeat indicator (only for running services)
+        # Heartbeat indicator (only for alive/stale heartbeats)
+        # Don't show heart for dead/missing heartbeats - status symbol already indicates problem
         if service.is_running:
             hb_status = service.heartbeat_status
-            if hb_status in HEARTBEAT_COLORS:
-                hb_color = HEARTBEAT_COLORS[hb_status]
-                main_line.append(" (♥)", style=hb_color)
-            elif hb_status == "none":
-                main_line.append(" ( )", style="dim")
+            if hb_status == "alive":
+                main_line.append(" (♥)", style="green")
+            elif hb_status == "stale":
+                main_line.append(" (♥)", style="yellow")
+            # For "dead" and "none": don't show heart symbol at all
 
         console.print(main_line)
 
@@ -319,9 +331,27 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
             detail.append(service.status_message, style="")
             console.print(detail)
 
-        # Add blank line between services (except after last one)
-        if i < len(services) - 1:
+        # Add blank line after service
+        if show_separator:
             console.print()
+
+    # Display services hierarchically
+    # First, display entities without parents (top-level)
+    if None in parent_to_children:
+        for service in parent_to_children[None]:
+            print_service_detailed(service, show_separator=True)
+            # If this service is a parent, display its children
+            if service.service_id in parent_to_children:
+                for child in parent_to_children[service.service_id]:
+                    print_service_detailed(child, show_separator=True)
+
+    # Then, display orphaned children (parent exists but not in current list)
+    all_parent_ids = {s.service_id for s in services}
+    for parent_name, children in parent_to_children.items():
+        if parent_name is not None and parent_name not in all_parent_ids:
+            # Parent not in list, show children without parent header
+            for child in children:
+                print_service_detailed(child, show_separator=True)
 
     # Summary
     console.print()
@@ -340,7 +370,9 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
 
 
 def display_services_table(services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None):
-    """Display services in systemctl-like format.
+    """Display services in systemctl-like format with hierarchical grouping.
+
+    Services with a parent are grouped and indented under their parent.
 
     Args:
         services: List of ServiceInfo objects
@@ -364,21 +396,30 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
             console.print("No services found", style="dim")
         return
 
-    # Sort services by name
-    services = sorted(services, key=lambda s: s.service_id)
+    # Group services by parent for hierarchical display
+    parent_to_children: dict[str | None, list[ServiceInfo]] = {}
+    for service in services:
+        parent = service.parent
+        if parent not in parent_to_children:
+            parent_to_children[parent] = []
+        parent_to_children[parent].append(service)
+
+    # Sort children within each group
+    for children in parent_to_children.values():
+        children.sort(key=lambda s: s.service_id)
 
     # Print header
     console.print()
 
-    # Print each service
-    for service in services:
+    # Helper to print a single service
+    def print_service(service: ServiceInfo, indent: str = ""):
+        """Print a single service line with optional indentation."""
         # For stopped services, use empty circle in dim color
         if not service.is_running:
             status_symbol = "○"
             status_color = "dim"
         else:
-            # OPTION A: Heartbeat-first priority for running services
-            # Heartbeat health overrides status for visual indicator
+            # Heartbeat-first priority for running services
             hb_status = service.heartbeat_status
 
             if hb_status == "dead":
@@ -405,6 +446,9 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
         # Build line
         line = Text()
 
+        # Indentation for children
+        line.append(indent)
+
         # Status symbol and name
         line.append(f"{status_symbol} ", style=status_color)
         line.append(_format_service_name(service.service_id))
@@ -412,15 +456,15 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
         # Status text
         line.append(f" [{service.status.value}]", style=status_color)
 
-        # Heartbeat - only for running services
+        # Heartbeat indicator (only for alive/stale heartbeats)
+        # Don't show heart for dead/missing heartbeats - status symbol already indicates problem
         if service.is_running:
             hb_status = service.heartbeat_status
-            if hb_status in HEARTBEAT_COLORS:
-                hb_color = HEARTBEAT_COLORS[hb_status]
-                line.append(" (♥)", style=hb_color)
-            # If heartbeat is "none", show empty parentheses in dim
-            elif hb_status == "none":
-                line.append(" ( )", style="dim")
+            if hb_status == "alive":
+                line.append(" (♥)", style="green")
+            elif hb_status == "stale":
+                line.append(" (♥)", style="yellow")
+            # For "dead" and "none": don't show heart symbol at all
 
         # Uptime
         if service.is_running:
@@ -435,6 +479,24 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
             line.append(f" - {msg}", style="dim")
 
         console.print(line)
+
+    # Display services hierarchically
+    # First, display entities without parents (top-level)
+    if None in parent_to_children:
+        for service in parent_to_children[None]:
+            print_service(service)
+            # If this service is a parent, display its children indented
+            if service.service_id in parent_to_children:
+                for child in parent_to_children[service.service_id]:
+                    print_service(child, indent="  ├─ ")
+
+    # Then, display orphaned children (parent exists but not in current list)
+    all_parent_ids = {s.service_id for s in services}
+    for parent_name, children in parent_to_children.items():
+        if parent_name is not None and parent_name not in all_parent_ids:
+            # Parent not in list, show children without parent header
+            for child in children:
+                print_service(child)
 
     # Summary
     console.print()

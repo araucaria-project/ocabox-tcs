@@ -422,7 +422,7 @@ svc_heartbeat:
     Description: "Service heartbeat messages"
     MaxAge: 86400             # 1 day
     MaxBytes: 104857600       # 100 MB
-    Storage: memory           # Fast, no persistence needed
+    Storage: file             # File storage (survives NATS restarts)
     NoAck: true
     Discard: old
     DenyDelete: false
