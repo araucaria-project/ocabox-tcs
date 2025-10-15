@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "0.3.3"
+version = "0.3.4"
 description = "Telescope Control Services for OCABOX Astronomilacl Observatory Server"
 authors = ["Mikolaj et.al.", "Claude Code <noreply@anthropic.com>"]
 readme = "README.md"
@@ -29,7 +29,6 @@ typer = "^0.19.2"
 rich = "^13.0.0"
 
 [tool.poetry.scripts]
-tcs_launcher = "ocabox_tcs.launcher:main"
 tcs_process = "ocabox_tcs.launchers.process:main"
 tcs_asyncio = "ocabox_tcs.launchers.asyncio:main"
 tcsctl = "tcsctl.app:main"
