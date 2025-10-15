@@ -1,7 +1,7 @@
 from serverish.base import dt_utcnow_array
 from serverish.messenger import get_publisher, single_publish
 
-from ocabox_tcs.monitoring import MonitoredObject, ReportingMonitoredObject
+from ocabox_tcs.monitoring.monitored_object import MonitoredObject, ReportingMonitoredObject
 
 
 class MessengerMonitoredObject(ReportingMonitoredObject):
@@ -23,10 +23,17 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             Used by monitoring tools to group entities hierarchically
     """
 
-    def __init__(self, name: str, messenger, parent: MonitoredObject | None = None,
-                 check_interval: float = 10.0, subject_prefix: str = "svc",
-                 parent_name: str | None = None):
-        super().__init__(name, parent, check_interval)
+    def __init__(
+        self,
+        name: str,
+        messenger,
+        parent: MonitoredObject | None = None,
+        check_interval: float = 10.0,
+        healthcheck_interval: float = 30.0,
+        subject_prefix: str = "svc",
+        parent_name: str | None = None,
+    ):
+        super().__init__(name, parent, check_interval, healthcheck_interval)
         self.messenger = messenger
         self.subject_prefix = subject_prefix
         self.parent_name = parent_name  # For display grouping (e.g., launcher name)
@@ -42,6 +49,19 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
 
             heartbeat_subject = f"{self.subject_prefix}.heartbeat.{self.name}"
             self._heartbeat_publisher = get_publisher(heartbeat_subject)
+
+    # Context manager override for registry events
+    async def __aenter__(self):
+        """Enter context: start monitoring and send registration."""
+        await self.start_monitoring()
+        await self.send_registration()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit context: send shutdown and stop monitoring."""
+        await self.send_shutdown()
+        await self.stop_monitoring()
+        return False
 
     def _on_status_changed(self):
         """Called when status changes - trigger immediate status send."""
@@ -65,7 +85,7 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             self.logger.debug("Status publisher not set, cannot send status report")
             return
         try:
-            report = self.get_full_report()
+            report = await self.get_full_report()
             data = report.to_dict()
             # Add parent_name if set (for display grouping)
             if self.parent_name:

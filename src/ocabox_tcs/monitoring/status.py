@@ -12,6 +12,8 @@ class Status(Enum):
     UNKNOWN = "unknown"
     STARTUP = "startup"
     OK = "ok"
+    IDLE = "idle"  # Healthy, no active work
+    BUSY = "busy"  # Healthy, actively processing tasks
     DEGRADED = "degraded"
     WARNING = "warning"
     ERROR = "error"
@@ -24,12 +26,12 @@ class Status(Enum):
     @property
     def is_healthy(self) -> bool:
         """Check if status indicates healthy state."""
-        return self in (Status.OK, Status.DEGRADED, Status.WARNING)
+        return self in (Status.OK, Status.IDLE, Status.BUSY, Status.DEGRADED, Status.WARNING)
 
     @property
     def is_operational(self) -> bool:
         """Check if status indicates service is operational."""
-        return self in (Status.STARTUP, Status.OK, Status.DEGRADED, Status.WARNING)
+        return self in (Status.STARTUP, Status.OK, Status.IDLE, Status.BUSY, Status.DEGRADED, Status.WARNING)
 
 
 @dataclass
@@ -110,6 +112,16 @@ def aggregate_status(reports: list[StatusReport]) -> Status:
     # If any shutting down, overall is shutdown
     if Status.SHUTDOWN in statuses:
         return Status.SHUTDOWN
+
+    # If any busy, overall is busy
+    if Status.BUSY in statuses:
+        return Status.BUSY
+
+    # If all IDLE or OK, prefer IDLE (indicates no active work)
+    if all(s in (Status.IDLE, Status.OK) for s in statuses):
+        if Status.IDLE in statuses:
+            return Status.IDLE
+        return Status.OK
 
     # If all OK, overall is OK
     if all(s == Status.OK for s in statuses):

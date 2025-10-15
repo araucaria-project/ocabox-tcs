@@ -13,13 +13,14 @@ if TYPE_CHECKING:
 from ocabox_tcs.management.configuration import ConfigurationManager
 from ocabox_tcs.management.process_context import ProcessContext
 
-from ..base_service import BaseService, BaseServiceConfig
-from ..monitoring import MessengerMonitoredObject, Status
+from ocabox_tcs.base_service import BaseService, BaseServiceConfig
+from ocabox_tcs.monitoring import create_monitor, Status
+from ocabox_tcs.monitoring.monitored_object import  MonitoredObject
 
 
 class ServiceController:
     """Controls single service in same process as service."""
-    
+
     def __init__(self, module_name: str, instance_id: str,
                  config_sources: dict[str, Any] | None = None,
                  runner_id: str | None = None):
@@ -30,26 +31,26 @@ class ServiceController:
 
         self.logger = logging.getLogger(f"ctrl.{self._short_service_id()}")
         self.process = ProcessContext()
-        
+
         # Initialize monitoring
-        self.monitor: MessengerMonitoredObject | None = None
-        
+        self.monitor: MonitoredObject | None = None
+
         # Service management
         self._service: BaseService | None = None
         self._service_class: type[BaseService] | None = None
         self._config_class: type[BaseServiceConfig] | None = None
         self._config: BaseServiceConfig | None = None
         self._config_manager: ConfigurationManager | None = None
-        
+
         # State
         self._initialized = False
         self._running = False
-        
+
         # Register with process
         self.process.register_controller(self)
-        
+
         self.logger.info(f"Created controller for {self.service_id}")
-    
+
     async def initialize(self) -> bool:
         """Initialize the controller and discover service classes.
 
@@ -83,7 +84,7 @@ class ServiceController:
             if self.monitor:
                 self.monitor.set_status(Status.FAILED, error_msg)
             return False
-    
+
     async def start_service(self) -> bool:
         """Create and start the service."""
         if not self._initialized:
@@ -91,141 +92,125 @@ class ServiceController:
             return False
             # if not await self.initialize():
             #     return False
-        
+
         if self._running:
             self.logger.warning("Service already running")
             return True
-        
+
         try:
             self.monitor.set_status(Status.STARTUP, "Starting service")
-            
+
             # Create service instance
             if not await self._create_service():
                 self.monitor.set_status(Status.FAILED, "Failed to create service")
                 return False
-            
+
             # Start the service
             await self._service._internal_start()
-            
+
             self._running = True
             self.monitor.set_status(Status.OK, "Service running")
             self.logger.info("Service started successfully")
             return True
-            
+
         except Exception as e:
             error_msg = f"Failed to start service: {e}"
             self.logger.error(error_msg)
             self.monitor.set_status(Status.FAILED, error_msg)
             return False
-    
+
     async def stop_service(self) -> bool:
         """Stop the service."""
         if not self._running:
             return True
-        
+
         try:
             self.monitor.set_status(Status.SHUTDOWN, "Stopping service")
-            
+
             if self._service:
                 await self._service._internal_stop()
-            
+
             self._running = False
             self.monitor.set_status(Status.OK, "Service stopped")
             self.logger.info("Service stopped successfully")
             return True
-            
+
         except Exception as e:
             error_msg = f"Failed to stop service: {e}"
             self.logger.error(error_msg)
             self.monitor.set_status(Status.ERROR, error_msg)
             return False
-    
+
     async def restart_service(self) -> bool:
         """Restart the service."""
         self.logger.info("Restarting service")
         await self.stop_service()
         return await self.start_service()
-    
+
     async def shutdown(self):
         """Shutdown the controller completely."""
         self.logger.info("Shutting down controller")
-        
+
         # Stop service if running
         if self._running:
             await self.stop_service()
-        
+
         # Stop monitoring
         if self.monitor:
-            if hasattr(self.monitor, 'send_shutdown'):
-                await self.monitor.send_shutdown()
+            await self.monitor.send_shutdown()
             await self.monitor.stop_monitoring()
-        
+
         # Unregister from process
         self.process.unregister_controller(self)
-        
+
         self.logger.info("Controller shutdown complete")
-    
+
     async def _initialize_monitoring(self):
         """Initialize monitoring system."""
-        try:
-            # Try to ensure messenger is available
-            if not self.process.messenger:
-                self.logger.warning("No NATS messenger configured, cannot initialize monitoring publication")
+        # Determine parent name from runner_id (for hierarchical display)
+        # runner_id format: "{launcher-id}.{service-type}" → parent: "launcher.{launcher-id}"
+        # Note: Both launcher-id and service-type may contain dots
+        # (e.g., "asyncio-launcher.majkmacc0h2L4D6Qc.examples.01_minimal")
+        # So we need to extract service-type from module_name and strip it from runner_id
+        parent_name = None
+        if self.runner_id and '.' in self.runner_id:
+            # Extract service type from module_name (same logic as _discover_classes)
+            module_parts = self.module_name.split('.')
+            if 'services' in module_parts:
+                services_idx = module_parts.index('services')
+                service_type_with_path = '.'.join(module_parts[services_idx + 1:])
+            else:
+                service_type_with_path = module_parts[-1]
 
-            # Determine parent name from runner_id (for hierarchical display)
-            # runner_id format: "{launcher-id}.{service-type}" → parent: "launcher.{launcher-id}"
-            # Note: Both launcher-id and service-type may contain dots
-            # (e.g., "asyncio-launcher.majkmacc0h2L4D6Qc.examples.01_minimal")
-            # So we need to extract service-type from module_name and strip it from runner_id
-            parent_name = None
-            if self.runner_id and '.' in self.runner_id:
-                # Extract service type from module_name (same logic as _discover_classes)
-                module_parts = self.module_name.split('.')
-                if 'services' in module_parts:
-                    services_idx = module_parts.index('services')
-                    service_type_with_path = '.'.join(module_parts[services_idx + 1:])
-                else:
-                    service_type_with_path = module_parts[-1]
+            # Strip service type from end of runner_id to get launcher_id
+            if self.runner_id.endswith(f".{service_type_with_path}"):
+                launcher_id = self.runner_id[:-len(f".{service_type_with_path}")]
+                parent_name = f"launcher.{launcher_id}"
+                self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
 
-                # Strip service type from end of runner_id to get launcher_id
-                if self.runner_id.endswith(f".{service_type_with_path}"):
-                    launcher_id = self.runner_id[:-len(f".{service_type_with_path}")]
-                    parent_name = f"launcher.{launcher_id}"
-                    self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
+        # Create monitor using factory (auto-detects NATS availability)
+        self.monitor = create_monitor(
+            name=self.service_id,
+            heartbeat_interval=10.0,
+            healthcheck_interval=30.0,
+            parent_name=parent_name  # For hierarchical grouping in displays
+        )
 
-            # Create monitor (check_interval is heartbeat interval, default 10s)
-            self.monitor = MessengerMonitoredObject(
-                name=self.service_id,
-                messenger=self.process.messenger,
-                check_interval=10.0,
-                parent_name=parent_name  # For hierarchical grouping in displays
-            )
+        # Pass runner_id to monitor so it can include it in registry messages
+        if self.runner_id:
+            self.monitor.runner_id = self.runner_id
 
-            # Pass runner_id to monitor so it can include it in registry messages
-            if self.runner_id:
-                self.monitor.runner_id = self.runner_id
+        # Set initial status BEFORE starting monitoring (to avoid initial "unknown" report)
+        self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
 
-            # Set initial status BEFORE starting monitoring (to avoid initial "unknown" report)
-            self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
+        # Start monitoring
+        await self.monitor.start_monitoring()
 
-            # Start monitoring
-            await self.monitor.start_monitoring()
-            await self.monitor.send_registration()
+        # Send registration (no-op for DummyMonitoredObject)
+        await self.monitor.send_registration()
 
-            self.logger.debug("Monitoring initialized with NATS")
-        except Exception as e:
-            # Fall back to basic monitoring without NATS
-            self.logger.warning(f"Failed to initialize NATS monitoring, using local monitoring: {e}")
-            from ..monitoring import ReportingMonitoredObject
-            self.monitor = ReportingMonitoredObject(
-                name=self.service_id,
-                check_interval=10.0
-            )
-            # Set initial status BEFORE starting monitoring
-            self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
-            await self.monitor.start_monitoring()
-            self.logger.debug("Monitoring initialized without NATS")
-    
+        self.logger.debug("Monitoring initialized")
+
     async def _discover_classes(self) -> bool:
         """Discover service and config classes."""
         try:
@@ -262,7 +247,7 @@ class ServiceController:
 
             if self._config_class is not None:
                 self.logger.debug(f"Config class discovered via @config decorator: {self._config_class.__name__}")
-            
+
             # 2. Fall back to module variable approach (deprecated)
             if self._service_class is None and hasattr(module, 'service_class'):
                 self._service_class = module.service_class
@@ -303,25 +288,25 @@ class ServiceController:
                         f"Please add '@config' decorator to your config class for reliable discovery. "
                         f"Example: @config\\n@dataclass\\nclass {class_name}(BaseServiceConfig): ..."
                     )
-            
+
             # 5. Service class is required
             if self._service_class is None:
                 self.logger.error(f"Could not find service class in {self.module_name}")
                 return False
-            
+
             # 6. Config class is optional - use base class if not found
             if self._config_class is None:
                 from ..base_service import BaseServiceConfig
                 self._config_class = BaseServiceConfig
                 self.logger.debug("No config class found, using BaseServiceConfig")
-            
+
             self.logger.debug(f"Discovered classes: {self._service_class.__name__}, {self._config_class.__name__}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to discover classes: {e}")
             return False
-    
+
     async def _setup_configuration(self) -> None:
         """Setup configuration management.
 
@@ -366,40 +351,40 @@ class ServiceController:
         except Exception as e:
             self.logger.error(f"Failed to setup configuration: {e}")
             raise
-    
+
     async def _create_service(self) -> bool:
         """Create service instance."""
         try:
             # Create service with controller reference
             self._service = self._service_class()
-            
+
             # Set up service properties
             self._service.controller = self
             self._service.config = self._config
             self._service.logger = logging.getLogger(f"svc.{self._short_service_id()}")
-            
+
             self.logger.debug("Service instance created")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to create service: {e}")
             return False
-    
+
     @property
     def is_running(self) -> bool:
         """Check if service is running."""
         return self._running
-    
+
     @property
     def config(self) -> BaseServiceConfig | None:
         """Get service configuration."""
         return self._config
-    
+
     def _filter_config_for_class(self, config_dict: dict[str, Any], config_class: type) -> dict[str, Any]:
         """Filter configuration dictionary to only include fields the config class accepts."""
         import inspect
         from dataclasses import fields, is_dataclass
-        
+
         # Get the configuration class signature
         if is_dataclass(config_class):
             # For dataclasses, get field names
@@ -408,15 +393,15 @@ class ServiceController:
             # For regular classes, get __init__ parameters
             sig = inspect.signature(config_class.__init__)
             valid_fields = set(sig.parameters.keys()) - {'self'}
-        
+
         # Filter config_dict to only include valid fields
         filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
-        
+
         # Log what was filtered out for debugging
         filtered_out = set(config_dict.keys()) - set(filtered_config.keys())
         if filtered_out:
             self.logger.debug(f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}")
-        
+
         return filtered_config
 
     def _short_service_id(self) -> str:

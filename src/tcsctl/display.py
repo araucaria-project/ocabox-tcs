@@ -11,6 +11,8 @@ from ocabox_tcs.monitoring import Status
 # Status symbols (simple ASCII)
 STATUS_SYMBOLS = {
     Status.OK: "●",
+    Status.IDLE: "●",  # Healthy, no active work
+    Status.BUSY: "●",  # Healthy, processing tasks
     Status.STARTUP: "○",
     Status.DEGRADED: "◐",
     Status.WARNING: "◐",
@@ -23,6 +25,8 @@ STATUS_SYMBOLS = {
 # Status colors
 STATUS_COLORS = {
     Status.OK: "green",
+    Status.IDLE: "green",  # Healthy, no active work
+    Status.BUSY: "green",  # Healthy, processing tasks
     Status.STARTUP: "cyan",
     Status.DEGRADED: "yellow",
     Status.WARNING: "yellow",

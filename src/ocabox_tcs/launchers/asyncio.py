@@ -139,11 +139,8 @@ class AsyncioLauncher(BaseLauncher):
             self.process_ctx = process_ctx
             self.logger.info("Using ProcessContext for asyncio launcher")
 
-            # Initialize launcher monitoring
-            if process_ctx.messenger:
-                await self.initialize_monitoring(process_ctx.messenger, subject_prefix="svc")
-            else:
-                self.logger.warning("No messenger available, launcher monitoring disabled")
+            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
+            await self.initialize_monitoring(subject_prefix="svc")
 
             # Get services list from config_manager (use raw config to include 'services' key)
             raw_config = process_ctx.config_manager.get_raw_config()

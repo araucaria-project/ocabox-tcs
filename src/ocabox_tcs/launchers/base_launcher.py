@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ocabox_tcs.monitoring.monitored_object_nats import MessengerMonitoredObject
+    from ocabox_tcs.monitoring.monitored_object import MonitoredObject
 
 
 @dataclass
@@ -106,7 +106,7 @@ class BaseLauncher(ABC):
         self.launcher_id = launcher_id
         self.logger = logging.getLogger(f"launch.{launcher_id}")
         self.runners: dict[str, BaseRunner] = {}
-        self.monitor: "MessengerMonitoredObject | None" = None
+        self.monitor: "MonitoredObject | None" = None
 
     @abstractmethod
     async def initialize(self, config: Any) -> bool:
@@ -177,27 +177,25 @@ class BaseLauncher(ABC):
             status[service_id] = await runner.get_status()
         return status
 
-    async def initialize_monitoring(self, messenger, monitor_name: str | None = None,
+    async def initialize_monitoring(self, monitor_name: str | None = None,
                                    subject_prefix: str = "svc"):
-        """Initialize launcher monitoring with MessengerMonitoredObject.
+        """Initialize launcher monitoring.
 
         Args:
-            messenger: Serverish Messenger instance (from ProcessContext)
             monitor_name: Optional custom name (default: "launcher.{launcher_id}")
             subject_prefix: NATS subject prefix (default: "svc")
         """
-        from ocabox_tcs.monitoring.monitored_object_nats import MessengerMonitoredObject
-        from ocabox_tcs.monitoring import Status
+        from ocabox_tcs.monitoring import create_monitor, Status
 
         if self.monitor is not None:
             self.logger.warning("Monitoring already initialized")
             return
 
         name = monitor_name or f"launcher.{self.launcher_id}"
-        self.monitor = MessengerMonitoredObject(
+        self.monitor = create_monitor(
             name=name,
-            messenger=messenger,
-            check_interval=10.0,
+            heartbeat_interval=10.0,
+            healthcheck_interval=30.0,
             subject_prefix=subject_prefix
         )
 
@@ -213,7 +211,9 @@ class BaseLauncher(ABC):
 
         from ocabox_tcs.monitoring import Status
 
+        # Send registration (no-op for DummyMonitoredObject)
         await self.monitor.send_registration()
+
         await self.monitor.start_monitoring()
         self.monitor.set_status(Status.OK, "Launcher running")
         self.logger.info("Launcher monitoring started")
@@ -227,5 +227,8 @@ class BaseLauncher(ABC):
 
         self.monitor.set_status(Status.SHUTDOWN, "Launcher shutting down")
         await self.monitor.stop_monitoring()
+
+        # Send shutdown (no-op for DummyMonitoredObject)
         await self.monitor.send_shutdown()
+
         self.logger.info("Launcher monitoring stopped")
