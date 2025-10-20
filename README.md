@@ -98,6 +98,41 @@ tcsctl --verbose
 tcsctl --legend
 ```
 
+**Programmatic monitoring with `ServiceControlClient`:**
+
+The monitoring functionality is also available as a reusable Python client for integration with other tools:
+
+```python
+from tcsctl import ServiceControlClient
+from serverish.messenger import Messenger
+
+# One-shot snapshot
+messenger = Messenger()
+async with messenger.context(host='localhost', port=4222):
+    client = ServiceControlClient(messenger, subject_prefix='svc')
+    services = await client.list_services(include_stopped=False)
+    for service in services:
+        print(f"{service.service_id}: {service.status.value}")
+
+# Streaming mode (follow updates in real-time)
+async with messenger.context(host='localhost', port=4222):
+    client = ServiceControlClient(messenger, subject_prefix='svc')
+
+    def on_update(service_info):
+        print(f"Updated: {service_info.service_id} -> {service_info.status}")
+
+    client.on_service_update = on_update
+    await client.start_following()
+
+    # Access current state anytime
+    services = client.get_current_services()
+
+    await asyncio.sleep(60)
+    await client.stop_following()
+```
+
+See `examples/monitoring_client_usage.py` for complete examples.
+
 **Control via `oca` CLI:**
 ```bash
 # Start plan runner for ZB08
