@@ -9,8 +9,8 @@ repository = "https://github.com/araucaria-project/ocabox-tcs"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-serverish = {version = "^1.1.1", extras = ["messenger"]}  # for NATS
-ocabox = {git = "https://github.com/araucaria-project/ocabox.git"}
+serverish = {version = "^1.0.0", extras = ["messenger"]}  # for NATS
+ocabox = {git = "https://github.com/araucaria-project/ocabox.git", branch = "feat/request_special_permission"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

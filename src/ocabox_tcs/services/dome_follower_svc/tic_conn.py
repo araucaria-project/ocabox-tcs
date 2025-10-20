@@ -26,8 +26,9 @@ class TicConn:
         )
         self.telescope = self.obs.get_telescope(telescope_id=telescope_id)
         self.dome = self.telescope.get_dome()
+        self.dome.request_special_permission = True
         self.mount = self.telescope.get_mount()
-        self.access_grantor = self.telescope.get_access_grantor()
+        # self.access_grantor = self.telescope.get_access_grantor()
 
     async def get_obs_cfg(self):
         self.manager.logger.info(f'Loading client config...')

@@ -29,6 +29,9 @@ class Manager:
         self.follow_tolerance: Optional[float] = None
         # self.slew_tolerance: Optional[float] = None
         self.settle_time: Optional[float] = None
+        self.dome_speed_deg: Optional[float] = None
+        self.dome_az_last: Optional[float] = None
+        self.dome_current_speed: Optional[float] = None
         super().__init__()
 
     async def start_comm(self):
@@ -47,14 +50,29 @@ class Manager:
     async def set_follow_parameters(self):
         self.follow_tolerance = 3.0 #TODO take from obs settings
         # self.slew_tolerance = 3.0  #TODO take from obs settings
-        self.settle_time = 5.0  #TODO take from obs settings
+        self.settle_time = 3.0  #TODO take from obs settings
+        self.dome_speed_deg =  0.03
+
+    async def dome_slew_settle(self, angle_to_go: Optional[float]) -> None:
+        if self.dome_speed_deg and angle_to_go and self.dome_speed_deg:
+            await asyncio.sleep(angle_to_go * self.dome_speed_deg)
+        else:
+            await asyncio.sleep(self.settle_time)
+        self.logger.info(f"Dome follow settle done")
 
     async def dome_follow(self) -> None:
         if self.follow_on:
             try:
-                dome_slew = await self.tic_conn.dome.aget_slewing()
+                dome_slewing = await self.tic_conn.dome.aget_slewing()
                 dome_az = await self.tic_conn.dome.aget_az()
                 mount_az = await self.tic_conn.mount.aget_az()
+                mount_slewing = await self.tic_conn.mount.aget_slewing()
+                if dome_az and self.dome_az_last:
+                    diff = abs(dome_az - self.dome_az_last) % 360
+                    self.dome_current_speed = min(diff, 360 - diff)
+                    if self.dome_current_speed != 0:
+                        self.logger.info(f"dome speed: {self.dome_current_speed}")
+                self.dome_az_last = dome_az
             except OcaboxServerError:
                 self.logger.error(f'Tic OcaboxServerError.')
                 return
@@ -65,11 +83,12 @@ class Manager:
                 self.logger.error(f'Tic OcaboxAccessDenied')
                 return
 
-            if not dome_slew:
+            if not dome_slewing and not mount_slewing:
                 diff = abs(dome_az - mount_az) % 360
-                if min(diff, 360 - diff) > self.follow_tolerance:
+                if min(diff, 360 - diff) > self.follow_tolerance and self.dome_current_speed == 0:
                     self.logger.info(f"Dome slewing: {dome_az:.3f} -> {mount_az:.3f}")
                     try:
+                        self.logger.info(f'request_special_permission {self.tic_conn.dome.request_special_permission}')
                         await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
                     except OcaboxServerError:
                         self.logger.error(f'Tic OcaboxServerError')
@@ -80,4 +99,4 @@ class Manager:
                     except OcaboxAccessDenied:
                         self.logger.error(f'Tic OcaboxAccessDenied')
                         return
-                    await asyncio.sleep(self.settle_time)
+                    await self.dome_slew_settle(angle_to_go=min(diff, 360 - diff))

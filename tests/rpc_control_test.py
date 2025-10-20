@@ -9,8 +9,8 @@ async def req():
     async with Messenger().context(host=host, port=port):
         try:
             # dat, met = await request(subject=f'tic.rpc.dev.dome.follower.state')
-            dat, met = await request(subject=f'tic.rpc.dev.dome.follower.off')
-            # dat, met = await request(subject=f'tic.rpc.dev.dome.follower.on')
+            # dat, met = await request(subject=f'tic.rpc.dev.dome.follower.off')
+            dat, met = await request(subject=f'tic.rpc.dev.dome.follower.on')
             if dat:
                 try:
                     if dat['status'] == 'ok':
@@ -23,3 +23,6 @@ async def req():
 async def run():
     ts1 = asyncio.create_task(req())
     await asyncio.gather(ts1)
+
+
+asyncio.run(run())
