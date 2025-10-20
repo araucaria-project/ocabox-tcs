@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional, Dict
 
 from ob.planrunner import ConfigGeneral
@@ -31,7 +32,8 @@ class Manager:
         self.settle_time: Optional[float] = None
         self.dome_speed_deg: Optional[float] = None
         self.dome_az_last: Optional[float] = None
-        self.dome_current_speed: Optional[float] = None
+        self.dome_current_speed: float = 0
+        self.turn_time: float = 0
         super().__init__()
 
     async def start_comm(self):
@@ -55,23 +57,29 @@ class Manager:
 
     async def dome_slew_settle(self, angle_to_go: Optional[float]) -> None:
         if self.dome_speed_deg and angle_to_go and self.dome_speed_deg:
-            await asyncio.sleep(angle_to_go * self.dome_speed_deg)
+            _settle_time = angle_to_go * self.dome_speed_deg
+            await asyncio.sleep(_settle_time)
         else:
-            await asyncio.sleep(self.settle_time)
-        self.logger.info(f"Dome follow settle done")
+            _settle_time = self.settle_time
+            await asyncio.sleep(_settle_time)
+        self.logger.info(f"Dome follow settle done: {_settle_time:.1f}s")
 
     async def dome_follow(self) -> None:
         if self.follow_on:
+            ts_0 = time.time()
             try:
                 dome_slewing = await self.tic_conn.dome.aget_slewing()
                 dome_az = await self.tic_conn.dome.aget_az()
                 mount_az = await self.tic_conn.mount.aget_az()
                 mount_slewing = await self.tic_conn.mount.aget_slewing()
-                if dome_az and self.dome_az_last:
+                if dome_az is not None and self.dome_az_last is not None:
                     diff = abs(dome_az - self.dome_az_last) % 360
-                    self.dome_current_speed = min(diff, 360 - diff)
-                    if self.dome_current_speed != 0:
-                        self.logger.info(f"dome speed: {self.dome_current_speed}")
+                    if self.turn_time != 0:
+                        self.dome_current_speed = min(diff, 360 - diff) / self.turn_time
+                        if self.dome_current_speed != 0.0:
+                            self.logger.info(
+                                f"Dome speed: {self.dome_current_speed:.1f} deg/s"
+                            )
                 self.dome_az_last = dome_az
             except OcaboxServerError:
                 self.logger.error(f'Tic OcaboxServerError.')
@@ -83,12 +91,12 @@ class Manager:
                 self.logger.error(f'Tic OcaboxAccessDenied')
                 return
 
-            if not dome_slewing and not mount_slewing:
+            if dome_slewing is False and mount_slewing is False:
                 diff = abs(dome_az - mount_az) % 360
-                if min(diff, 360 - diff) > self.follow_tolerance and self.dome_current_speed == 0:
-                    self.logger.info(f"Dome slewing: {dome_az:.3f} -> {mount_az:.3f}")
+                min_diff = min(diff, 360 - diff)
+                if min_diff > self.follow_tolerance and self.dome_current_speed == 0.0:
+                    self.logger.info(f"Dome is following: {dome_az:.3f} -> {mount_az:.3f}")
                     try:
-                        self.logger.info(f'request_special_permission {self.tic_conn.dome.request_special_permission}')
                         await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
                     except OcaboxServerError:
                         self.logger.error(f'Tic OcaboxServerError')
@@ -99,4 +107,5 @@ class Manager:
                     except OcaboxAccessDenied:
                         self.logger.error(f'Tic OcaboxAccessDenied')
                         return
-                    await self.dome_slew_settle(angle_to_go=min(diff, 360 - diff))
+                    await self.dome_slew_settle(min_diff)
+            self.turn_time = time.time() - ts_0

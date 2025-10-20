@@ -29,7 +29,7 @@ class DomeFollowerService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Setup before main loop starts."""
-        self.logger.info(f"Starting dome follower service, with interval: {self.config}")
+        self.logger.info(f"Starting dome follower service, with interval: {self.config.interval}")
         self.manager = Manager(service=self, config=self.config)
         await self.manager.start_comm()
         await self.manager.set_follow_parameters()
@@ -38,7 +38,6 @@ class DomeFollowerService(BaseBlockingPermanentService):
         """Main service loop."""
         while self.is_running:
             try:
-                # self.logger.info("I'm still dooming")
                 await self.manager.dome_follow()
                 await asyncio.sleep(self.config.interval)
             except asyncio.CancelledError:
