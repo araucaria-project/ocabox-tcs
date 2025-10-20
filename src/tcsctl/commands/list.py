@@ -17,13 +17,21 @@ async def _list_services_async(
     service: str | None = None,
     host: str = "localhost",
     port: int = 4222,
-    subject_prefix: str = "svc"
+    subject_prefix: str = "svc",
+    timeout: float = 5.0
 ):
-    """Async implementation of list_services."""
+    """Async implementation of list_services with timeout.
+
+    Args:
+        timeout: Connection timeout in seconds (default: 5.0)
+    """
     messenger = Messenger()
-    async with messenger.context(host=host, port=port):
-        client = ServiceControlClient(messenger, subject_prefix=subject_prefix)
-        services = await client.list_services(include_stopped=all)
+
+    # Wrap in timeout to prevent hanging
+    async with asyncio.timeout(timeout):
+        async with messenger.context(host=host, port=port):
+            client = ServiceControlClient(messenger, subject_prefix=subject_prefix)
+            services = await client.list_services(include_stopped=all)
 
     # Display results
     if detailed:
@@ -57,6 +65,12 @@ def list_services(
             all=all, detailed=detailed, service=service,
             host=host, port=port, subject_prefix=subject_prefix
         ))
+    except TimeoutError:
+        typer.secho(
+            f"Timeout connecting to NATS at {host}:{port}. Is NATS server running?",
+            fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
     except Exception as e:
         typer.secho(f"Error connecting to NATS: {e}", fg=typer.colors.RED, err=True)
         raise

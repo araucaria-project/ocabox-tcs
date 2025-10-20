@@ -36,17 +36,86 @@ Example usage:
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from serverish.base import dt_from_array
 from serverish.messenger import Messenger
 from serverish.messenger.msg_reader import MsgReader
+from nats.js.errors import NotFoundError
 
 from ocabox_tcs.monitoring import Status
-from tcsctl.collector import ServiceInfo
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ServiceInfo:
+    """Information about a monitored entity (service, launcher, etc.).
+
+    Universal data structure for any MessengerMonitoredObject.
+    """
+    service_id: str
+    status: Status
+    status_message: Optional[str] = None
+    start_time: Optional[datetime] = None
+    stop_time: Optional[datetime] = None
+    last_heartbeat: Optional[datetime] = None
+    uptime_seconds: Optional[float] = None
+
+    # Detailed metadata fields
+    runner_id: Optional[str] = None
+    hostname: Optional[str] = None
+    last_status_update: Optional[datetime] = None
+    pid: Optional[int] = None
+
+    # Hierarchical grouping field
+    parent: Optional[str] = None  # Parent entity name for grouping (e.g., launcher name)
+
+    @property
+    def is_running(self) -> bool:
+        """Check if service is currently running."""
+        return self.status.is_operational and self.stop_time is None
+
+    @property
+    def uptime_str(self) -> str:
+        """Human-readable uptime."""
+        if self.uptime_seconds is None:
+            return "N/A"
+
+        if self.uptime_seconds < 60:
+            return f"{int(self.uptime_seconds)}s"
+        elif self.uptime_seconds < 3600:
+            return f"{int(self.uptime_seconds / 60)}m"
+        elif self.uptime_seconds < 86400:
+            hours = int(self.uptime_seconds / 3600)
+            mins = int((self.uptime_seconds % 3600) / 60)
+            return f"{hours}h {mins}m"
+        else:
+            days = int(self.uptime_seconds / 86400)
+            hours = int((self.uptime_seconds % 86400) / 3600)
+            return f"{days}d {hours}h"
+
+    @property
+    def heartbeat_status(self) -> str:
+        """Status of heartbeat (alive, stale, dead, none).
+
+        For running services, missing heartbeat is treated as 'dead' (zombie process).
+        Only stopped services should return 'none'.
+        """
+        if self.last_heartbeat is None:
+            # Running service without heartbeat = zombie (dead)
+            # Stopped service without heartbeat = expected (none)
+            return "dead" if self.is_running else "none"
+
+        age = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
+        if age < 30:  # Within 3x heartbeat interval
+            return "alive"
+        elif age < 120:  # Within ~2 minutes
+            return "stale"
+        else:
+            return "dead"
 
 
 class ServiceControlClient:
@@ -215,50 +284,57 @@ class ServiceControlClient:
             start_time = time.time()
             msg_count = 0
 
-            registry_reader = MsgReader(
-                subject=f"{self.subject_prefix}.registry.>",
-                parent=self.messenger,
-                deliver_policy="last_per_subject",  # Only get latest per subject
-                nowait=True,
-            )
-            async with registry_reader:
-                async for data, meta in registry_reader:
-                    msg_count += 1
-                    event = data.get('event')
-                    service_id = data.get('service_id')
+            try:
+                registry_reader = MsgReader(
+                    subject=f"{self.subject_prefix}.registry.>",
+                    parent=self.messenger,
+                    deliver_policy="last_per_subject",  # Only get latest per subject
+                    nowait=True,
+                )
+                async with registry_reader:
+                    async for data, meta in registry_reader:
+                        msg_count += 1
+                        event = data.get('event')
+                        service_id = data.get('service_id')
 
-                    if not service_id:
-                        continue
+                        if not service_id:
+                            continue
 
-                    # Initialize service info if new
-                    if service_id not in services:
-                        services[service_id] = ServiceInfo(
-                            service_id=service_id,
-                            status=Status.UNKNOWN
-                        )
+                        # Initialize service info if new
+                        if service_id not in services:
+                            services[service_id] = ServiceInfo(
+                                service_id=service_id,
+                                status=Status.UNKNOWN
+                            )
 
-                    # Update based on event type
-                    if event == 'start':
-                        timestamp = data.get('timestamp')
-                        if timestamp:
-                            services[service_id].start_time = dt_from_array(timestamp)
-                            services[service_id].stop_time = None  # Clear stop if restarted
+                        # Update based on event type
+                        if event == 'start':
+                            timestamp = data.get('timestamp')
+                            if timestamp:
+                                services[service_id].start_time = dt_from_array(timestamp)
+                                services[service_id].stop_time = None  # Clear stop if restarted
 
-                        # Extract metadata from start event
-                        if 'runner_id' in data:
-                            services[service_id].runner_id = data['runner_id']
-                        if 'hostname' in data:
-                            services[service_id].hostname = data['hostname']
-                        if 'pid' in data:
-                            services[service_id].pid = data['pid']
+                            # Extract metadata from start event
+                            if 'runner_id' in data:
+                                services[service_id].runner_id = data['runner_id']
+                            if 'hostname' in data:
+                                services[service_id].hostname = data['hostname']
+                            if 'pid' in data:
+                                services[service_id].pid = data['pid']
+                            if 'parent' in data:
+                                services[service_id].parent = data['parent']
 
-                    elif event == 'stop':
-                        timestamp = data.get('timestamp')
-                        if timestamp:
-                            services[service_id].stop_time = dt_from_array(timestamp)
+                        elif event == 'stop':
+                            timestamp = data.get('timestamp')
+                            if timestamp:
+                                services[service_id].stop_time = dt_from_array(timestamp)
 
-            elapsed = time.time() - start_time
-            logger.debug(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
+                elapsed = time.time() - start_time
+                logger.debug(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
+            except NotFoundError:
+                logger.warning(f"Registry stream not found (prefix: {self.subject_prefix}), skipping")
+            except Exception as e:
+                logger.error(f"Error reading registry: {e}")
 
         async def read_status():
             """Read latest status update for each service.
@@ -269,33 +345,42 @@ class ServiceControlClient:
             start_time = time.time()
             msg_count = 0
 
-            status_reader = MsgReader(
-                subject=f'{self.subject_prefix}.status.>',
-                parent=self.messenger,
-                deliver_policy='last_per_subject',  # Only get latest per service
-                nowait=True
-            )
-            async with status_reader:
-                async for data, meta in status_reader:
-                    msg_count += 1
-                    service_id = data.get('name')
-                    if not service_id or service_id not in services:
-                        continue
+            try:
+                status_reader = MsgReader(
+                    subject=f'{self.subject_prefix}.status.>',
+                    parent=self.messenger,
+                    deliver_policy='last_per_subject',  # Only get latest per service
+                    nowait=True
+                )
+                async with status_reader:
+                    async for data, meta in status_reader:
+                        msg_count += 1
+                        service_id = data.get('name')
+                        if not service_id or service_id not in services:
+                            continue
 
-                    # Use latest status
-                    status_str = data.get('status')
-                    if status_str:
-                        services[service_id].status = Status(status_str)
-                        services[service_id].status_message = data.get('message')
+                        # Use latest status
+                        status_str = data.get('status')
+                        if status_str:
+                            services[service_id].status = Status(status_str)
+                            services[service_id].status_message = data.get('message')
 
-                        # Capture last status update timestamp from meta
-                        if 'timestamp' in meta:
-                            ts = meta['timestamp']
-                            if isinstance(ts, list):
-                                services[service_id].last_status_update = dt_from_array(ts)
+                            # Extract parent for hierarchical grouping
+                            if 'parent' in data:
+                                services[service_id].parent = data['parent']
 
-            elapsed = time.time() - start_time
-            logger.debug(f"read_status: {msg_count} messages in {elapsed:.3f}s")
+                            # Capture last status update timestamp from meta
+                            if 'timestamp' in meta:
+                                ts = meta['timestamp']
+                                if isinstance(ts, list):
+                                    services[service_id].last_status_update = dt_from_array(ts)
+
+                elapsed = time.time() - start_time
+                logger.debug(f"read_status: {msg_count} messages in {elapsed:.3f}s")
+            except NotFoundError:
+                logger.warning(f"Status stream not found (prefix: {self.subject_prefix}), skipping")
+            except Exception as e:
+                logger.error(f"Error reading status: {e}")
 
         async def read_heartbeats():
             """Read latest heartbeat for each service.
@@ -306,29 +391,34 @@ class ServiceControlClient:
             start_time = time.time()
             msg_count = 0
 
-            heartbeat_reader = MsgReader(
-                subject=f"{self.subject_prefix}.heartbeat.>",
-                parent=self.messenger,
-                deliver_policy="last_per_subject",  # Only get latest per service
-                nowait=True,
-            )
-            async with heartbeat_reader:
-                async for data, meta in heartbeat_reader:
-                    msg_count += 1
-                    service_id = data.get('service_id')
-                    if not service_id or service_id not in services:
-                        continue
+            try:
+                heartbeat_reader = MsgReader(
+                    subject=f"{self.subject_prefix}.heartbeat.>",
+                    parent=self.messenger,
+                    deliver_policy="last_per_subject",  # Only get latest per service
+                    nowait=True,
+                )
+                async with heartbeat_reader:
+                    async for data, meta in heartbeat_reader:
+                        msg_count += 1
+                        service_id = data.get('service_id')
+                        if not service_id or service_id not in services:
+                            continue
 
-                    # Use latest heartbeat
-                    timestamp = data.get('timestamp')
-                    if timestamp:
-                        hb_time = dt_from_array(timestamp)
-                        if (services[service_id].last_heartbeat is None or
-                                hb_time > services[service_id].last_heartbeat):
-                            services[service_id].last_heartbeat = hb_time
+                        # Use latest heartbeat
+                        timestamp = data.get('timestamp')
+                        if timestamp:
+                            hb_time = dt_from_array(timestamp)
+                            if (services[service_id].last_heartbeat is None or
+                                    hb_time > services[service_id].last_heartbeat):
+                                services[service_id].last_heartbeat = hb_time
 
-            elapsed = time.time() - start_time
-            logger.debug(f"read_heartbeats: {msg_count} messages in {elapsed:.3f}s")
+                elapsed = time.time() - start_time
+                logger.debug(f"read_heartbeats: {msg_count} messages in {elapsed:.3f}s")
+            except NotFoundError:
+                logger.warning(f"Heartbeat stream not found (prefix: {self.subject_prefix}), skipping")
+            except Exception as e:
+                logger.error(f"Error reading heartbeats: {e}")
 
         # Read registry first to populate service entries, then read status/heartbeats in parallel
         # This ensures services dict is populated before status and heartbeats try to update it

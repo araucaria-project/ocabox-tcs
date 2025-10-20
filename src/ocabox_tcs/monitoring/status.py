@@ -12,6 +12,8 @@ class Status(Enum):
     UNKNOWN = "unknown"
     STARTUP = "startup"
     OK = "ok"
+    IDLE = "idle"  # Healthy, no active work
+    BUSY = "busy"  # Healthy, actively processing tasks
     DEGRADED = "degraded"
     WARNING = "warning"
     ERROR = "error"
@@ -24,12 +26,12 @@ class Status(Enum):
     @property
     def is_healthy(self) -> bool:
         """Check if status indicates healthy state."""
-        return self in (Status.OK, Status.DEGRADED, Status.WARNING)
+        return self in (Status.OK, Status.IDLE, Status.BUSY, Status.DEGRADED, Status.WARNING)
 
     @property
     def is_operational(self) -> bool:
         """Check if status indicates service is operational."""
-        return self in (Status.STARTUP, Status.OK, Status.DEGRADED, Status.WARNING)
+        return self in (Status.STARTUP, Status.OK, Status.IDLE, Status.BUSY, Status.DEGRADED, Status.WARNING)
 
 
 @dataclass
@@ -40,6 +42,7 @@ class StatusReport:
     message: str | None = None
     timestamp: list[int] | None = None  # UTC timestamp in array format [Y, M, D, h, m, s, us]
     details: dict[str, Any] | None = None
+    parent: str | None = None  # Optional parent name for hierarchical grouping
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -62,6 +65,8 @@ class StatusReport:
             result["message"] = self.message
         if self.details:
             result["details"] = self.details
+        if self.parent:
+            result["parent"] = self.parent
         return result
     
     @classmethod
@@ -72,7 +77,8 @@ class StatusReport:
             status=Status(data["status"]),
             message=data.get("message"),
             timestamp=data.get("timestamp"),  # Already in array format
-            details=data.get("details")
+            details=data.get("details"),
+            parent=data.get("parent")
         )
 
 
@@ -106,6 +112,16 @@ def aggregate_status(reports: list[StatusReport]) -> Status:
     # If any shutting down, overall is shutdown
     if Status.SHUTDOWN in statuses:
         return Status.SHUTDOWN
+
+    # If any busy, overall is busy
+    if Status.BUSY in statuses:
+        return Status.BUSY
+
+    # If all IDLE or OK, prefer IDLE (indicates no active work)
+    if all(s in (Status.IDLE, Status.OK) for s in statuses):
+        if Status.IDLE in statuses:
+            return Status.IDLE
+        return Status.OK
 
     # If all OK, overall is OK
     if all(s == Status.OK for s in statuses):

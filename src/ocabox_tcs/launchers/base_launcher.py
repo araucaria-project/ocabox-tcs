@@ -8,7 +8,10 @@ According to the architecture:
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ocabox_tcs.monitoring.monitored_object import MonitoredObject
 
 
 @dataclass
@@ -92,12 +95,18 @@ class BaseLauncher(ABC):
 
     ServicesLauncher manages collection of ServiceRunners from config.
     Maintains launching system and delegates start/stop to runners.
+
+    Launchers use MessengerMonitoredObject for self-monitoring:
+    - Publish status updates when launcher state changes
+    - Send heartbeats to indicate launcher health
+    - Services can reference launcher as parent for hierarchical display
     """
 
     def __init__(self, launcher_id: str = "launcher"):
         self.launcher_id = launcher_id
         self.logger = logging.getLogger(f"launch.{launcher_id}")
         self.runners: dict[str, BaseRunner] = {}
+        self.monitor: "MonitoredObject | None" = None
 
     @abstractmethod
     async def initialize(self, config: Any) -> bool:
@@ -167,3 +176,59 @@ class BaseLauncher(ABC):
         for service_id, runner in self.runners.items():
             status[service_id] = await runner.get_status()
         return status
+
+    async def initialize_monitoring(self, monitor_name: str | None = None,
+                                   subject_prefix: str = "svc"):
+        """Initialize launcher monitoring.
+
+        Args:
+            monitor_name: Optional custom name (default: "launcher.{launcher_id}")
+            subject_prefix: NATS subject prefix (default: "svc")
+        """
+        from ocabox_tcs.monitoring import create_monitor, Status
+
+        if self.monitor is not None:
+            self.logger.warning("Monitoring already initialized")
+            return
+
+        name = monitor_name or f"launcher.{self.launcher_id}"
+        self.monitor = await create_monitor(
+            name=name,
+            heartbeat_interval=10.0,
+            healthcheck_interval=30.0,
+            subject_prefix=subject_prefix
+        )
+
+        # Set initial status
+        self.monitor.set_status(Status.STARTUP, "Launcher initializing")
+        self.logger.info(f"Initialized monitoring as '{name}'")
+
+    async def start_monitoring(self):
+        """Start launcher monitoring (heartbeats and status updates)."""
+        if self.monitor is None:
+            self.logger.warning("Monitoring not initialized, cannot start")
+            return
+
+        from ocabox_tcs.monitoring import Status
+
+        # Send registration (no-op for DummyMonitoredObject)
+        await self.monitor.send_registration()
+
+        await self.monitor.start_monitoring()
+        self.monitor.set_status(Status.OK, "Launcher running")
+        self.logger.info("Launcher monitoring started")
+
+    async def stop_monitoring(self):
+        """Stop launcher monitoring."""
+        if self.monitor is None:
+            return
+
+        from ocabox_tcs.monitoring import Status
+
+        self.monitor.set_status(Status.SHUTDOWN, "Launcher shutting down")
+        await self.monitor.stop_monitoring()
+
+        # Send shutdown (no-op for DummyMonitoredObject)
+        await self.monitor.send_shutdown()
+
+        self.logger.info("Launcher monitoring stopped")

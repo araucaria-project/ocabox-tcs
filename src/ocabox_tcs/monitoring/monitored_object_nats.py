@@ -1,7 +1,7 @@
 from serverish.base import dt_utcnow_array
 from serverish.messenger import get_publisher, single_publish
 
-from ocabox_tcs.monitoring import MonitoredObject, ReportingMonitoredObject
+from ocabox_tcs.monitoring.monitored_object import MonitoredObject, ReportingMonitoredObject
 
 
 class MessengerMonitoredObject(ReportingMonitoredObject):
@@ -15,17 +15,28 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
     Args:
         name: Service name (e.g., "guider.jk15")
         messenger: Serverish Messenger instance
-        parent: Parent MonitoredObject (optional)
+        parent: Parent MonitoredObject (optional, for internal hierarchy)
         check_interval: Heartbeat interval in seconds (default: 10.0)
         subject_prefix: NATS subject prefix (default: "svc")
             Can be configured for different installations (e.g., "ocm.svc")
+        parent_name: Optional parent name for grouping in displays (default: None)
+            Used by monitoring tools to group entities hierarchically
     """
 
-    def __init__(self, name: str, messenger, parent: MonitoredObject | None = None,
-                 check_interval: float = 10.0, subject_prefix: str = "svc"):
-        super().__init__(name, parent, check_interval)
+    def __init__(
+        self,
+        name: str,
+        messenger,
+        parent: MonitoredObject | None = None,
+        check_interval: float = 10.0,
+        healthcheck_interval: float = 30.0,
+        subject_prefix: str = "svc",
+        parent_name: str | None = None,
+    ):
+        super().__init__(name, parent, check_interval, healthcheck_interval)
         self.messenger = messenger
         self.subject_prefix = subject_prefix
+        self.parent_name = parent_name  # For display grouping (e.g., launcher name)
 
         # Publisher for status changes (sent immediately on status change)
         self._status_publisher = None
@@ -38,6 +49,19 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
 
             heartbeat_subject = f"{self.subject_prefix}.heartbeat.{self.name}"
             self._heartbeat_publisher = get_publisher(heartbeat_subject)
+
+    # Context manager override for registry events
+    async def __aenter__(self):
+        """Enter context: start monitoring and send registration."""
+        await self.start_monitoring()
+        await self.send_registration()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit context: send shutdown and stop monitoring."""
+        await self.send_shutdown()
+        await self.stop_monitoring()
+        return False
 
     def _on_status_changed(self):
         """Called when status changes - trigger immediate status send."""
@@ -61,8 +85,12 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             self.logger.debug("Status publisher not set, cannot send status report")
             return
         try:
-            report = self.get_full_report()
-            await self._status_publisher.publish(data=report.to_dict())
+            report = await self.get_full_report()
+            data = report.to_dict()
+            # Add parent_name if set (for display grouping)
+            if self.parent_name:
+                data["parent"] = self.parent_name
+            await self._status_publisher.publish(data=data)
             self.logger.debug(f"Sent STATUS report to {self._status_publisher.subject}")
         except Exception as e:
             self.logger.error(f"Failed to send STATUS report: {e}")
@@ -113,6 +141,10 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             # Add runner_id if available (set by ServiceController)
             if hasattr(self, 'runner_id') and self.runner_id:
                 data["runner_id"] = self.runner_id
+
+            # Add parent_name if set (for display grouping)
+            if self.parent_name:
+                data["parent"] = self.parent_name
 
             await single_publish(subject, data)
             self.logger.info(f"Sent START message to {subject}")
