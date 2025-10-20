@@ -7,17 +7,17 @@ According to the architecture:
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Any
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class ServiceRunnerConfig:
     """Configuration for a service runner."""
     service_type: str
-    instance_context: Optional[str] = None
-    config_file: Optional[str] = None
-    runner_id: Optional[str] = None
+    instance_context: str | None = None
+    config_file: str | None = None
+    runner_id: str | None = None
 
     @property
     def service_id(self) -> str:
@@ -37,7 +37,7 @@ class BaseRunner(ABC):
 
     def __init__(self, config: ServiceRunnerConfig):
         self.config = config
-        self.logger = logging.getLogger(f"runner.{self.config.service_id}")
+        self.logger = logging.getLogger(f"run.{self.config.service_id}")
         self._is_running = False
 
     @property
@@ -78,7 +78,7 @@ class BaseRunner(ABC):
         pass
 
     @abstractmethod
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get service status information.
 
         Returns:
@@ -96,8 +96,8 @@ class BaseLauncher(ABC):
 
     def __init__(self, launcher_id: str = "launcher"):
         self.launcher_id = launcher_id
-        self.logger = logging.getLogger(f"launcher.{launcher_id}")
-        self.runners: Dict[str, BaseRunner] = {}
+        self.logger = logging.getLogger(f"launch.{launcher_id}")
+        self.runners: dict[str, BaseRunner] = {}
 
     @abstractmethod
     async def initialize(self, config: Any) -> bool:
@@ -157,7 +157,7 @@ class BaseLauncher(ABC):
             return False
         return await self.runners[service_id].stop()
 
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get status of all services.
 
         Returns:

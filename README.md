@@ -15,24 +15,54 @@ Collection of automation services for OCM telescopes.
 
 ### Installation Steps
 
+#### For Library Use Only
+
+```bash
+pip install ocabox-tcs
+```
+
+This installs the core framework without CLI tools (minimal dependencies).
+
+#### For Library + CLI Tools
+
+```bash
+pip install ocabox-tcs[cli]
+```
+
+This includes the `tcsctl` command-line tool for service monitoring.
+
+#### For Development
+
 1. Clone the repository:
 ```bash
 cd ~/src
 git clone https://github.com/araucaria-project/ocabox-tcs.git
-cd ocabox-tas
+cd ocabox-tcs
 ```
 
-2. Install dependencies:
+2. Install dependencies (includes CLI tools automatically):
 ```bash
 poetry install
 ```
 
-3. Create configuration:
+3. Configuration:
+Configuration files are located in the `config/` directory of the project.
+
+**Create your configuration file:**
 ```bash
-sudo mkdir -p /etc/ocabox
-sudo cp config/tcs.yaml.example /etc/ocabox/tcs.yaml
+# Copy sample configuration
+cp config/services.sample.yaml config/services.yaml
+
+# Edit configuration as needed
+# config/services.yaml is gitignored - customize for your environment
 ```
-Edit `/etc/ocabox/tcs.yaml` according to your needs.
+
+**Available example configurations:**
+```bash
+ls config/
+# services.sample.yaml - Main configuration template
+# examples.yaml - Tutorial examples configuration
+```
 
 4. Install systemd services:
 ```bash
@@ -45,9 +75,30 @@ sudo systemctl enable ocabox-services-launcher
 sudo systemctl start ocabox-services-launcher
 ```
 
-### Service Control
+### Service Control and Monitoring
 
-Services can be controlled either through `oca` CLI:
+**Monitor services with `tcsctl`:**
+```bash
+# List running services
+tcsctl
+
+# Show all services including stopped
+tcsctl --all
+
+# Detailed view with metadata
+tcsctl --detailed
+
+# Filter specific service
+tcsctl hello_world
+
+# Show collection statistics
+tcsctl --verbose
+
+# Show legend
+tcsctl --legend
+```
+
+**Control via `oca` CLI:**
 ```bash
 # Start plan runner for ZB08
 oca tas start plan_runner zb08
@@ -56,7 +107,7 @@ oca tas start plan_runner zb08
 oca tas status
 ```
 
-Or directly through systemctl:
+**Or directly through systemctl:**
 ```bash
 systemctl start ocabox-service@plan_runner-zb08.service
 systemctl status ocabox-service@plan_runner-zb08.service
@@ -72,11 +123,18 @@ For development on macOS where systemd is not available:
 ```bash
 poetry install
 ```
-Run development service manager:
+Run development service managers:
 ```bash
-poetry run tas_dev
+# Process launcher (separate processes)
+poetry run tcs_process --config config/services.yaml
+
+# Asyncio launcher (same process)
+poetry run tcs_asyncio --config config/services.yaml
+
+# Tutorial examples
+poetry run tcs_asyncio --config config/examples.yaml
 ```
-This will start services defined in config/services.yaml using subprocesses instead of systemd.
+These launchers will start services defined in config files instead of using systemd.
 For full testing before release, use PyCharm Professional's remote development feature to develop and test directly on observatory machine.
 
 ### Project structure
@@ -90,21 +148,43 @@ ocabox-tcs/
 │   ├── architecture.md
 │   └── requirements-analysis.md
 ├── config/
-│   └── services.yaml.example
+│   ├── services.sample.yaml   # Configuration template
+│   └── examples.yaml           # Tutorial examples
 ├── scripts/
 │   ├── ocabox-services-launcher.service
 │   └── ocabox-service@.service
 └── src/
-    └── ocabox_tcs/
+    ├── ocabox_tcs/             # Core service framework
+    │   ├── __init__.py
+    │   ├── base_service.py
+    │   ├── launchers/
+    │   │   ├── process.py      # Process launcher
+    │   │   ├── asyncio.py      # Asyncio launcher
+    │   │   └── base_launcher.py
+    │   ├── services/
+    │   │   ├── __init__.py
+    │   │   ├── hello_world.py
+    │   │   └── examples/       # Tutorial examples
+    │   │       ├── 01_minimal.py
+    │   │       ├── 02_basic.py
+    │   │       ├── 03_logging.py
+    │   │       ├── 04_monitoring.py
+    │   │       └── README.md   # ← Start here!
+    │   ├── management/
+    │   │   ├── process_context.py
+    │   │   ├── service_controller.py
+    │   │   └── configuration.py
+    │   └── monitoring/
+    │       ├── status.py
+    │       ├── monitored_object.py
+    │       └── monitored_object_nats.py
+    └── tcsctl/                 # CLI tool (optional)
         ├── __init__.py
-        ├── base_service.py
-        ├── launcher.py
-        ├── services/
-        │   ├── __init__.py
-        │   ├── plan_runner.py
-        │   ├── guider.py
-        │   └── dome_follower.py
-        └── cli.py
+        ├── app.py              # Main entry point
+        ├── collector.py        # NATS data collection
+        ├── display.py          # Rich terminal output
+        └── commands/
+            └── list.py         # List command
 ```
 
 ## Architecture
@@ -124,17 +204,17 @@ This project provides a universal Python service framework for telescope automat
 
 Services are individual components that perform specific automation tasks. Each service:
 
-- Uses `@service("name")` decorator for registration
+- Uses `@service` decorator for registration (service type derived from filename)
 - Inherits from `BasePermanentService`, `BaseBlockingPermanentService`, or `BaseSingleShotService`
 - Implements `async def start_service()` and `async def stop_service()` (or specialized methods)
-- Optionally uses `@config("name")` decorator for custom configuration
+- Optionally uses `@config` decorator for custom configuration
 - Gets automatic NATS integration, health checking, and management
 
-**Example Service**:
+**Example Service** (File: `hello_world.py`):
 ```python
 from ocabox_tcs.base_service import service, BasePermanentService
 
-@service("hello_world")
+@service
 class HelloWorldService(BasePermanentService):
     async def start_service(self):
         self.logger.info("Hello World!")
@@ -144,7 +224,27 @@ Services are defined in `config/services.yaml` and can be launched via multiple 
 
 ## Quick Start
 
-For development/testing:
+### For Learning the Framework
+
+**New to ocabox-tcs?** Start with the tutorial examples:
+
+```bash
+# View the Getting Started guide
+cat src/ocabox_tcs/services/examples/README.md
+
+# Run all tutorial examples
+poetry run tcs_asyncio --config config/examples.yaml
+```
+
+The tutorial includes:
+- `01_minimal.py` - Simplest possible service (< 30 lines)
+- `02_basic.py` - Service with configuration
+- `03_logging.py` - Logging best practices
+- `04_monitoring.py` - Monitoring and health checks
+
+See [Tutorial Examples README](src/ocabox_tcs/services/examples/README.md) for detailed walkthrough.
+
+### For Development/Testing
 
 1. Install dependencies:
 ```bash
@@ -170,19 +270,77 @@ services:
     instance_context: main
 ```
 
-4. Run with launcher:
+4. Run with launchers:
 ```bash
-poetry run tcs_process  # Services in separate processes
-# or
-poetry run tcs_asyncio  # Services in same process
+# Services in separate processes
+poetry run tcs_process --config config/services.yaml
+
+# Services in same process
+poetry run tcs_asyncio --config config/services.yaml
 ```
 
 5. Or run service directly:
 ```bash
-python my_service.py config.yaml main
+python my_service.py config/services.yaml main
 ```
 
+## Configuration
+
+### Configuration System Overview
+
+The universal service framework supports multiple configuration sources with clear precedence:
+
+1. **Command-line arguments** (highest priority)
+2. **NATS configuration** (planned, not implemented yet)
+3. **YAML config file** (specified via CLI)
+4. **Default values** (lowest priority)
+
+### Configuration File Structure
+
+**Location**: `config/services.yaml` (created by copying `config/services.sample.yaml`)
+
+```yaml
+# Global configuration (applies to all services)
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+# Service-specific configuration
+services:
+  - type: hello_world         # Must match service filename (hello_world.py)
+    instance_context: main    # Instance identifier
+    interval: 5              # Service-specific config options
+    message: "Hello World!"  # Service-specific config options
+    log_level: INFO          # Optional log level override
+
+  - type: hello_world         # Same service, different instance
+    instance_context: fast   # Different instance identifier
+    interval: 1              # Different configuration values
+    message: "Fast hello!"
+    log_level: DEBUG
+```
+
+### Configuration Resolution
+
+1. **Service Type**: Automatically derived from filename (`hello_world.py` → `hello_world`)
+2. **Instance Matching**: Finds service entry with matching `type` and `instance_context`
+3. **Config Merging**: Global config is merged with service-specific config
+4. **Precedence**: Service-specific values override global values
+
+### Available Configuration Files
+
+- `config/services.sample.yaml` - Template for main configuration (copy to `services.yaml`)
+- `config/services.yaml` - Your customized configuration (gitignored, create from sample)
+- `config/examples.yaml` - Tutorial examples configuration
+
 ## Documentation
+
+### [Tutorial Examples](src/ocabox_tcs/services/examples/README.md) 📚 **START HERE**
+**Getting Started Guide**
+- Progressive examples from simple → complex
+- Step-by-step instructions
+- Copy-paste ready code
+- Best for learning the framework
 
 ### [Development Guide](doc/development-guide.md)
 **User Guide for Service Development**
@@ -217,26 +375,33 @@ Instructions for Claude instances working on this project
 ## Starting and Stopping Services
 
 ### Manual start of single service
-Start service file crom commandline.
+Start service file from command line.
 ```commandline
-usage: dumb_permanent.py [-h] config_file service_type service_id
+usage: hello_world.py [-h] [--runner-id RUNNER_ID] config_file instance_context
 
-Start an OCM automation service.
+Start a TCS service.
 
 positional arguments:
-  config_file   Path to the config file
-  service_type  Type of the service - module name
-  service_id    Service instance context/ID
+  config_file       Path to the config file
+  instance_context  Service instance context/ID
 
 options:
-  -h, --help    show this help message and exit
+  -h, --help        show this help message and exit
+  --runner-id RUNNER_ID
+                    Optional runner ID for monitoring
 ```
 
-where `service_type` is the name of the service module (e.g. `plan_runner`) and `service_id` is the instance ID (e.g. `dev`).
-Those names must match the names in the `services.yaml` configuration file.
+The service type is automatically derived from the filename (e.g. `hello_world.py` → service type `hello_world`).
+The `instance_context` must match an entry in the `services.yaml` configuration file.
 
-### Start all services from config file as separate processes
+### Start all services from config file
 
+**As separate processes:**
 ```bash
- poetry run tcs_dev
+poetry run tcs_process --config config/services.yaml
+```
+
+**In same process (asyncio):**
+```bash
+poetry run tcs_asyncio --config config/services.yaml
 ```

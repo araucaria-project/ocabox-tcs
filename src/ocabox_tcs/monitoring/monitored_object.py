@@ -2,9 +2,8 @@
 
 import asyncio
 import logging
-from typing import Optional, Callable, Dict, List, Any
-from abc import ABC, abstractmethod
-from datetime import datetime
+from collections.abc import Callable
+from typing import Optional
 
 from .status import Status, StatusReport, aggregate_status
 
@@ -15,29 +14,37 @@ class MonitoredObject:
     def __init__(self, name: str, parent: Optional["MonitoredObject"] = None):
         self.name = name
         self.parent = parent
-        self.children: Dict[str, "MonitoredObject"] = {}
+        self.children: dict[str, MonitoredObject] = {}
         self._status = Status.UNKNOWN
-        self._message: Optional[str] = None
-        self._healthcheck_callbacks: List[Callable[[], Optional[Status]]] = []
-        self._status_callbacks: List[Callable[[], Optional[Status]]] = []
-        self.logger = logging.getLogger(f"monitored.{name}")
+        self._message: str | None = None
+        self._healthcheck_callbacks: list[Callable[[], Status | None]] = []
+        self._status_callbacks: list[Callable[[], Status | None]] = []
+        self.logger = logging.getLogger(f"mon.{name}")
         
         if parent:
             parent.add_submonitor(self)
     
-    def set_status(self, status: Status, message: Optional[str] = None):
-        """Set status directly."""
+    def set_status(self, status: Status, message: str | None = None):
+        """Set status directly and trigger status change notification."""
+        old_status = self._status
         self._status = status
         self._message = message
         self.logger.debug(f"Status set to {status}: {message or ''}")
-        # TODO: Call on_new_status if new. by default notify parent, RaportingMonitoredObject should publish immediately after any monitor in the tree changes status.
+
+        # Notify if status changed
+        if old_status != status:
+            self._on_status_changed()
     
-    def add_healthcheck_cb(self, callback: Callable[[], Optional[Status]]):
+    def _on_status_changed(self):
+        """Called when status changes. Override in subclasses to send status updates."""
+        pass
+
+    def add_healthcheck_cb(self, callback: Callable[[], Status | None]):
         """Add healthcheck callback."""
         self._healthcheck_callbacks.append(callback)
 
     # TODO: Remove status callback. Status have to be set explicite to monitor, monitor should raport it immediately.
-    def add_status_cb(self, callback: Callable[[], Optional[Status]]):
+    def add_status_cb(self, callback: Callable[[], Status | None]):
         """Add status callback."""
         self._status_callbacks.append(callback)
     
@@ -116,13 +123,13 @@ class MonitoredObject:
 
 
 class ReportingMonitoredObject(MonitoredObject):
-    """MonitoredObject that actively checks status periodically."""
-    
-    def __init__(self, name: str, parent: Optional[MonitoredObject] = None, 
-                 check_interval: float = 30.0):
+    """MonitoredObject that actively sends heartbeats and performs health checks."""
+
+    def __init__(self, name: str, parent: MonitoredObject | None = None,
+                 check_interval: float = 10.0):
         super().__init__(name, parent)
-        self.check_interval = check_interval
-        self._check_task: Optional[asyncio.Task] = None
+        self.check_interval = check_interval  # Heartbeat interval (default 10s)
+        self._check_task: asyncio.Task | None = None
         self._running = False
     
     async def start_monitoring(self):
@@ -147,75 +154,31 @@ class ReportingMonitoredObject(MonitoredObject):
         self.logger.info("Stopped monitoring")
     
     async def _monitoring_loop(self):
-        """Main monitoring loop."""
+        """Main monitoring loop - performs healthchecks and sends heartbeats."""
         while self._running:
             try:
-                # Perform health check
+                # Perform health check - if status changed, it will auto-send via _on_status_changed()
                 status = self.healthcheck()
-                if status != self.get_status():  # TODO Rethink status management, maybe is OK.
+                if status != self.get_status():
                     self.set_status(status, "Updated from healthcheck")
-                
-                # Send report
-                await self._send_report()
-                
+
+                # Send heartbeat (periodic alive signal)
+                await self._send_heartbeat()
+
                 await asyncio.sleep(self.check_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self.logger.error(f"Monitoring loop error: {e}")
                 await asyncio.sleep(min(self.check_interval, 10.0))
-    
-    async def _send_report(self):
-        """Send status report. Override in subclasses."""
+
+    async def _send_heartbeat(self):
+        """Send heartbeat message. Override in subclasses for NATS publishing."""
+        self.logger.debug(f"Heartbeat from {self.name}")
+
+    async def _send_status_report(self):
+        """Send status report (called when status changes). Override in subclasses."""
         report = self.get_full_report()
-        self.logger.debug(f"Status report: {report.status} - {report.message or 'OK'}")
+        self.logger.debug(f"Status changed to {report.status} - {report.message or 'OK'}")
 
 
-class MessengerMonitoredObject(ReportingMonitoredObject):
-    """MonitoredObject that sends reports to NATS via serverish.Messenger."""
-    
-    def __init__(self, name: str, messenger, parent: Optional[MonitoredObject] = None,
-                 check_interval: float = 30.0, topic_prefix: str = "services"):
-        super().__init__(name, parent, check_interval)
-        self.messenger = messenger
-        self.topic_prefix = topic_prefix
-    
-    async def _send_report(self):
-        """Send status report to NATS."""
-        try:
-            report = self.get_full_report()
-            topic = f"{self.topic_prefix}.{self.name}.status"
-            
-            await self.messenger.publish(topic, report.to_dict())
-            self.logger.debug(f"Sent status report to {topic}")
-        except Exception as e:
-            self.logger.error(f"Failed to send status report: {e}")
-    
-    async def send_registration(self):
-        """Send registration message for discovery."""
-        try:
-            topic = f"{self.topic_prefix}.discovery"
-            message = {
-                "action": "register",
-                "name": self.name,
-                "timestamp": datetime.utcnow().isoformat(),
-                "status": self.get_status().value
-            }
-            await self.messenger.publish(topic, message)
-            self.logger.info(f"Sent registration to {topic}")
-        except Exception as e:
-            self.logger.error(f"Failed to send registration: {e}")
-    
-    async def send_shutdown(self):
-        """Send shutdown message."""
-        try:
-            topic = f"{self.topic_prefix}.discovery"
-            message = {
-                "action": "shutdown",
-                "name": self.name,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            await self.messenger.publish(topic, message)
-            self.logger.info(f"Sent shutdown message to {topic}")
-        except Exception as e:
-            self.logger.error(f"Failed to send shutdown message: {e}")
