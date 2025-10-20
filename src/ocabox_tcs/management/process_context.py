@@ -34,20 +34,22 @@ class ProcessContext:
     def __new__(cls) -> ProcessContext:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            cls._instance._singleton_created = False
         return cls._instance
 
     def __init__(self):
-        if self._initialized:
+        if self._singleton_created:
             return
 
         self.logger = logging.getLogger("ctx")
         self._messenger: Messenger | None = None
+        self._owns_messenger = True  # Track if ProcessContext created/owns the messenger
         self._controllers: dict[str, ServiceController] = {}
         self.config_manager: ConfigurationManager | None = None
         self.config_file: str | None = None  # Store original config file path
         self._config_cache: dict[str, Any] = {}
-        self._initialized = True
+        self._fully_initialized = False  # Tracks if initialize() was called
+        self._singleton_created = True
         self.logger.info("ProcessContext singleton initialized")
     
     @property
@@ -82,13 +84,17 @@ class ProcessContext:
     async def shutdown_messenger(self):
         """Shutdown NATS messenger.
 
-        Note: Only closes messenger if this process owns it. Since Messenger is a singleton,
-        closing it affects all users in the process.
+        Only closes messenger if ProcessContext owns it (created via config).
+        If messenger was discovered from external source, it's not closed.
+        Since Messenger is a singleton, closing it affects all users in the process.
         """
         if self._messenger:
-            if self._messenger.is_open:
-                await self._messenger.close()
-                self.logger.info("Closed NATS messenger")
+            if self._owns_messenger:
+                if self._messenger.is_open:
+                    await self._messenger.close()
+                    self.logger.info("Closed owned NATS messenger")
+            else:
+                self.logger.debug("Skipping messenger close - not owned by ProcessContext")
             self._messenger = None
     
     def register_controller(self, controller: ServiceController):
@@ -124,22 +130,23 @@ class ProcessContext:
         self.logger.debug("Cleared config cache")
     
     @classmethod
-    async def initialize(cls, config_file: str, args_config: dict[str, Any] | None = None) -> ProcessContext:
+    async def initialize(cls, config_file: str | None = None, args_config: dict[str, Any] | None = None) -> ProcessContext:
         """Initialize process-wide resources. Call once per OS process.
 
         Used by:
-        - Standalone service processes
-        - Asyncio launcher process (shared with all services)
-        - Process launcher process (for launcher itself)
-        - Each subprocess spawned by process launcher
+        - Standalone service processes (with config_file)
+        - Asyncio launcher process (with config_file)
+        - Process launcher process (with config_file)
+        - Each subprocess spawned by process launcher (with config_file)
+        - External projects with monitoring (no config_file - discovers Messenger)
 
         Initialization steps:
-        1. Configuration manager (file + args)
-        2. NATS messenger (if configured)
+        1. Configuration manager (file + args, if provided)
+        2. NATS messenger (from config or discover existing)
         3. NATS config source (if configured)
 
         Args:
-            config_file: Path to configuration file
+            config_file: Path to configuration file (optional - uses defaults if None)
             args_config: Optional configuration from command line arguments
 
         Returns:
@@ -147,33 +154,48 @@ class ProcessContext:
         """
         instance = cls()  # Get singleton
 
+        if instance._fully_initialized:
+            return instance
+
         # Store config file path for later use (e.g., passing to spawned processes)
         instance.config_file = config_file
 
-        # Always initialize config manager
+        # Initialize config manager (handles None config_file gracefully)
         await instance._init_config_manager(config_file, args_config)
 
-        # NATS initialization (optional, based on config)
+        # NATS initialization
         global_config = instance.config_manager.resolve_config()
         nats_config = global_config.get("nats", {})
 
         if nats_config:
+            # Config file provided with NATS config
             await instance._init_messenger(nats_config)
             await instance._add_nats_config_source(nats_config)
+        else:
+            # No NATS config - try to discover existing Messenger (for external projects)
+            await instance._discover_existing_messenger()
 
         # Log all configuration sources
         instance.config_manager.log_sources()
 
+        instance._fully_initialized = True
         instance.logger.info("ProcessContext initialized")
         return instance
 
-    async def _init_config_manager(self, config_file: str, args_config: dict[str, Any] | None = None):
-        """Initialize configuration manager from file and args."""
+    async def _init_config_manager(self, config_file: str | None, args_config: dict[str, Any] | None = None):
+        """Initialize configuration manager from file and args.
+
+        Args:
+            config_file: Path to config file (optional - uses defaults if None)
+            args_config: Optional command-line configuration
+        """
         self.config_manager = ConfigurationManager()
 
         if config_file:
             self.config_manager.add_source(FileConfigSource(config_file))
             self.logger.debug(f"Added file config source: {config_file}")
+        else:
+            self.logger.debug("No config file provided, using defaults")
 
         if args_config:
             self.config_manager.add_source(ArgsConfigSource(args_config))
@@ -197,6 +219,7 @@ class ProcessContext:
 
         try:
             await self.initialize_messenger(host=host, port=port, timeout=timeout)
+            self._owns_messenger = True  # ProcessContext created this messenger
             self.logger.debug(f"NATS messenger initialized: {host}:{port}")
         except Exception as e:
             if required:
@@ -217,6 +240,27 @@ class ProcessContext:
                 NATSConfigSource(config_subject, self.messenger)
             )
             self.logger.debug(f"NATS config source added: {config_subject}")
+
+    async def _discover_existing_messenger(self):
+        """Discover existing Messenger singleton if available.
+
+        Called when no NATS config is provided. Useful for external projects
+        that manage their own Messenger but want monitoring via ProcessContext.
+
+        Note: Discovered messengers are NOT owned by ProcessContext - they won't
+        be closed on shutdown since they're managed elsewhere.
+        """
+        try:
+            from serverish.messenger import Messenger
+            m = Messenger()
+            if m.is_open:
+                self._messenger = m
+                self._owns_messenger = False  # We discovered but don't own this
+                self.logger.info("Discovered existing open Messenger (not owned)")
+            else:
+                self.logger.debug("Messenger singleton exists but not open")
+        except Exception as e:
+            self.logger.debug(f"No existing Messenger found: {e}")
 
     async def shutdown(self):
         """Shutdown the process and all controllers."""

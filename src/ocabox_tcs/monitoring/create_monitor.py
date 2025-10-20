@@ -5,8 +5,7 @@ from ocabox_tcs.monitoring.monitored_object import MonitoredObject, DummyMonitor
 from ocabox_tcs.monitoring.monitored_object_nats import MessengerMonitoredObject
 
 
-
-def create_monitor(
+async def create_monitor(
     name: str | None = None,
     *,
     subject_prefix: str = 'svc',
@@ -14,11 +13,15 @@ def create_monitor(
     healthcheck_interval: float = 30.0,
     parent_name: str | None = None,
 ) -> MonitoredObject:
-    """Factory function for creating monitored objects.
+    """Factory function for creating monitored objects (async).
 
     Automatically selects implementation based on environment:
     - If Messenger is available (via ProcessContext): MessengerMonitoredObject
     - Otherwise: DummyMonitoredObject (no-op)
+
+    Ensures ProcessContext is initialized if not already done. If ProcessContext
+    is not initialized, performs minimal initialization to discover existing
+    Messenger singleton (useful for external projects).
 
     Args:
         name: Unique! monitor name (used in NATS subjects: {prefix}.status.{name}).
@@ -32,7 +35,7 @@ def create_monitor(
         MonitoredObject implementation appropriate for current environment
 
     Example:
-        >>> monitor = create_monitor('my_app')
+        >>> monitor = await create_monitor('my_app')
         >>> async with monitor:
         ...     await do_work()
     """
@@ -44,9 +47,14 @@ def create_monitor(
             exename = exename[:-3]
         name = gen_uid(exename, length=8)
 
-    # Check if Messenger is available via ProcessContext
+    # Ensure ProcessContext is initialized (lazily)
     try:
         from ocabox_tcs.management.process_context import ProcessContext
+
+        # Initialize ProcessContext if not already done
+        # (no config_file = discovers existing Messenger)
+        await ProcessContext.initialize()
+
         process = ProcessContext()
         if process.messenger and process.messenger.is_open:
             # Messenger available - use NATS monitoring

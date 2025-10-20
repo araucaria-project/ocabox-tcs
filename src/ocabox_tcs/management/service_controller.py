@@ -189,7 +189,7 @@ class ServiceController:
                 self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
 
         # Create monitor using factory (auto-detects NATS availability)
-        self.monitor = create_monitor(
+        self.monitor = await create_monitor(
             name=self.service_id,
             heartbeat_interval=10.0,
             healthcheck_interval=30.0,

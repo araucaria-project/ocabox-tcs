@@ -192,7 +192,7 @@ class BaseLauncher(ABC):
             return
 
         name = monitor_name or f"launcher.{self.launcher_id}"
-        self.monitor = create_monitor(
+        self.monitor = await create_monitor(
             name=name,
             heartbeat_interval=10.0,
             healthcheck_interval=30.0,

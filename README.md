@@ -161,74 +161,55 @@ For detailed guidance on choosing base classes and implementing services, see [D
 
 The monitoring system can be used in **any Python project** that needs status reporting over NATS, not just TCS services.
 
-**Note**: The factory function `create_monitor()` auto-detects NATS availability via `ProcessContext`. If NATS is not available, it returns a no-op monitor for graceful degradation.
-
 ### Basic Usage (Simple)
 
 Add monitoring to your application with automatic lifecycle management:
 
 ```python
 from ocabox_tcs.monitoring import create_monitor, Status
-from ocabox_tcs.management.process_context import ProcessContext
+from serverish.messenger import Messenger
 
-class MyApplication:
-    def __init__(self):
-        # Factory auto-detects NATS availability
-        self.monitor = create_monitor(
-            name="my_app.instance1",
-            subject_prefix="myproject"
-        )
-        # Your existing initialization...
-
-    async def run(self):
-        # Context manager handles start/stop automatically
-        async with self.monitor:
-            self.monitor.set_status(Status.OK, "Application started")
-            # Your application logic...
-            await self.do_work()
-
-# Usage - ProcessContext provides NATS messenger
 async def main():
-    # Initialize ProcessContext (provides NATS messenger singleton)
-    process = await ProcessContext.initialize(config_file='config.yaml')
+    # You manage Messenger (your existing setup)
+    messenger = Messenger()
+    async with messenger.context(host='localhost', port=4222):
+        # create_monitor auto-discovers Messenger automatically!
+        monitor = await create_monitor('my_app', subject_prefix='myproject')
 
-    app = MyApplication()
-    await app.run()
-
-    await process.shutdown()
+        async with monitor:
+            monitor.set_status(Status.OK, "Application started")
+            await do_work()
 ```
 
-This gives your application:
-- Status reporting to NATS stream `myproject.status.my_app.instance1`
-- Heartbeat monitoring (10s) on `myproject.heartbeat.my_app.instance1`
+That's it! Your application gets:
+- Status reporting to NATS stream `myproject.status.my_app`
+- Heartbeat monitoring (10s) on `myproject.heartbeat.my_app`
 - Lifecycle events on `myproject.registry.*`
 - Automatic healthcheck loop (30s)
+
+**Note**: `create_monitor()` auto-detects NATS availability. If NATS is not available, it returns a no-op monitor for graceful degradation.
 
 ### Advanced: Health Check Callbacks
 
 Add custom health checks that run periodically (default: every 30s):
 
 ```python
-class MyApplication:
-    def __init__(self):
-        self.monitor = create_monitor(name="my_app")
-        self.error_count = 0
+from ocabox_tcs.monitoring import create_monitor, Status
+from serverish.messenger import Messenger
 
-        # Add healthcheck callback (sync or async)
-        self.monitor.add_healthcheck_cb(self.check_health)
+async def main():
+    messenger = Messenger()
+    async with messenger.context():
+        monitor = await create_monitor(name="my_app")
+        monitor.add_healthcheck_cb(check_health)
 
-    def check_health(self) -> Status | None:
-        """Called every 30s by healthcheck loop"""
-        if self.error_count > 10:
-            return Status.DEGRADED
-        # Return None = healthy (no opinion)
-        return None
+        async with monitor:
+            await do_work()
 
-    async def run(self):
-        async with self.monitor:
-            # Health checks run automatically
-            # Status auto-updates if unhealthy
-            await self.do_work()
+def check_health() -> Status | None:
+    """Called every 30s by healthcheck loop"""
+    # Return Status.DEGRADED if unhealthy, None if healthy
+    return None  # No opinion = healthy
 ```
 
 ### Advanced: Metric Collection
@@ -236,21 +217,25 @@ class MyApplication:
 Collect custom metrics in status reports:
 
 ```python
-class MyApplication:
-    def __init__(self):
-        self.monitor = create_monitor(name="my_app")
-        self.queue = []
+from ocabox_tcs.monitoring import create_monitor
+from serverish.messenger import Messenger
 
-        # Add metric callback (sync or async)
-        self.monitor.add_metric_cb(self.get_metrics)
+async def main():
+    messenger = Messenger()
+    async with messenger.context():
+        monitor = await create_monitor(name="my_app")
+        monitor.add_metric_cb(get_metrics)
 
-    def get_metrics(self) -> dict:
-        """Called when generating status reports"""
-        return {
-            "queue_size": len(self.queue),
-            "errors": self.error_count,
-            "processed": self.processed_count
-        }
+        async with monitor:
+            await do_work()
+
+def get_metrics() -> dict:
+    """Called when generating status reports"""
+    return {
+        "queue_size": 10,
+        "errors": 0,
+        "processed": 1000
+    }
 ```
 
 ### Advanced: Task Tracking (BUSY/IDLE)
@@ -258,40 +243,24 @@ class MyApplication:
 Track task execution with automatic BUSY/IDLE status:
 
 ```python
-class MyApplication:
-    def __init__(self):
-        self.monitor = create_monitor(name="my_app")
-
-    async def process_item(self, item):
-        # Automatic status management:
-        # - Immediately switches to BUSY
-        # - Waits 1s after task ends before IDLE
-        # - Cancels IDLE transition if new task starts
-        async with self.monitor.track_task():
-            await self._do_processing(item)
-```
-
-### Without ProcessContext (Direct Messenger)
-
-If you're not using ProcessContext, you can still use monitoring directly:
-
-```python
-from ocabox_tcs.monitoring import MessengerMonitoredObject, Status
+from ocabox_tcs.monitoring import create_monitor
 from serverish.messenger import Messenger
 
 async def main():
     messenger = Messenger()
-    async with messenger.context(host='localhost', port=4222):
-        # Direct instantiation when messenger is explicitly available
-        monitor = MessengerMonitoredObject(
-            messenger=messenger,
-            name="my_app",
-            subject_prefix="myproject"
-        )
+    async with messenger.context():
+        monitor = await create_monitor(name="my_app")
 
         async with monitor:
-            monitor.set_status(Status.OK, "Running")
-            # Work...
+            await process_item("data")
+
+async def process_item(item):
+    # Automatic status management:
+    # - Immediately switches to BUSY
+    # - Waits 1s after task ends before IDLE
+    # - Cancels IDLE transition if new task starts
+    async with monitor.track_task():
+        await do_processing(item)
 ```
 
 The monitoring system handles all NATS communication, status transitions, and heartbeat publishing automatically.
