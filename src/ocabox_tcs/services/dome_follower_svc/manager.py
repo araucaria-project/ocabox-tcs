@@ -6,6 +6,7 @@ from ob.planrunner import ConfigGeneral
 from obcom.comunication.comunication_error import CommunicationTimeoutError
 from ocaboxapi.exceptions import OcaboxServerError, OcaboxAccessDenied
 
+from ocabox_tcs.monitoring import Status
 from ocabox_tcs.services.dome_follower_svc.nats_conn import NatsConn
 from ocabox_tcs.services.dome_follower_svc.tic_conn import TicConn
 
@@ -15,7 +16,7 @@ class Manager:
     def __init__(
             self, service = None, config = None, client_name: str = 'CliClient',
             software_id: str = 'dome_follower', obs_config_stream: str ="tic.config.observatory") -> None:
-        self.service = service
+        self.service: 'DomeFollowerService' = service
         self.config = config
         self.logger = self.service.logger
         self.nats_conn: Optional[NatsConn] = None
@@ -66,46 +67,57 @@ class Manager:
 
     async def dome_follow(self) -> None:
         if self.follow_on:
-            ts_0 = time.time()
-            try:
-                dome_slewing = await self.tic_conn.dome.aget_slewing()
-                dome_az = await self.tic_conn.dome.aget_az()
-                mount_az = await self.tic_conn.mount.aget_az()
-                mount_slewing = await self.tic_conn.mount.aget_slewing()
-                if dome_az is not None and self.dome_az_last is not None:
-                    diff = abs(dome_az - self.dome_az_last) % 360
-                    if self.turn_time != 0:
-                        self.dome_current_speed = min(diff, 360 - diff) / self.turn_time
-                        if self.dome_current_speed != 0.0:
-                            self.logger.info(
-                                f"Dome speed: {self.dome_current_speed:.1f} deg/s"
-                            )
-                self.dome_az_last = dome_az
-            except OcaboxServerError:
-                self.logger.error(f'Tic OcaboxServerError.')
-                return
-            except CommunicationTimeoutError:
-                self.logger.error(f'Tic CommunicationTimeoutError')
-                return
-            except OcaboxAccessDenied:
-                self.logger.error(f'Tic OcaboxAccessDenied')
-                return
+            async with self.service.monitor.track_task('checking'):
+                ts_0 = time.time()
+                try:
+                    dome_slewing = await self.tic_conn.dome.aget_slewing()
+                    dome_az = await self.tic_conn.dome.aget_az()
+                    mount_az = await self.tic_conn.mount.aget_az()
+                    mount_slewing = await self.tic_conn.mount.aget_slewing()
+                    if dome_az is not None and self.dome_az_last is not None:
+                        diff = abs(dome_az - self.dome_az_last) % 360
+                        if self.turn_time != 0:
+                            self.dome_current_speed = min(diff, 360 - diff) / self.turn_time
+                            if self.dome_current_speed != 0.0:
+                                self.logger.info(
+                                    f"Dome speed: {self.dome_current_speed:.1f} deg/s"
+                                )
+                    self.dome_az_last = dome_az
+                except OcaboxServerError as e:
+                    self.logger.error(f'Tic OcaboxServerError, {e}')
+                    self.service.monitor.set_status(Status.ERROR,
+                                                    f"Tic dome get Server Error {e}")
+                    return
+                except CommunicationTimeoutError:
+                    self.logger.error(f'Tic CommunicationTimeoutError')
+                    self.service.monitor.set_status(Status.DEGRADED, f"Tic dome get Time out")
+                    return
+                except OcaboxAccessDenied:
+                    self.logger.error(f'Tic OcaboxAccessDenied')
+                    self.service.monitor.set_status(Status.ERROR,
+                                                    f"Tic dome get Access Denied")
+                    return
 
             if dome_slewing is False and mount_slewing is False:
                 diff = abs(dome_az - mount_az) % 360
                 min_diff = min(diff, 360 - diff)
                 if min_diff > self.follow_tolerance and self.dome_current_speed == 0.0:
                     self.logger.info(f"Dome is following: {dome_az:.3f} -> {mount_az:.3f}")
-                    try:
-                        await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
-                    except OcaboxServerError:
-                        self.logger.error(f'Tic OcaboxServerError')
-                        return
-                    except CommunicationTimeoutError:
-                        self.logger.error(f'Tic CommunicationTimeoutError')
-                        return
-                    except OcaboxAccessDenied:
-                        self.logger.error(f'Tic OcaboxAccessDenied')
-                        return
-                    await self.dome_slew_settle(min_diff)
+                    async with self.service.monitor.track_task('slewing'):
+                        try:
+                            await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
+                        except OcaboxServerError as e:
+                            self.logger.error(f'Tic OcaboxServerError, {e}')
+                            self.service.monitor.set_status(Status.ERROR, f"Tic slewtoazimuth Server Error {e}")
+                            return
+                        except CommunicationTimeoutError:
+                            self.logger.error(f'Tic CommunicationTimeoutError')
+                            self.service.monitor.set_status(Status.DEGRADED, f"Tic slewtoazimuth Time out")
+                            return
+                        except OcaboxAccessDenied:
+                            self.logger.error(f'Tic OcaboxAccessDenied')
+                            self.service.monitor.set_status(Status.ERROR, f"Tic slewtoazimuth Access Denied")
+                            return
+                        self.service.monitor.cancel_error_status()
+                        await self.dome_slew_settle(min_diff)
             self.turn_time = time.time() - ts_0

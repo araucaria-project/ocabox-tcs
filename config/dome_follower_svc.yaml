@@ -1,0 +1,12 @@
+# config/services.yaml
+nats:
+  host: localhost
+  port: 4222
+  required: true  # Block startup until NATS is available
+
+
+services:
+  - type: dome_follower
+    log_level: INFO
+    instance_context: dev
+    interval: 1  # Interval in seconds
