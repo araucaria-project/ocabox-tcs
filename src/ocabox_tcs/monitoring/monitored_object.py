@@ -56,11 +56,13 @@ class MonitoredObject:
         """Send shutdown event. Override in subclasses that support it."""
         pass
 
-    def track_task(self):
+    def track_task(self, name: str | None = None) -> "_TaskTracker":
         """Context manager for tracking task execution (enables BUSY/IDLE status).
 
+        Args:
+            name: Optional name for the task (for logging and statisitcal purposes)
         Usage:
-            >>> async with monitor.track_task():
+            >>> async with monitor.track_task('work'):
             ...     await do_work()
 
         Behavior:
@@ -121,6 +123,16 @@ class MonitoredObject:
         except asyncio.CancelledError:
             # Another task started, stay BUSY
             pass
+
+    def cancel_error_status(self):
+        """If currently in ERROR/FAILED/DEGRADED status, revert to OK/IDLE/BUSY."""
+        if self._status in (Status.ERROR, Status.FAILED, Status.DEGRADED):
+            # Determine new status based on task tracking
+            if self._task_tracking_enabled:
+                new_status = Status.IDLE if self._active_tasks == 0 else Status.BUSY
+            else:
+                new_status = Status.OK
+            self.set_status(new_status, "Error resolved")
 
     def set_status(self, status: Status, message: str | None = None):
         """Set status directly and trigger status change notification."""
