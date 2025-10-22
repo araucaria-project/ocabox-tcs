@@ -40,9 +40,15 @@ class ProcessRunner(BaseRunner):
             return False
 
         try:
+            # Resolve module name: use explicit module if provided, else default to internal
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
             args = [
                 "poetry", "run", "python", "-m",
-                f"ocabox_tcs.services.{self.config.service_type}",
+                module_name,
             ]
 
             if self.config.config_file:
@@ -278,6 +284,8 @@ async def amain():
     """Process launcher entry point."""
     import argparse
     import logging
+    import sys
+    from pathlib import Path
 
     logging.basicConfig(
         level=logging.INFO,
@@ -291,11 +299,26 @@ async def amain():
     parser = argparse.ArgumentParser(description="Start TCS process launcher")
     parser.add_argument(
         "--config",
-        default="config/services.yaml",
+        default=None,
         help="Path to services config file (default: config/services.yaml)"
     )
     parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
     args = parser.parse_args()
+
+    # Determine config file and validate
+    if args.config is not None:
+        # User explicitly provided --config, file MUST exist
+        config_file = args.config
+        if not Path(config_file).exists():
+            logger.error(f"Configuration file not found: {config_file}")
+            logger.error("Explicitly provided config file must exist. Exiting.")
+            sys.exit(1)
+    else:
+        # Use default, missing file is OK (will use defaults)
+        config_file = "config/services.yaml"
+        if not Path(config_file).exists():
+            logger.info(f"Default config file not found: {config_file}")
+            logger.info("Continuing with empty configuration")
 
     # Print startup banner (unless suppressed)
     if not args.no_banner:
@@ -305,7 +328,7 @@ async def amain():
         logger.info("=" * 60)
 
     # Initialize ProcessContext (handles config loading)
-    process_ctx = await ProcessContext.initialize(config_file=args.config)
+    process_ctx = await ProcessContext.initialize(config_file=config_file)
 
     # Create and initialize launcher
     launcher = ProcessLauncher()

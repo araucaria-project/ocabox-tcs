@@ -21,6 +21,7 @@ class ServiceRunnerConfig:
     instance_context: str | None = None
     config_file: str | None = None
     runner_id: str | None = None
+    module: str | None = None  # Optional: full module path for external packages
 
     @property
     def service_id(self) -> str:
@@ -202,6 +203,14 @@ class BaseLauncher(ABC):
         # Set initial status
         self.monitor.set_status(Status.STARTUP, "Launcher initializing")
         self.logger.info(f"Initialized monitoring as '{name}'")
+
+        # Warn if monitoring is disabled (no NATS connection)
+        from ocabox_tcs.monitoring.monitored_object import DummyMonitoredObject
+        if isinstance(self.monitor, DummyMonitoredObject):
+            self.logger.warning("=" * 60)
+            self.logger.warning("Launcher monitoring DISABLED - no NATS connection")
+            self.logger.warning("Launcher will NOT appear in tcsctl")
+            self.logger.warning("=" * 60)
 
     async def start_monitoring(self):
         """Start launcher monitoring (heartbeats and status updates)."""

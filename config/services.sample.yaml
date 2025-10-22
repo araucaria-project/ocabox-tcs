@@ -21,5 +21,11 @@ services:
   #   interval: 3
   #   message: "Dev instance"
 
+  # External service from external Python package
+  # Uncomment to test external service discovery (requires external_example package)
+  # - type: external_worker
+  #   instance_context: demo
+  #   module: tests.external_example.external_worker
+
 # For tutorial examples, see config/examples.yaml
 # To learn the framework, see src/ocabox_tcs/services/examples/README.md

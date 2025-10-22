@@ -181,3 +181,120 @@ class NewService(BaseBlockingPermanentService):
 ```
 
 **Result**: 50% less code, automatic error handling, cleaner cancellation! 🎉
+
+## External Services
+
+Services can be loaded from external Python packages, not just the built-in `ocabox_tcs.services` directory.
+
+### When to Use External Services
+
+- **Distributed development**: Different teams own different service packages
+- **Reusability**: Services can be published as separate Python packages
+- **Modularity**: Large projects can split services into multiple packages
+- **Third-party integrations**: Import services from external libraries
+
+### Creating an External Service
+
+External services use the same `@service` decorator as built-in services:
+
+**Example** (File: `my_project/telescope_control.py`):
+```python
+from ocabox_tcs.base_service import service, BaseBlockingPermanentService
+
+@service
+class TelescopeControlService(BaseBlockingPermanentService):
+    async def run_service(self):
+        while self.is_running:
+            await self.control_telescope()
+            await asyncio.sleep(1)
+```
+
+### Registering External Services in Configuration
+
+Use the `module` field to specify the full Python module path:
+
+**Example** (File: `config/services.yaml`):
+```yaml
+services:
+  # Built-in service (no module field needed)
+  - type: hello_world
+    instance_context: main
+
+  # External service (from external package)
+  - type: telescope_control
+    instance_context: jk15
+    module: my_project.telescope_control
+
+  # Another external service example
+  - type: data_importer
+    instance_context: main
+    module: external_package.importers.data_importer
+```
+
+### How It Works
+
+1. **Configuration Loading**: Launchers read the `services` array from config
+2. **Module Resolution**:
+   - If `module` field is provided: Uses that module path
+   - If `module` is missing: Defaults to `ocabox_tcs.services.{type}`
+3. **Service Discovery**: The `@service` decorator registers the class globally
+4. **Instantiation**: Launchers create instances using the registered class
+
+### Service Registration Behavior
+
+The `@service` decorator automatically derives service type names:
+
+- **Built-in services**: From filename stem
+  - `hello_world.py` → service type `"hello_world"`
+  - `examples/01_minimal.py` → service type `"examples.01_minimal"`
+
+- **External services**: From filename stem (no path prefix needed)
+  - `my_project/telescope_control.py` → service type `"telescope_control"`
+  - (The `module` field in config specifies the full package path)
+
+**Key Point**: The `type` field in config must match the filename stem, not the full module path. The `module` field specifies where to find it.
+
+### Testing External Services
+
+Create tests to verify external services are discoverable:
+
+```python
+import importlib
+from ocabox_tcs.base_service import get_service_class
+
+# Import the module (triggers decorator registration)
+importlib.import_module("my_project.telescope_control")
+
+# Verify service is registered
+service_class = get_service_class("telescope_control")
+assert service_class is not None
+```
+
+### Example: External Service Package Structure
+
+```
+my_telescope_project/
+├── my_project/
+│   ├── __init__.py
+│   ├── telescope_control.py      # External service
+│   ├── data_importer.py          # Another service
+│   └── config/
+│       └── equipment.yaml
+├── tests/
+│   └── test_services.py
+└── pyproject.toml                # Package metadata
+```
+
+### Using External Services with Launchers
+
+Both `ProcessLauncher` and `AsyncioLauncher` support external services automatically:
+
+```bash
+# Process launcher with external services
+poetry run tcs_process --config config/services.yaml
+
+# Asyncio launcher with external services
+poetry run tcs_asyncio --config config/services.yaml
+```
+
+The launchers resolve module paths and import services transparently.

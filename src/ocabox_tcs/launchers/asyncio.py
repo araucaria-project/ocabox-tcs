@@ -33,7 +33,11 @@ class AsyncioRunner(BaseRunner):
             return False
 
         try:
-            module_name = f"ocabox_tcs.services.{self.config.service_type}"
+            # Resolve module name: use explicit module if provided, else default to internal
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
             instance_id = self.config.instance_context or self.config.service_type
 
             self.controller = ServiceController(
@@ -156,7 +160,8 @@ class AsyncioLauncher(BaseLauncher):
                     service_type=service_cfg['type'],
                     instance_context=service_cfg.get('instance_context'),
                     config_file=process_ctx.config_file,  # Not used by AsyncioRunner, but keep for consistency
-                    runner_id=f"{self.launcher_id}.{service_cfg['type']}"
+                    runner_id=f"{self.launcher_id}.{service_cfg['type']}",
+                    module=service_cfg.get('module')  # Optional: external package module
                 )
 
                 runner = AsyncioRunner(runner_config)
@@ -224,6 +229,8 @@ class AsyncioLauncher(BaseLauncher):
 async def amain():
     """Asyncio launcher entry point."""
     import argparse
+    import sys
+    from pathlib import Path
 
     logging.basicConfig(
         level=logging.INFO,
@@ -237,11 +244,26 @@ async def amain():
     parser = argparse.ArgumentParser(description="Start TCS asyncio launcher")
     parser.add_argument(
         "--config",
-        default="config/services.yaml",
+        default=None,
         help="Path to services config file (default: config/services.yaml)"
     )
     parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
     args = parser.parse_args()
+
+    # Determine config file and validate
+    if args.config is not None:
+        # User explicitly provided --config, file MUST exist
+        config_file = args.config
+        if not Path(config_file).exists():
+            logger.error(f"Configuration file not found: {config_file}")
+            logger.error("Explicitly provided config file must exist. Exiting.")
+            sys.exit(1)
+    else:
+        # Use default, missing file is OK (will use defaults)
+        config_file = "config/services.yaml"
+        if not Path(config_file).exists():
+            logger.info(f"Default config file not found: {config_file}")
+            logger.info("Continuing with empty configuration")
 
     # Print startup banner (unless suppressed)
     if not args.no_banner:
@@ -251,7 +273,7 @@ async def amain():
         logger.info("=" * 60)
 
     # Initialize ProcessContext (handles config loading, shared by all services)
-    process_ctx = await ProcessContext.initialize(config_file=args.config)
+    process_ctx = await ProcessContext.initialize(config_file=config_file)
 
     # Create and initialize launcher
     launcher = AsyncioLauncher()

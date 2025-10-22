@@ -1,0 +1,13 @@
+# Test configuration for external service discovery
+# Used for testing services from external packages
+
+nats:
+  host: localhost
+  port: 4222
+  required: false  # For testing without NATS running
+
+services:
+  # External worker service from tests.external_example package
+  - type: external_worker
+    instance_context: demo
+    module: tests.external_example.external_worker
