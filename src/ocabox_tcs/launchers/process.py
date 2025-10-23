@@ -100,15 +100,26 @@ class ProcessRunner(BaseRunner):
             proc = self.process_info.process
 
             proc.terminate()
-            await asyncio.sleep(self.terminate_delay)
 
+            # Poll every 100ms for up to terminate_delay seconds
+            # Exit early if process terminates cleanly
             force_killed = False
-            if proc.poll() is None:
-                self.logger.warning(
-                    f"Force killing {self.service_id} - did not terminate in {self.terminate_delay}s"
-                )
-                proc.kill()
-                force_killed = True
+            poll_interval = 0.1
+            max_polls = int(self.terminate_delay / poll_interval)
+
+            for _ in range(max_polls):
+                await asyncio.sleep(poll_interval)
+                if proc.poll() is not None:
+                    # Process exited cleanly
+                    break
+            else:
+                # Timeout reached, check one more time and force kill if needed
+                if proc.poll() is None:
+                    self.logger.warning(
+                        f"Force killing {self.service_id} - did not terminate in {self.terminate_delay}s"
+                    )
+                    proc.kill()
+                    force_killed = True
 
             if self._log_monitor_task:
                 self._log_monitor_task.cancel()
@@ -297,12 +308,26 @@ class ProcessLauncher(BaseLauncher):
         return success
 
     async def stop_all(self) -> bool:
-        """Stop all running services."""
+        """Stop all running services in parallel."""
+        if not self.runners:
+            return True
+
+        # Stop all services in parallel for faster shutdown
+        results = await asyncio.gather(
+            *[self.stop_service(sid) for sid in self.runners.keys()],
+            return_exceptions=True
+        )
+
+        # Check if any failed
         success = True
-        for service_id in list(self.runners.keys()):
-            if not await self.stop_service(service_id):
-                self.logger.error(f"Failed to stop {service_id}")
+        for sid, result in zip(self.runners.keys(), results):
+            if isinstance(result, Exception):
+                self.logger.error(f"Failed to stop {sid}: {result}")
                 success = False
+            elif not result:
+                self.logger.error(f"Failed to stop {sid}")
+                success = False
+
         return success
 
     async def run(self):
@@ -356,6 +381,12 @@ async def amain():
         default=None,
         help="Path to services config file (default: config/services.yaml)"
     )
+    parser.add_argument(
+        "--terminate-delay",
+        type=float,
+        default=1.0,
+        help="Time to wait for graceful shutdown before force-kill (default: 1.0s)"
+    )
     parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
     args = parser.parse_args()
 
@@ -385,7 +416,7 @@ async def amain():
     process_ctx = await ProcessContext.initialize(config_file=config_file)
 
     # Create and initialize launcher
-    launcher = ProcessLauncher()
+    launcher = ProcessLauncher(terminate_delay=args.terminate_delay)
     if not await launcher.initialize(process_ctx):
         logging.error("Failed to initialize launcher")
         await process_ctx.shutdown()

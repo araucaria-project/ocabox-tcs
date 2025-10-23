@@ -312,13 +312,14 @@ class BaseService(ABC):
                     try:
                         # Wait for shutdown signal
                         shutdown_event = asyncio.Event()
+                        loop = asyncio.get_running_loop()
 
-                        def signal_handler(signum, frame):
+                        def handle_signal():
                             shutdown_event.set()
 
-                        # Set up signal handlers
-                        signal.signal(signal.SIGINT, signal_handler)
-                        signal.signal(signal.SIGTERM, signal_handler)
+                        # Set up signal handlers (asyncio-aware)
+                        loop.add_signal_handler(signal.SIGINT, handle_signal)
+                        loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
                         # Wait for shutdown
                         await shutdown_event.wait()
