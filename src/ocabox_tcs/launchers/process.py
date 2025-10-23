@@ -102,11 +102,13 @@ class ProcessRunner(BaseRunner):
             proc.terminate()
             await asyncio.sleep(self.terminate_delay)
 
+            force_killed = False
             if proc.poll() is None:
                 self.logger.warning(
                     f"Force killing {self.service_id} - did not terminate in {self.terminate_delay}s"
                 )
                 proc.kill()
+                force_killed = True
 
             if self._log_monitor_task:
                 self._log_monitor_task.cancel()
@@ -114,6 +116,11 @@ class ProcessRunner(BaseRunner):
                     await self._log_monitor_task
                 except asyncio.CancelledError:
                     pass
+
+            # If we force-killed the service, publish STOP event to NATS
+            # (subprocess didn't get a chance to send it)
+            if force_killed:
+                await self._publish_stop_event(reason="force_killed")
 
             self._is_running = False
             self.process_info = None
@@ -148,6 +155,50 @@ class ProcessRunner(BaseRunner):
             "start_time": self.process_info.start_time.isoformat(),
             "uptime_seconds": (datetime.now() - self.process_info.start_time).total_seconds()
         }
+
+    async def _publish_stop_event(self, reason: str = "force_killed"):
+        """Publish STOP event to NATS registry.
+
+        Called when the launcher force-kills a service, since the subprocess
+        won't have a chance to send its own STOP message.
+
+        Args:
+            reason: Reason for stop (e.g., "force_killed", "timeout")
+        """
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.warning("No NATS messenger available, cannot publish STOP event")
+                return
+
+            # Construct service_id in same format as service uses: module_name:instance_id
+            # Service uses format like: ocabox_tcs.services.examples.01_minimal:minimal
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+            instance_id = self.config.instance_context or self.config.service_type
+            service_id = f"{module_name}:{instance_id}"
+
+            subject = f"svc.registry.stop.{service_id}"
+            data = {
+                "event": "stop",
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+                "reason": reason,
+                "killed_by_launcher": True
+            }
+
+            await single_publish(subject, data)
+            self.logger.info(f"Published STOP event for {service_id} (reason: {reason})")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish STOP event for {self.service_id}: {e}", exc_info=True)
 
     async def _monitor_logs(self):
         """Monitor and relay service logs."""
