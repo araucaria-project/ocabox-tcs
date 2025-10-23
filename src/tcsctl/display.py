@@ -179,9 +179,17 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
     if service_filter:
         filter_lower = service_filter.lower()
         services = [s for s in services if filter_lower in s.service_id.lower()]
-    elif not show_all:
-        # Filter by running status only if no service filter
-        services = [s for s in services if s.is_running]
+    elif show_all:
+        # --show_all: show declared + fresh (hide only: old ephemeral)
+        services = [s for s in services if s.is_declared or s.is_fresh]
+    else:
+        # Default: show running + (fresh AND ERROR/FAILED)
+        # But exclude old ephemeral even if "running" (likely zombie/stale)
+        services = [
+            s for s in services
+            if (s.is_running and not (s.is_old and s.is_ephemeral))
+            or (s.is_fresh and s.status in (Status.ERROR, Status.FAILED))
+        ]
 
     if not services:
         if service_filter:
@@ -206,11 +214,17 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
 
     # Helper to print a single service in detailed format
     def print_service_detailed(service: ServiceInfo, show_separator: bool = True):
-        # Status symbol and service name (same logic as normal view)
+        # Status symbol and service name
         if not service.is_running:
-            status_symbol = "○"
-            status_color = "dim"
+            # Stopped services with ERROR/FAILED should show red × (not grey ○)
+            if service.status in (Status.ERROR, Status.FAILED):
+                status_symbol = "×"
+                status_color = "red"
+            else:
+                status_symbol = "○"
+                status_color = "dim"
         else:
+            # Running services: heartbeat-first priority
             hb_status = service.heartbeat_status
             if hb_status == "dead":
                 status_symbol = "⚠"
@@ -389,9 +403,17 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
     if service_filter:
         filter_lower = service_filter.lower()
         services = [s for s in services if filter_lower in s.service_id.lower()]
-    elif not show_all:
-        # Filter by running status only if no service filter
-        services = [s for s in services if s.is_running]
+    elif show_all:
+        # --show_all: show declared + fresh (hide only: old ephemeral)
+        services = [s for s in services if s.is_declared or s.is_fresh]
+    else:
+        # Default: show running + (fresh AND ERROR/FAILED)
+        # But exclude old ephemeral even if "running" (likely zombie/stale)
+        services = [
+            s for s in services
+            if (s.is_running and not (s.is_old and s.is_ephemeral))
+            or (s.is_fresh and s.status in (Status.ERROR, Status.FAILED))
+        ]
 
     if not services:
         if service_filter:
@@ -418,12 +440,16 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
     # Helper to print a single service
     def print_service(service: ServiceInfo, indent: str = ""):
         """Print a single service line with optional indentation."""
-        # For stopped services, use empty circle in dim color
         if not service.is_running:
-            status_symbol = "○"
-            status_color = "dim"
+            # Stopped services with ERROR/FAILED should show red × (not grey ○)
+            if service.status in (Status.ERROR, Status.FAILED):
+                status_symbol = "×"
+                status_color = "red"
+            else:
+                status_symbol = "○"
+                status_color = "dim"
         else:
-            # Heartbeat-first priority for running services
+            # Running services: heartbeat-first priority
             hb_status = service.heartbeat_status
 
             if hb_status == "dead":

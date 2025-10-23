@@ -168,6 +168,9 @@ class AsyncioLauncher(BaseLauncher):
                 self.runners[runner.service_id] = runner
                 self.logger.info(f"Registered runner for {runner.service_id}")
 
+            # Declare services to registry (marks them as part of configuration)
+            await self.declare_services(subject_prefix="svc")
+
             return True
 
         except Exception as e:

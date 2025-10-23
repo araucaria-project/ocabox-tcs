@@ -178,6 +178,49 @@ class BaseLauncher(ABC):
             status[service_id] = await runner.get_status()
         return status
 
+    async def declare_services(self, subject_prefix: str = "svc"):
+        """Publish declared events for all configured services.
+
+        This should be called after services are registered from configuration.
+        Declared messages mark services as part of the formal configuration,
+        distinguishing them from ad hoc ephemeral services.
+
+        Args:
+            subject_prefix: NATS subject prefix (default: "svc")
+        """
+        from ocabox_tcs.management.process_context import ProcessContext
+        from serverish.messenger import single_publish
+        from serverish.base import dt_utcnow_array
+        from ocabox_tcs.monitoring.monitored_object import DummyMonitoredObject
+
+        # Skip if monitoring is disabled (no NATS connection)
+        if isinstance(self.monitor, DummyMonitoredObject):
+            self.logger.debug("Monitoring disabled, skipping service declaration")
+            return
+
+        # Get messenger from ProcessContext
+        process_ctx = ProcessContext()
+        if process_ctx is None or process_ctx.messenger is None:
+            self.logger.warning("No NATS messenger available, cannot declare services")
+            return
+
+        # Publish declared event for each registered service
+        for service_id in self.runners.keys():
+            try:
+                subject = f"{subject_prefix}.registry.declared.{service_id}"
+                data = {
+                    "event": "declared",
+                    "service_id": service_id,
+                    "timestamp": dt_utcnow_array(),
+                    "launcher_id": self.launcher_id
+                }
+                await single_publish(subject, data)
+                self.logger.debug(f"Declared service: {service_id}")
+            except Exception as e:
+                self.logger.error(f"Failed to declare service {service_id}: {e}")
+
+        self.logger.info(f"Declared {len(self.runners)} services to registry")
+
     async def initialize_monitoring(self, monitor_name: str | None = None,
                                    subject_prefix: str = "svc"):
         """Initialize launcher monitoring.

@@ -298,3 +298,329 @@ poetry run tcs_asyncio --config config/services.yaml
 ```
 
 The launchers resolve module paths and import services transparently.
+
+## Error Handling
+
+The framework automatically manages status transitions when exceptions occur. Understanding how errors map to status values helps you handle failures gracefully.
+
+### Status Values for Errors
+
+**Two distinct error states:**
+
+- **`FAILED`**: Fatal error during startup or initialization
+  - Service cannot start or is completely unusable
+  - Set during: initialization, service creation, startup
+  - Example: Port already in use, configuration invalid
+
+- **`ERROR`**: Runtime error during execution
+  - Service is operational but encountered a problem
+  - Set during: service execution, shutdown
+  - Example: Database connection lost, API timeout
+  - Recovery possible via healthcheck or manual correction
+
+**Other relevant statuses:**
+
+- **`DEGRADED`**: Service operational with non-critical issues
+- **`WARNING`**: Service has warnings but continues normally
+- **`OK`**: Service running normally
+- **`BUSY`/`IDLE`**: Service tracking task execution (with task tracking enabled)
+
+### Exception Handling Flow
+
+**Where exceptions are caught and converted to status:**
+
+#### 1. **Initialization Errors** → `FAILED`
+```python
+# In ServiceController.initialize() (lines 81-86)
+try:
+    # Load class, setup config, initialize monitoring
+    ...
+except Exception as e:
+    monitor.set_status(Status.FAILED, f"Initialization failed: {e}")
+    return False
+```
+
+**Examples:**
+- Service module not found
+- Configuration file invalid
+- Monitoring setup failed
+
+#### 2. **Startup Errors** → `FAILED`
+```python
+# In ServiceController.start_service() (lines 100-120)
+try:
+    monitor.set_status(Status.STARTUP, "Starting service")
+    await self._create_service()
+    await self._service._internal_start()
+    monitor.set_status(Status.OK, "Service running")
+    return True
+except Exception as e:
+    monitor.set_status(Status.FAILED, f"Startup failed: {e}")
+    return False
+```
+
+**Examples:**
+- Required resource unavailable (database, API)
+- Incompatible Python version
+- Missing dependencies
+
+#### 3. **Runtime Errors** → `ERROR`
+```python
+# In BaseBlockingPermanentService._run_wrapper() (lines 391-401)
+try:
+    await self.run_service()
+except asyncio.CancelledError:
+    raise  # Expected when service stops
+except Exception as e:
+    self.logger.error(f"Error in run_service: {e}")
+    monitor.set_status(Status.ERROR, f"Runtime error: {e}")
+    raise  # Re-raise for controller awareness
+```
+
+**Examples:**
+- Network error during operation
+- Timeout waiting for resource
+- Data processing error
+
+#### 4. **Shutdown Errors** → `ERROR`
+```python
+# In ServiceController.stop_service() (lines 127-142)
+try:
+    monitor.set_status(Status.SHUTDOWN, "Stopping service")
+    await self._service._internal_stop()
+    return True
+except Exception as e:
+    monitor.set_status(Status.ERROR, f"Shutdown failed: {e}")
+    return False
+```
+
+**Examples:**
+- Cleanup failed (file flush error, connection close failed)
+- Graceful shutdown timeout
+
+### Two Ways to Handle Errors
+
+#### **Option 1: Automatic via Healthcheck (Recommended)**
+
+Define a healthcheck callback that returns status based on internal state:
+
+```python
+@service
+class MyService(BaseBlockingPermanentService):
+    def __init__(self):
+        super().__init__()
+        self.error_count = 0
+        self.max_errors = 3
+
+    async def run_service(self):
+        while self.is_running:
+            try:
+                await self.do_work()
+                self.error_count = 0  # Reset on success
+            except Exception as e:
+                self.error_count += 1
+                self.logger.error(f"Error: {e}")
+                await asyncio.sleep(1)  # Back off before retry
+
+    def healthcheck(self) -> Status | None:
+        """Called periodically (default every 30s) to update status."""
+        if self.error_count >= self.max_errors:
+            return Status.FAILED  # Too many errors, give up
+        elif self.error_count > 0:
+            return Status.DEGRADED  # Some errors, but still trying
+        return None  # Healthy, keep current status
+```
+
+**Advantages:**
+- ✅ Automatic status updates via monitoring loop
+- ✅ Responsive to internal state changes
+- ✅ No manual status calls needed
+
+#### **Option 2: Manual Status Override**
+
+Call `monitor.set_status()` directly for immediate updates:
+
+```python
+@service
+class MyService(BaseBlockingPermanentService):
+    async def run_service(self):
+        while self.is_running:
+            try:
+                result = await self.critical_operation()
+                if not result:
+                    self.monitor.set_status(Status.ERROR, "Operation failed")
+                else:
+                    self.monitor.set_status(Status.OK, "Operation successful")
+            except Exception as e:
+                self.monitor.set_status(Status.ERROR, str(e))
+```
+
+**Advantages:**
+- ✅ Immediate status change (not waiting for healthcheck loop)
+- ✅ Fine-grained control over status messages
+
+**Use when:**
+- You need instant status change before next healthcheck cycle
+- Status changes based on external events
+
+### Recovering from Errors
+
+#### **Healthcheck-based Recovery**
+
+When the underlying issue is resolved, healthcheck automatically updates status:
+
+```python
+def healthcheck(self) -> Status | None:
+    # Check if issue is resolved
+    if self.connection.is_active():
+        # Recovered!
+        return Status.OK
+    else:
+        return Status.ERROR
+```
+
+#### **Manual Recovery with `cancel_error_status()`**
+
+Use this to manually recover from ERROR/FAILED/DEGRADED status:
+
+```python
+@service
+class MyService(BaseBlockingPermanentService):
+    async def on_start(self):
+        # Register recovery command handler
+        self.add_healthcheck_cb(self.handle_recovery)
+
+    async def handle_recovery(self) -> Status | None:
+        if self.recovery_requested:
+            self.recovery_requested = False
+            self.monitor.cancel_error_status()  # Revert to OK/IDLE/BUSY
+            return Status.OK
+        return None
+```
+
+**What `cancel_error_status()` does:**
+- If in ERROR/FAILED/DEGRADED: Reverts to OK (or IDLE/BUSY if task tracking enabled)
+- Sets message to "Error resolved"
+- Useful for manual recovery procedures
+
+### Practical Example: Resilient Service
+
+```python
+@service
+class ResilientService(BaseBlockingPermanentService):
+    def __init__(self):
+        super().__init__()
+        self.connection = None
+        self.errors_since_last_recovery = 0
+        self.max_errors_before_critical = 5
+
+    async def on_start(self):
+        """Setup called before main loop."""
+        try:
+            self.connection = await self.connect_to_database()
+        except Exception as e:
+            self.logger.error(f"Failed to connect: {e}")
+            raise  # Will set status to FAILED
+
+    async def run_service(self):
+        """Main loop with error recovery."""
+        while self.is_running:
+            try:
+                data = await self.fetch_data()
+                await self.process_data(data)
+                self.errors_since_last_recovery = 0  # Reset counter
+
+            except ConnectionError as e:
+                self.errors_since_last_recovery += 1
+                self.logger.warning(f"Connection error #{self.errors_since_last_recovery}: {e}")
+                # Try to reconnect
+                try:
+                    self.connection = await self.connect_to_database()
+                except Exception:
+                    self.logger.error("Reconnect failed, backing off...")
+                    await asyncio.sleep(min(2 ** self.errors_since_last_recovery, 60))
+
+            except Exception as e:
+                self.logger.error(f"Unexpected error: {e}")
+                raise  # Will set status to ERROR, but service still running
+
+            await asyncio.sleep(1)
+
+    def healthcheck(self) -> Status | None:
+        """Periodic health check (default every 30s)."""
+        if self.errors_since_last_recovery >= self.max_errors_before_critical:
+            return Status.FAILED  # Too many errors
+
+        if self.errors_since_last_recovery > 0:
+            return Status.DEGRADED  # Some errors but recovering
+
+        if not self.connection or not self.connection.is_active():
+            return Status.ERROR  # Connection lost
+
+        return None  # Healthy
+```
+
+**Flow with this example:**
+1. Normal operation: Status = OK
+2. Connection error: Error logged, status = DEGRADED (via healthcheck)
+3. Reconnect successful: Status = OK
+4. Multiple reconnect failures: Status = FAILED (too many errors)
+5. Admin fixes database: healthcheck detects it, status = OK again
+
+### Status Aggregation
+
+When a launcher manages multiple services, overall status reflects the worst service:
+
+```
+Services: [OK, OK, DEGRADED, ERROR]
+Launcher Status: ERROR (worst case wins)
+
+Services: [OK, FAILED]
+Launcher Status: FAILED (always reported to NATS)
+```
+
+See `aggregate_status()` in `monitoring/status.py` for details.
+
+### Viewing Errors in tcsctl
+
+See service errors in the CLI:
+
+```bash
+# List running services only (default, hides stopped services)
+tcsctl
+
+# List all services including stopped ones
+tcsctl --all
+
+# Detailed multi-line view with all metadata
+tcsctl --detailed
+
+# Verbose mode shows collection statistics
+tcsctl --verbose
+
+# Filter to specific service
+tcsctl hello_world
+
+# Show legend explaining status symbols
+tcsctl --legend
+```
+
+**Error Display:**
+- Error states shown in **red** with × symbol:
+  - `ERROR` - Service operational but with runtime errors
+  - `FAILED` - Service startup failed, completely unusable
+- Dead heartbeat shown as **⚠** in red (zombie process detection)
+- Degraded/warning states shown in **yellow** with ◐ symbol
+- Healthy services shown in **green** with ● symbol
+
+### File Locations
+
+| Aspect | File Location |
+|--------|---------------|
+| Exception handling in controller | `src/ocabox_tcs/management/service_controller.py` (lines 81-142) |
+| Runtime error handling | `src/ocabox_tcs/base_service.py` (lines 391-401) |
+| Status definitions | `src/ocabox_tcs/monitoring/status.py` |
+| Healthcheck system | `src/ocabox_tcs/monitoring/monitored_object.py` (lines 225-247) |
+| `cancel_error_status()` | `src/ocabox_tcs/monitoring/monitored_object.py` (lines 127-135) |
+| Example service | `src/ocabox_tcs/services/examples/04_monitoring.py` |
+| Tests | `tests/test_monitoring.py` |

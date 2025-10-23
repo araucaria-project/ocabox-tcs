@@ -73,10 +73,50 @@ class ServiceInfo:
     # Hierarchical grouping field
     parent: Optional[str] = None  # Parent entity name for grouping (e.g., launcher name)
 
+    # Service lifecycle tracking
+    declared: bool = False  # Tracks if service appeared in svc.registry.declared (from config)
+
     @property
     def is_running(self) -> bool:
         """Check if service is currently running."""
         return self.status.is_operational and self.stop_time is None
+
+    @property
+    def is_declared(self) -> bool:
+        """Check if service is declared (appears in launcher configuration).
+
+        Declared services appear in svc.registry.declared.* and are from
+        human-prepared configuration files.
+        """
+        return self.declared
+
+    @property
+    def is_ephemeral(self) -> bool:
+        """Check if service is ephemeral (ad hoc, not in configuration).
+
+        Ephemeral services are created dynamically and not part of
+        formal service configuration files.
+        """
+        return not self.declared
+
+    @property
+    def is_fresh(self) -> bool:
+        """Check if service has recent heartbeat (within 24h).
+
+        Fresh services have sent a heartbeat in the past 24 hours.
+        """
+        if self.last_heartbeat is None:
+            return False
+        age = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
+        return age < 86400  # 24 hours
+
+    @property
+    def is_old(self) -> bool:
+        """Check if service has no heartbeat for 24h or more.
+
+        Old services haven't sent a heartbeat in over 24 hours.
+        """
+        return not self.is_fresh
 
     @property
     def uptime_str(self) -> str:
@@ -329,6 +369,10 @@ class ServiceControlClient:
                             if timestamp:
                                 services[service_id].stop_time = dt_from_array(timestamp)
 
+                        elif event == 'declared':
+                            # Service is declared in launcher configuration
+                            services[service_id].declared = True
+
                 elapsed = time.time() - start_time
                 logger.debug(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
             except NotFoundError:
@@ -497,6 +541,14 @@ class ServiceControlClient:
                         # Trigger callback
                         if self.on_service_stop:
                             self.on_service_stop(service)
+                        if self.on_service_update:
+                            self.on_service_update(service)
+
+                    elif event == 'declared':
+                        # Service is declared in launcher configuration
+                        service.declared = True
+
+                        # Trigger callback (configuration update)
                         if self.on_service_update:
                             self.on_service_update(service)
 
