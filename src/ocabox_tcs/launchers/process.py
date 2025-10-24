@@ -10,6 +10,7 @@ import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
+from time import time
 from typing import Any
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
@@ -32,6 +33,7 @@ class ProcessRunner(BaseRunner):
         self.process_info: ProcessInfo | None = None
         self.terminate_delay = terminate_delay
         self._log_monitor_task: asyncio.Task | None = None
+        self._crash_monitor_task: asyncio.Task | None = None
 
     async def start(self) -> bool:
         """Start service in subprocess."""
@@ -81,6 +83,7 @@ class ProcessRunner(BaseRunner):
 
             self._is_running = True
             self._log_monitor_task = asyncio.create_task(self._monitor_logs())
+            self._crash_monitor_task = asyncio.create_task(self._monitor_crash())
             self.logger.info(f"Service {self.service_id} started (PID: {process.pid})")
             return True
 
@@ -125,6 +128,13 @@ class ProcessRunner(BaseRunner):
                 self._log_monitor_task.cancel()
                 try:
                     await self._log_monitor_task
+                except asyncio.CancelledError:
+                    pass
+
+            if self._crash_monitor_task:
+                self._crash_monitor_task.cancel()
+                try:
+                    await self._crash_monitor_task
                 except asyncio.CancelledError:
                     pass
 
@@ -211,6 +221,203 @@ class ProcessRunner(BaseRunner):
         except Exception as e:
             self.logger.error(f"Failed to publish STOP event for {self.service_id}: {e}", exc_info=True)
 
+    async def _monitor_crash(self):
+        """Monitor subprocess for unexpected exits and handle restarts."""
+        if not self.process_info:
+            return
+
+        try:
+            while self._is_running and self.process_info is not None:
+                # Check if process exited unexpectedly
+                returncode = self.process_info.process.poll()
+
+                if returncode is not None and self.process_info is not None:
+                    # Process exited! Clear process_info immediately to prevent duplicate handling
+                    process_info = self.process_info
+                    self.process_info = None
+
+                    self.logger.warning(
+                        f"Service {self.service_id} exited unexpectedly "
+                        f"(exit code: {returncode})"
+                    )
+
+                    # Determine if we should restart
+                    should_restart = self._should_restart(returncode)
+
+                    if should_restart:
+                        # Publish CRASH event
+                        await self._publish_crash_event(exit_code=returncode)
+
+                        # Wait restart delay
+                        await asyncio.sleep(self.config.restart_sec)
+
+                        # Publish RESTARTING event
+                        await self._publish_restarting_event(attempt=len(self._restart_history) + 1)
+
+                        # Attempt restart
+                        self.logger.info(
+                            f"Restarting {self.service_id} "
+                            f"(attempt {len(self._restart_history) + 1})"
+                        )
+
+                        # Mark as not running (will be set to True by start())
+                        self._is_running = False
+
+                        # Restart
+                        success = await self.start()
+
+                        if success:
+                            self._restart_history.append(time())
+                            self._cleanup_restart_history()
+                        else:
+                            self.logger.error(
+                                f"Failed to restart {self.service_id}, giving up"
+                            )
+                            await self._publish_failed_event(
+                                reason="restart_failed"
+                            )
+                            break
+                    else:
+                        # No restart policy - just mark as stopped
+                        self.logger.info(
+                            f"Service {self.service_id} stopped (no restart policy)"
+                        )
+                        await self._publish_stop_event(
+                            reason=f"exit_code_{returncode}"
+                        )
+                        self._is_running = False
+                        break
+
+                # Check every second
+                await asyncio.sleep(1.0)
+
+        except asyncio.CancelledError:
+            # Normal stop via stop() method
+            pass
+        except Exception as e:
+            self.logger.error(f"Crash monitor error for {self.service_id}: {e}")
+
+    async def _publish_crash_event(self, exit_code: int):
+        """Publish CRASH event to NATS registry.
+
+        Args:
+            exit_code: Process exit code
+        """
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.warning("No NATS messenger available, cannot publish CRASH event")
+                return
+
+            # Construct service_id in same format as service uses: module_name:instance_id
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+            instance_id = self.config.instance_context or self.config.service_type
+            service_id = f"{module_name}:{instance_id}"
+
+            subject = f"svc.registry.crashed.{service_id}"
+            data = {
+                "event": "crashed",
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+                "exit_code": exit_code,
+                "restart_policy": self.config.restart,
+                "will_restart": self._should_restart(exit_code)
+            }
+
+            await single_publish(subject, data)
+            self.logger.info(f"Published CRASH event for {service_id} (exit code: {exit_code})")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish CRASH event for {self.service_id}: {e}")
+
+    async def _publish_restarting_event(self, attempt: int):
+        """Publish RESTARTING event to NATS registry.
+
+        Args:
+            attempt: Restart attempt number (1-based)
+        """
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.warning("No NATS messenger available, cannot publish RESTARTING event")
+                return
+
+            # Construct service_id
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+            instance_id = self.config.instance_context or self.config.service_type
+            service_id = f"{module_name}:{instance_id}"
+
+            subject = f"svc.registry.restarting.{service_id}"
+            data = {
+                "event": "restarting",
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+                "restart_attempt": attempt,
+                "max_restarts": self.config.restart_max if self.config.restart_max > 0 else None
+            }
+
+            await single_publish(subject, data)
+            self.logger.info(f"Published RESTARTING event for {service_id} (attempt {attempt})")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish RESTARTING event for {self.service_id}: {e}")
+
+    async def _publish_failed_event(self, reason: str):
+        """Publish FAILED event to NATS registry.
+
+        Args:
+            reason: Reason for failure (e.g., 'restart_failed', 'restart_limit_reached')
+        """
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.warning("No NATS messenger available, cannot publish FAILED event")
+                return
+
+            # Construct service_id
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+            instance_id = self.config.instance_context or self.config.service_type
+            service_id = f"{module_name}:{instance_id}"
+
+            subject = f"svc.registry.failed.{service_id}"
+            data = {
+                "event": "failed",
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+                "reason": reason,
+                "restart_count": len(self._restart_history)
+            }
+
+            await single_publish(subject, data)
+            self.logger.info(f"Published FAILED event for {service_id} (reason: {reason})")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish FAILED event for {self.service_id}: {e}")
+
     async def _monitor_logs(self):
         """Monitor and relay service logs."""
         if not self.process_info:
@@ -278,12 +485,21 @@ class ProcessLauncher(BaseLauncher):
                     service_type=service_cfg['type'],
                     instance_context=service_cfg.get('instance_context'),
                     config_file=process_ctx.config_file,  # Use stored config file path
-                    runner_id=f"{self.launcher_id}.{service_cfg['type']}"
+                    runner_id=f"{self.launcher_id}.{service_cfg['type']}",
+                    module=service_cfg.get('module'),  # External service package (optional)
+                    restart=service_cfg.get('restart', 'no'),  # Restart policy
+                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),  # Restart delay (seconds)
+                    restart_max=int(service_cfg.get('restart_max', 0)),  # Max restarts (0=unlimited)
+                    restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
                 )
 
                 runner = ProcessRunner(runner_config, terminate_delay=self.terminate_delay)
                 self.runners[runner.service_id] = runner
                 self.logger.debug(f"Registered runner for {runner.service_id}")
+                self.logger.debug(
+                    f"Restart policy for {runner.service_id}: {runner_config.restart} "
+                    f"(max={runner_config.restart_max}, delay={runner_config.restart_sec}s)"
+                )
 
             # Declare services to registry (marks them as part of configuration)
             await self.declare_services(subject_prefix="svc")

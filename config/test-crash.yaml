@@ -1,0 +1,41 @@
+# Test configuration for crash handling and restart policies
+# Tests different restart policy scenarios
+
+nats:
+  host: localhost
+  port: 4222
+  required: false  # Optional - won't block if NATS unavailable
+
+services:
+  # Test 1: restart="no" - Should NOT restart after crash
+  - type: test.crash_simple
+    instance_context: policy_no
+    exit_code: 1
+    restart: "no"
+
+  # Test 2: restart="on-failure" - SHOULD restart after non-zero exit
+  - type: test.crash_simple
+    instance_context: policy_on_failure
+    exit_code: 1
+    restart: "on-failure"
+    restart_sec: 1.0
+    restart_max: 2
+    restart_window: 30.0
+
+  # Test 3: restart="on-abnormal" - Should restart on signal (exit code > 128)
+  - type: test.crash_simple
+    instance_context: policy_on_abnormal
+    exit_code: 137  # SIGKILL (128 + 9)
+    restart: "on-abnormal"
+    restart_sec: 1.0
+    restart_max: 2
+    restart_window: 30.0
+
+  # Test 4: restart="always" - SHOULD always restart (even on success)
+  - type: test.crash_simple
+    instance_context: policy_always
+    exit_code: 0  # Success exit
+    restart: "always"
+    restart_sec: 1.0
+    restart_max: 2
+    restart_window: 30.0

@@ -23,6 +23,12 @@ class ServiceRunnerConfig:
     runner_id: str | None = None
     module: str | None = None  # Optional: full module path for external packages
 
+    # Restart policy fields
+    restart: str = "no"  # Options: no, always, on-failure, on-abnormal
+    restart_sec: float = 5.0  # Delay before restart (seconds)
+    restart_max: int = 0  # Max restarts in window (0 = unlimited)
+    restart_window: float = 60.0  # Time window for restart counting (seconds)
+
     @property
     def service_id(self) -> str:
         """Get service identifier."""
@@ -43,6 +49,9 @@ class BaseRunner(ABC):
         self.config = config
         self.logger = logging.getLogger(f"run|{self.config.service_id.rsplit('.', 1)[-1]})")
         self._is_running = False
+        self._restart_count = 0
+        self._restart_history: list[float] = []
+        self._last_crash_time: float | None = None
 
     @property
     def is_running(self) -> bool:
@@ -89,6 +98,52 @@ class BaseRunner(ABC):
             Dictionary containing service status details
         """
         pass
+
+    def _should_restart(self, exit_code: int) -> bool:
+        """Determine if service should be restarted based on policy.
+
+        Args:
+            exit_code: Process exit code (0 = success, non-zero = failure)
+
+        Returns:
+            True if service should be restarted
+        """
+        policy = self.config.restart
+
+        # Check restart limit
+        if self.config.restart_max > 0:
+            self._cleanup_restart_history()
+            if self._restart_count >= self.config.restart_max:
+                self.logger.warning(
+                    f"Restart limit reached ({self.config.restart_max} restarts "
+                    f"in {self.config.restart_window}s), giving up"
+                )
+                return False
+
+        # Apply restart policy
+        if policy == "no":
+            return False
+        elif policy == "always":
+            return True
+        elif policy == "on-failure":
+            # Restart on non-zero exit code
+            return exit_code != 0
+        elif policy == "on-abnormal":
+            # Restart on crash/signal (exit code > 128 or < 0)
+            return exit_code > 128 or exit_code < 0
+        else:
+            self.logger.warning(f"Unknown restart policy: {policy}, not restarting")
+            return False
+
+    def _cleanup_restart_history(self):
+        """Remove restart timestamps outside the restart window."""
+        from time import time
+        now = time()
+        cutoff = now - self.config.restart_window
+        self._restart_history = [
+            ts for ts in self._restart_history if ts > cutoff
+        ]
+        self._restart_count = len(self._restart_history)
 
 
 class BaseLauncher(ABC):

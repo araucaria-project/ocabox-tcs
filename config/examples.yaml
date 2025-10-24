@@ -7,30 +7,43 @@ nats:
   required: false  # Optional for examples - won't block if NATS unavailable
 
 services:
-  # 01_minimal - Simplest possible service
+  # 01_minimal - Simplest possible service (no restart)
   - type: examples.01_minimal
     instance_context: minimal
+    restart: "no"
 
-  # 02_basic - Service with custom configuration
+  # 02_basic - Service with custom configuration (restart on failure)
   - type: examples.02_basic
     instance_context: basic
     interval: 2.0
     message: "Basic service running"
+    restart: "on-failure"
+    restart_sec: 5
+    restart_max: 3
+    restart_window: 60
 
-  # 03_logging - Demonstrates logging best practices
+  # 03_logging - Demonstrates logging best practices (restart on failure)
   - type: examples.03_logging
     instance_context: logging
     interval: 3.0
     simulate_errors: true
+    restart: "on-failure"
+    restart_sec: 5
+    restart_max: 5
+    restart_window: 120
 
-  # 04_monitoring - Shows monitoring and health checks
+  # 04_monitoring - Shows monitoring and health checks (always restart)
   - type: examples.04_monitoring
     instance_context: monitoring
     interval: 2.0
     max_errors: 5
+    restart: "always"
+    restart_sec: 3
+    restart_max: 0  # unlimited
 
-  # 05_nonblocking - Non-blocking permanent service with background workers
+  # 05_nonblocking - Non-blocking permanent service with background workers (no restart)
   - type: examples.05_nonblocking
     instance_context: nonblocking
     worker_count: 3
     interval: 2.0
+    restart: "no"
