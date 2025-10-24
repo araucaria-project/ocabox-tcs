@@ -221,7 +221,8 @@ class ProcessRunner(BaseRunner):
                 line = await asyncio.to_thread(self.process_info.process.stderr.readline)
                 if not line:
                     break
-                self.logger.info(f"[{self.service_id}] {line.strip()}")
+                # Logger name already includes service_id (run|{service_id}), no need to repeat
+                self.logger.info(line.strip())
         except Exception as e:
             self.logger.error(f"Log monitoring error for {self.service_id}: {e}")
 
@@ -258,7 +259,7 @@ class ProcessLauncher(BaseLauncher):
         try:
             # Store ProcessContext reference
             self.process_ctx = process_ctx
-            self.logger.info("Using ProcessContext for process launcher")
+            self.logger.debug("Using ProcessContext for process launcher")
 
             # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
             await self.initialize_monitoring(subject_prefix="svc")
@@ -282,7 +283,7 @@ class ProcessLauncher(BaseLauncher):
 
                 runner = ProcessRunner(runner_config, terminate_delay=self.terminate_delay)
                 self.runners[runner.service_id] = runner
-                self.logger.info(f"Registered runner for {runner.service_id}")
+                self.logger.debug(f"Registered runner for {runner.service_id}")
 
             # Declare services to registry (marks them as part of configuration)
             await self.declare_services(subject_prefix="svc")

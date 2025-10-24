@@ -29,7 +29,7 @@ class ServiceController:
         self.runner_id = runner_id
         self.service_id = f"{module_name}:{instance_id}"
 
-        self.logger = logging.getLogger(f"ctrl.{self._short_service_id()}")
+        self.logger = logging.getLogger(f"ctl|{self._short_service_id()}")
         self.process = ProcessContext()
 
         # Initialize monitoring
@@ -49,7 +49,7 @@ class ServiceController:
         # Register with process
         self.process.register_controller(self)
 
-        self.logger.info(f"Created controller for {self.service_id}")
+        self.logger.debug(f"Created controller for {self.service_id}")
 
     async def initialize(self) -> bool:
         """Initialize the controller and discover service classes.
@@ -75,7 +75,7 @@ class ServiceController:
             self._initialized = True
             if self.monitor:
                 self.monitor.set_status(Status.OK, "Controller initialized")
-            self.logger.info("Controller initialized successfully")
+            self.logger.debug("Controller initialized successfully")
             return True
 
         except Exception as e:
@@ -361,7 +361,7 @@ class ServiceController:
             # Set up service properties
             self._service.controller = self
             self._service.config = self._config
-            self._service.logger = logging.getLogger(f"svc.{self._short_service_id()}")
+            self._service.logger = logging.getLogger(f"svc|{self._short_service_id()}")
 
             self.logger.debug("Service instance created")
             return True

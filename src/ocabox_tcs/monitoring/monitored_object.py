@@ -19,7 +19,7 @@ class MonitoredObject:
         self._message: str | None = None
         self._healthcheck_callbacks: list[Callable[[], Status | None]] = []
         self._metric_callbacks: list[Callable[[], dict[str, Any]]] = []
-        self.logger = logging.getLogger(f"mon.{name}")
+        self.logger = logging.getLogger(f"mon|{name}")
 
         # Task tracking for BUSY/IDLE status
         self._active_tasks = 0  # Number of currently running tasks

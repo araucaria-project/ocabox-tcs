@@ -164,11 +164,11 @@ poetry run tcs_asyncio --config config/examples.yaml
 **Expected output:**
 ```
 2025-10-01 15:30:45.123 [INFO ] [ctx           ] ProcessContext initialized
-2025-10-01 15:30:45.234 [INFO ] [launch.asyncio-launcher] Using ProcessContext
-2025-10-01 15:30:45.345 [INFO ] [run.01_minimal-minimal ] Service 01_minimal-minimal started in-process
-2025-10-01 15:30:45.456 [INFO ] [run.02_basic-basic     ] Service 02_basic-basic started in-process
-2025-10-01 15:30:45.567 [INFO ] [run.03_logging-logging ] Service 03_logging-logging started in-process
-2025-10-01 15:30:45.678 [INFO ] [run.04_monitoring-monitoring] Service 04_monitoring-monitoring started in-process
+2025-10-01 15:30:45.234 [INFO ] [lch|asyncio-launcher] Using ProcessContext
+2025-10-01 15:30:45.345 [INFO ] [run|01_minimal-minimal ] Service 01_minimal-minimal started in-process
+2025-10-01 15:30:45.456 [INFO ] [run|02_basic-basic     ] Service 02_basic-basic started in-process
+2025-10-01 15:30:45.567 [INFO ] [run|03_logging-logging ] Service 03_logging-logging started in-process
+2025-10-01 15:30:45.678 [INFO ] [run|04_monitoring-monitoring] Service 04_monitoring-monitoring started in-process
 ...
 ```
 
@@ -192,9 +192,9 @@ poetry run tcs_process --config config/examples.yaml
 **Expected output:**
 ```
 2025-10-01 15:30:45.123 [INFO ] [ctx           ] ProcessContext initialized
-2025-10-01 15:30:45.234 [INFO ] [launch.process-launcher] Using ProcessContext
-2025-10-01 15:30:45.345 [INFO ] [run.01_minimal-minimal ] Starting service: poetry run python -m ocabox_tcs.services.examples.01_minimal
-2025-10-01 15:30:46.456 [INFO ] [run.01_minimal-minimal ] Service 01_minimal-minimal started (PID: 12345)
+2025-10-01 15:30:45.234 [INFO ] [lch|process-launcher] Using ProcessContext
+2025-10-01 15:30:45.345 [INFO ] [run|01_minimal-minimal ] Starting service: poetry run python -m ocabox_tcs.services.examples.01_minimal
+2025-10-01 15:30:46.456 [INFO ] [run|01_minimal-minimal ] Service 01_minimal-minimal started (PID: 12345)
 ...
 ```
 
@@ -206,15 +206,15 @@ poetry run tcs_process --config config/examples.yaml
 
 The compact logger names follow this pattern:
 
-| Prefix | Meaning | Example |
-|--------|---------|---------|
-| `ctx` | ProcessContext | `ctx` |
-| `cfg` | Configuration | `cfg` |
-| `ctrl` | ServiceController | `ctrl.hello_world:dev` |
-| `svc` | Service instance | `svc.hello_world:dev` |
-| `launch` | Launcher | `launch.asyncio-launcher` |
-| `run` | ServiceRunner | `run.hello_world-dev` |
-| `mon` | Monitor | `mon.hello_world:dev` |
+| Prefix   | Meaning | Example              |
+|----------|---------|----------------------|
+| `ctx`    | ProcessContext | `ctx`                |
+| `cfg`    | Configuration | `cfg`                |
+| `ctrl`   | ServiceController | `ctl\|hello_world:dev` |
+| `svc`    | Service instance | `svc\|hello_world:dev` |
+| `launch` | Launcher | `lch\|asyncio-launcher` |
+| `run`    | ServiceRunner | `run\|hello_world-dev` |
+| `mon`    | Monitor | `mon\|hello_world:dev` |
 
 ### Log Formats
 

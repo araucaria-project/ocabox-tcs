@@ -41,7 +41,7 @@ class BaseRunner(ABC):
 
     def __init__(self, config: ServiceRunnerConfig):
         self.config = config
-        self.logger = logging.getLogger(f"run.{self.config.service_id}")
+        self.logger = logging.getLogger(f"run|{self.config.service_id.rsplit('.', 1)[-1]})")
         self._is_running = False
 
     @property
@@ -105,7 +105,7 @@ class BaseLauncher(ABC):
 
     def __init__(self, launcher_id: str = "launcher"):
         self.launcher_id = launcher_id
-        self.logger = logging.getLogger(f"launch.{launcher_id}")
+        self.logger = logging.getLogger(f"lch|{launcher_id}")
         self.runners: dict[str, BaseRunner] = {}
         self.monitor: "MonitoredObject | None" = None
 

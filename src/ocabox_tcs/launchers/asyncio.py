@@ -141,7 +141,7 @@ class AsyncioLauncher(BaseLauncher):
         try:
             # Store ProcessContext reference (shared by all services)
             self.process_ctx = process_ctx
-            self.logger.info("Using ProcessContext for asyncio launcher")
+            self.logger.debug("Using ProcessContext for asyncio launcher")
 
             # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
             await self.initialize_monitoring(subject_prefix="svc")
@@ -166,7 +166,7 @@ class AsyncioLauncher(BaseLauncher):
 
                 runner = AsyncioRunner(runner_config)
                 self.runners[runner.service_id] = runner
-                self.logger.info(f"Registered runner for {runner.service_id}")
+                self.logger.debug(f"Registered runner for {runner.service_id}")
 
             # Declare services to registry (marks them as part of configuration)
             await self.declare_services(subject_prefix="svc")

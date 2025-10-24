@@ -50,7 +50,7 @@ class ProcessContext:
         self._config_cache: dict[str, Any] = {}
         self._fully_initialized = False  # Tracks if initialize() was called
         self._singleton_created = True
-        self.logger.info("ProcessContext singleton initialized")
+        self.logger.debug("ProcessContext singleton initialized")
     
     @property
     def messenger(self) -> Messenger | None:
@@ -101,14 +101,14 @@ class ProcessContext:
         """Register a service controller."""
         service_id = f"{controller.module_name}:{controller.instance_id}"
         self._controllers[service_id] = controller
-        self.logger.info(f"Registered controller: {service_id}")
+        self.logger.debug(f"Registered controller: {service_id}")
     
     def unregister_controller(self, controller: ServiceController):
         """Unregister a service controller."""
         service_id = f"{controller.module_name}:{controller.instance_id}"
         if service_id in self._controllers:
             del self._controllers[service_id]
-            self.logger.info(f"Unregistered controller: {service_id}")
+            self.logger.debug(f"Unregistered controller: {service_id}")
     
     def get_controller(self, module_name: str, instance_id: str) -> ServiceController | None:
         """Get a registered controller."""
