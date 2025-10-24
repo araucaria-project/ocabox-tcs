@@ -20,14 +20,16 @@ class NatsConn:
     async def connect(self) -> None:
         self.messenger = Messenger()
         if not self.messenger.is_open:
-            self.manager.logger.info(f'Nats not opened, connecting...')
-            host = '192.168.8.140' #TODO take from config
-            port = 4222 #TODO take from config
-            self.manager.logger.info(f'Trying connect to nats: {host}:{port}')
-            await self.messenger.open(host=host, port=port)
-            self.manager.logger.info(f'Nats connected to {host}:{port}')
-            self.connected = True
-            self.messenger_self_managed = True
+            # self.manager.logger.info(f'Nats not opened, connecting...')
+            # host = '192.168.8.140' #TODO take from config
+            # port = 4222 #TODO take from config
+            # self.manager.logger.info(f'Trying connect to nats: {host}:{port}')
+            # await self.messenger.open(host=host, port=port)
+            # self.manager.logger.info(f'Nats connected to {host}:{port}')
+            # self.connected = True
+            # self.messenger_self_managed = True
+            self.loger.error('Messenger/NATS not ready!')
+            exit(1)
         else:
             self.manager.logger.info(f'Nats already connected')
             self.connected = True

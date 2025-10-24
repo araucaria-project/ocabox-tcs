@@ -16,7 +16,8 @@ from ocabox_tcs.services.dome_follower_svc.manager import Manager
 class DomeFollowerServiceConfig(BaseServiceConfig):
     """Configuration for DumbPermanent service."""
     interval: float = 1.0  # Interval in seconds
-    instance_context: str = 'dev'
+    # instance_context: str = 'dev'   # This is set from command line / config file automatically
+    turn_on_automatically: bool = True  # Just for debug, TODO: delete it later.
 
 
 @service
@@ -33,6 +34,9 @@ class DomeFollowerService(BaseBlockingPermanentService):
         self.manager = Manager(service=self, config=self.config)
         await self.manager.start_comm()
         await self.manager.set_follow_parameters()
+        if self.config.turn_on_automatically:
+            self.manager.follow_on = True
+            self.logger.warning(f"Dome follower configured to turned on automatically (depreaced method, use rpc instead)")
 
     async def run_service(self):
         """Main service loop."""
