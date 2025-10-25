@@ -158,6 +158,44 @@ class BaseLauncher(ABC):
     - Services can reference launcher as parent for hierarchical display
     """
 
+    @staticmethod
+    def gen_launcher_name(launcher_type: str, *unique_keys) -> str:
+        """Generate deterministic launcher name from unique keys.
+
+        Creates a stable launcher ID based on launcher type, hostname, and
+        configurable unique keys (e.g., config file path, working directory).
+        Same inputs always produce same ID for idempotency.
+
+        Args:
+            launcher_type: Launcher type prefix (e.g., "process-launcher")
+            *unique_keys: Variable args to create hash for uniqueness
+                         (e.g., config_file, pwd, hostname)
+
+        Returns:
+            Launcher name in format "launcher.hash6chars.hostname-launcher_type"
+            Example: "launcher.Awq6fK.majkma-process-launcher"
+
+            This format ensures shortening (taking last component after last dot)
+            produces a descriptive name: "majkma-process-launcher"
+        """
+        import socket
+        import hashlib
+        import base64
+
+        hostname_short = socket.gethostname().split('.')[0]
+
+        # Create hash from all unique keys concatenated
+        combined = "|".join(str(k) for k in unique_keys if k)
+        hash_bytes = hashlib.sha256(combined.encode()).digest()
+
+        # Encode as base62-like using base64 (0-9a-zA-Z-_)
+        # First 6 chars provide ~36 bits of uniqueness
+        key_hash = base64.urlsafe_b64encode(hash_bytes).decode()[:6]
+        # Replace URL-safe chars with letters for better readability
+        key_hash = key_hash.replace('-', 'x').replace('_', 'y')
+
+        return f"launcher.{key_hash}.{hostname_short}-{launcher_type}"
+
     def __init__(self, launcher_id: str = "launcher"):
         self.launcher_id = launcher_id
         self.logger = logging.getLogger(f"lch|{launcher_id}")
@@ -260,19 +298,30 @@ class BaseLauncher(ABC):
             return
 
         # Publish declared event for each registered service
-        for service_id in self.runners.keys():
+        for runner in self.runners.values():
             try:
-                subject = f"{subject_prefix}.registry.declared.{service_id}"
+                # Construct FULL service_id that matches what the service will publish
+                # This ensures declared events and start events use the same service_id
+                if runner.config.module:
+                    module_name = runner.config.module
+                else:
+                    module_name = f"ocabox_tcs.services.{runner.config.service_type}"
+
+                instance_id = runner.config.instance_context or runner.config.service_type
+                full_service_id = f"{module_name}:{instance_id}"
+
+                subject = f"{subject_prefix}.registry.declared.{full_service_id}"
                 data = {
                     "event": "declared",
-                    "service_id": service_id,
+                    "service_id": full_service_id,
                     "timestamp": dt_utcnow_array(),
-                    "launcher_id": self.launcher_id
+                    "launcher_id": self.launcher_id,
+                    "parent": f"launcher.{self.launcher_id}"  # For hierarchical display
                 }
                 await single_publish(subject, data)
-                self.logger.debug(f"Declared service: {service_id}")
+                self.logger.debug(f"Declared service: {full_service_id}")
             except Exception as e:
-                self.logger.error(f"Failed to declare service {service_id}: {e}")
+                self.logger.error(f"Failed to declare service {runner.service_id}: {e}")
 
         self.logger.info(f"Declared {len(self.runners)} services to registry")
 

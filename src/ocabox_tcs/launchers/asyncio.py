@@ -318,13 +318,9 @@ class AsyncioLauncher(BaseLauncher):
     """Launcher that manages services within the same process using asyncio."""
 
     def __init__(self, launcher_id: str | None = None):
-        # Generate unique launcher ID: launcher-type.hostname.random-suffix
+        # Use provided launcher_id or default to simple name
         if launcher_id is None:
-            import socket
-            from serverish.base.idmanger import gen_uid
-            hostname_short = socket.gethostname().split('.')[0]
-            unique_suffix = gen_uid("asyncio-launcher").split("asyncio-launcher", 1)[1]
-            launcher_id = f"asyncio-launcher.{hostname_short}{unique_suffix}"
+            launcher_id = "asyncio-launcher"
 
         super().__init__(launcher_id)
         self._shutdown_event = asyncio.Event()
@@ -443,6 +439,8 @@ class AsyncioLauncher(BaseLauncher):
 async def amain():
     """Asyncio launcher entry point."""
     import argparse
+    import os
+    import socket
     import sys
     from pathlib import Path
 
@@ -489,8 +487,16 @@ async def amain():
     # Initialize ProcessContext (handles config loading, shared by all services)
     process_ctx = await ProcessContext.initialize(config_file=config_file)
 
+    # Generate deterministic launcher ID from config file path, pwd, and hostname
+    launcher_id = BaseLauncher.gen_launcher_name(
+        "asyncio-launcher",
+        config_file,
+        os.getcwd(),
+        socket.gethostname()
+    )
+
     # Create and initialize launcher
-    launcher = AsyncioLauncher()
+    launcher = AsyncioLauncher(launcher_id=launcher_id)
     if not await launcher.initialize(process_ctx):
         logging.error("Failed to initialize launcher")
         await process_ctx.shutdown()

@@ -43,46 +43,70 @@ HEARTBEAT_COLORS = {
     "dead": "red",
 }
 
+# Restart symbols and colors
+RESTART_SYMBOLS = {
+    "restarting": "⟳",  # Counterclockwise arrows
+    "failed": "✗",      # Failed to restart
+    "recovered": "↻",   # Clockwise arrows (recovered from crash)
+}
+
+RESTART_COLORS = {
+    "restarting": "yellow",
+    "failed": "red",
+    "recovered": "cyan",
+}
+
 
 def _format_service_name(service_id: str, show_full_with_dim: bool = False) -> Text:
     """Format service name with optional prefix handling.
 
     Args:
-        service_id: Full service ID
-        show_full_with_dim: If True (detailed mode), show full name with dimmed prefix.
-                           If False (normal mode), omit common prefixes entirely.
+        service_id: Full service ID (format: module.path.service_type:instance)
+        show_full_with_dim: If True (detailed mode), show full name with dimmed prefix up to last dot.
+                           If False (normal mode), show only part after last dot before colon.
+
+    Examples:
+        Normal mode:
+            ocabox_tcs.services.examples.01_minimal:minimal -> 01_minimal:minimal
+            ocabox_tcs.services.test.crash_simple:policy_always -> crash_simple:policy_always
+            external_pkg.services.guider:main -> guider:main
+
+        Detailed mode:
+            ocabox_tcs.services.examples. (gray) + 01_minimal:minimal (bold)
+            ocabox_tcs.services.test. (gray) + crash_simple:policy_always (bold)
     """
     text = Text()
 
+    # Split at colon to separate module path from instance
+    if ':' in service_id:
+        module_part, instance_part = service_id.split(':', 1)
+    else:
+        module_part = service_id
+        instance_part = ""
+
+    # Find last dot in module part
+    if '.' in module_part:
+        last_dot_idx = module_part.rfind('.')
+        prefix = module_part[:last_dot_idx + 1]  # Include the dot
+        service_type = module_part[last_dot_idx + 1:]
+    else:
+        prefix = ""
+        service_type = module_part
+
     if show_full_with_dim:
         # Detailed mode - show full name with dimmed prefix
-        prefixes = [
-            "ocabox_tcs.services.examples.",
-            "ocabox_tcs.services.",
-        ]
-
-        remaining = service_id
-        for prefix in prefixes:
-            if remaining.startswith(prefix):
-                text.append(prefix, style="dim")
-                remaining = remaining[len(prefix):]
-                break
-
-        text.append(remaining, style="bold")
+        if prefix:
+            text.append(prefix, style="dim")
+        text.append(service_type, style="bold")
+        if instance_part:
+            text.append(":", style="bold")
+            text.append(instance_part, style="bold")
     else:
-        # Normal mode - omit common prefixes entirely
-        prefixes = [
-            "ocabox_tcs.services.examples.",
-            "ocabox_tcs.services.",
-        ]
-
-        remaining = service_id
-        for prefix in prefixes:
-            if remaining.startswith(prefix):
-                remaining = remaining[len(prefix):]
-                break
-
-        text.append(remaining, style="bold")
+        # Normal mode - show only part after last dot
+        text.append(service_type, style="bold")
+        if instance_part:
+            text.append(":", style="bold")
+            text.append(instance_part, style="bold")
 
     return text
 
@@ -127,6 +151,23 @@ def display_legend():
     hb_legend.append("red    = dead (> 2m ago or missing)\n")
 
     console.print(hb_legend)
+
+    # Restart indicators
+    console.print("  Restart indicators:")
+    restart_legend = Text()
+    restart_legend.append("    ⟳ ", style="yellow")
+    restart_legend.append("yellow = restarting (service recovering from crash)\n")
+
+    restart_legend.append("    ✗ ", style="red")
+    restart_legend.append("red    = restart failed (too many crashes or restart error)\n")
+
+    restart_legend.append("    ↻ ", style="cyan")
+    restart_legend.append("cyan   = recovered (service has restarted successfully)\n")
+
+    restart_legend.append("    (2/5) = restart attempt 2 of max 5\n")
+    restart_legend.append("    (7/∞) = unlimited restarts allowed but show counter\n")
+
+    console.print(restart_legend)
     console.print()
 
 
@@ -161,6 +202,23 @@ def _format_timestamp(dt: datetime | None) -> tuple[str, str]:
         rel_str = f"({days}d {hours}h ago)"
 
     return (iso_str, rel_str)
+
+
+def _format_restart_counter(service: ServiceInfo) -> str:
+    """Format restart counter for display.
+
+    Returns: "(N/M)" format where M is max restarts, or "(N/∞)" for unlimited
+    """
+    if not service.restart_count and not service.restart_attempt:
+        return ""
+
+    current = service.restart_attempt or service.restart_count or 0
+    max_restarts = service.restart_max
+
+    if max_restarts is None or max_restarts == 0:
+        return f"({current}/∞)"
+    else:
+        return f"({current}/{max_restarts})"
 
 
 def display_services_detailed(services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None):
@@ -349,6 +407,47 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
             detail.append(service.status_message, style="")
             console.print(detail)
 
+        # Crash and restart information
+        if service.last_crash_time:
+            detail = Text()
+            detail.append(f"{indent}", style="")
+            detail.append("Last Crash:  ", style="dim")
+            iso_str, rel_str = _format_timestamp(service.last_crash_time)
+            detail.append(iso_str, style="red")
+            if rel_str:
+                detail.append(f" {rel_str}", style="dim")
+            if service.last_crash_exit_code is not None:
+                detail.append(f" (exit code: {service.last_crash_exit_code})", style="dim")
+            console.print(detail)
+
+        if service.restart_policy:
+            detail = Text()
+            detail.append(f"{indent}", style="")
+            detail.append("Restart:     ", style="dim")
+            restart_str = f"{service.restart_policy}"
+            if service.restart_max and service.restart_max > 0:
+                restart_str += f" (max: {service.restart_max})"
+            elif service.restart_policy != "no":
+                restart_str += " (unlimited)"
+            detail.append(restart_str, style="")
+            console.print(detail)
+
+            # Show restart status and counter if there are restarts
+            if service.restart_count and service.restart_count > 0:
+                detail = Text()
+                detail.append(f"{indent}", style="")
+                detail.append("Restarts:    ", style="dim")
+                status_str = service.restart_status_str
+                restart_symbol = RESTART_SYMBOLS.get(status_str, "")
+                restart_color = RESTART_COLORS.get(status_str, "")
+                if restart_symbol:
+                    detail.append(f"{restart_symbol} ", style=restart_color)
+                detail.append(status_str, style=restart_color)
+                counter = _format_restart_counter(service)
+                if counter:
+                    detail.append(f" {counter}", style="cyan")
+                console.print(detail)
+
         # Add blank line after service
         if show_separator:
             console.print()
@@ -499,6 +598,18 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
         # Uptime
         if service.is_running:
             line.append(f" up:{service.uptime_str}", style="cyan")
+
+        # Restart status (compact indicator)
+        if service.has_crashed or (service.restart_count and service.restart_count > 0):
+            status_str = service.restart_status_str
+            restart_symbol = RESTART_SYMBOLS.get(status_str, "")
+            restart_color = RESTART_COLORS.get(status_str, "")
+            if restart_symbol:
+                line.append(" ", style="")
+                line.append(restart_symbol, style=restart_color)
+                counter = _format_restart_counter(service)
+                if counter:
+                    line.append(counter, style="cyan")
 
         # Message
         if service.status_message:

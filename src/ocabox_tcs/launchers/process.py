@@ -211,6 +211,7 @@ class ProcessRunner(BaseRunner):
                 "event": "stop",
                 "service_id": service_id,
                 "timestamp": dt_utcnow_array(),
+                "status": "shutdown",  # Graceful shutdown
                 "reason": reason,
                 "killed_by_launcher": True
             }
@@ -278,13 +279,11 @@ class ProcessRunner(BaseRunner):
                             )
                             break
                     else:
-                        # No restart policy - just mark as stopped
+                        # No restart policy - publish crash event with failed status
                         self.logger.info(
-                            f"Service {self.service_id} stopped (no restart policy)"
+                            f"Service {self.service_id} crashed (no restart policy)"
                         )
-                        await self._publish_stop_event(
-                            reason=f"exit_code_{returncode}"
-                        )
+                        await self._publish_crash_event(exit_code=returncode)
                         self._is_running = False
                         break
 
@@ -323,13 +322,15 @@ class ProcessRunner(BaseRunner):
             service_id = f"{module_name}:{instance_id}"
 
             subject = f"svc.registry.crashed.{service_id}"
+            will_restart = self._should_restart(exit_code)
             data = {
                 "event": "crashed",
                 "service_id": service_id,
                 "timestamp": dt_utcnow_array(),
+                "status": "error" if will_restart else "failed",  # error if restarting, failed if not
                 "exit_code": exit_code,
                 "restart_policy": self.config.restart,
-                "will_restart": self._should_restart(exit_code)
+                "will_restart": will_restart
             }
 
             await single_publish(subject, data)
@@ -368,6 +369,7 @@ class ProcessRunner(BaseRunner):
                 "event": "restarting",
                 "service_id": service_id,
                 "timestamp": dt_utcnow_array(),
+                "status": "startup",  # Service is restarting
                 "restart_attempt": attempt,
                 "max_restarts": self.config.restart_max if self.config.restart_max > 0 else None
             }
@@ -408,6 +410,7 @@ class ProcessRunner(BaseRunner):
                 "event": "failed",
                 "service_id": service_id,
                 "timestamp": dt_utcnow_array(),
+                "status": "failed",  # Service has failed
                 "reason": reason,
                 "restart_count": len(self._restart_history)
             }
@@ -438,13 +441,9 @@ class ProcessLauncher(BaseLauncher):
     """Launcher that manages services as separate processes."""
 
     def __init__(self, launcher_id: str | None = None, terminate_delay: float = 1.0):
-        # Generate unique launcher ID: launcher-type.hostname.random-suffix
+        # Use provided launcher_id or default to simple name
         if launcher_id is None:
-            import socket
-            from serverish.base.idmanger import gen_uid
-            hostname_short = socket.gethostname().split('.')[0]
-            unique_suffix = gen_uid("process-launcher").split("process-launcher", 1)[1]
-            launcher_id = f"process-launcher.{hostname_short}{unique_suffix}"
+            launcher_id = "process-launcher"
 
         super().__init__(launcher_id)
         self.terminate_delay = terminate_delay
@@ -580,6 +579,7 @@ async def amain():
     """Process launcher entry point."""
     import argparse
     import logging
+    import socket
     import sys
     from pathlib import Path
 
@@ -632,8 +632,16 @@ async def amain():
     # Initialize ProcessContext (handles config loading)
     process_ctx = await ProcessContext.initialize(config_file=config_file)
 
+    # Generate deterministic launcher ID from config file path, pwd, and hostname
+    launcher_id = BaseLauncher.gen_launcher_name(
+        "process-launcher",
+        config_file,
+        os.getcwd(),
+        socket.gethostname()
+    )
+
     # Create and initialize launcher
-    launcher = ProcessLauncher(terminate_delay=args.terminate_delay)
+    launcher = ProcessLauncher(launcher_id=launcher_id, terminate_delay=args.terminate_delay)
     if not await launcher.initialize(process_ctx):
         logging.error("Failed to initialize launcher")
         await process_ctx.shutdown()

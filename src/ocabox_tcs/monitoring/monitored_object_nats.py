@@ -165,7 +165,8 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             data = {
                 "event": "stop",
                 "service_id": self.name,
-                "timestamp": dt_utcnow_array()
+                "timestamp": dt_utcnow_array(),
+                "status": self.get_status().value  # Include current status (should be shutdown)
             }
             await single_publish(subject, data)
             self.logger.info(f"Sent STOP message to {subject}")

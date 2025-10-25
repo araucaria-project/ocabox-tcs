@@ -76,6 +76,16 @@ class ServiceInfo:
     # Service lifecycle tracking
     declared: bool = False  # Tracks if service appeared in svc.registry.declared (from config)
 
+    # Crash and restart tracking
+    last_crash_time: Optional[datetime] = None  # When service last crashed
+    last_crash_exit_code: Optional[int] = None  # Exit code of last crash
+    restart_policy: Optional[str] = None  # "no", "on-failure", "on-abnormal", "always"
+    restart_count: Optional[int] = None  # Total number of restarts so far
+    restart_attempt: Optional[int] = None  # Current restart attempt number (if restarting)
+    restart_max: Optional[int] = None  # Maximum allowed restarts (0 = unlimited)
+    is_restarting: bool = False  # Whether service is currently in restart delay
+    restart_failed: bool = False  # Restart failed (e.g., hit restart limit)
+
     @property
     def is_running(self) -> bool:
         """Check if service is currently running."""
@@ -156,6 +166,29 @@ class ServiceInfo:
             return "stale"
         else:
             return "dead"
+
+    @property
+    def has_crashed(self) -> bool:
+        """Check if service has crashed recently (within last 5 minutes)."""
+        if self.last_crash_time is None:
+            return False
+        age = (datetime.now(timezone.utc) - self.last_crash_time).total_seconds()
+        return age < 300  # 5 minutes
+
+    @property
+    def restart_status_str(self) -> str:
+        """Get human-readable restart status.
+
+        Returns: "none", "restarting", "recovering", "failed", or "recovered"
+        """
+        if self.restart_failed:
+            return "failed"
+        elif self.is_restarting:
+            return "restarting"
+        elif self.restart_count and self.restart_count > 0:
+            return "recovered"
+        else:
+            return "none"
 
 
 class ServiceControlClient:
@@ -347,6 +380,11 @@ class ServiceControlClient:
                                 status=Status.UNKNOWN
                             )
 
+                        # Extract status from event if present (all events now include status)
+                        status_str = data.get('status')
+                        if status_str:
+                            services[service_id].status = Status(status_str)
+
                         # Update based on event type
                         if event == 'start':
                             timestamp = data.get('timestamp')
@@ -372,6 +410,9 @@ class ServiceControlClient:
                         elif event == 'declared':
                             # Service is declared in launcher configuration
                             services[service_id].declared = True
+                            # Extract parent for hierarchical grouping
+                            if 'parent' in data:
+                                services[service_id].parent = data['parent']
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
@@ -464,12 +505,52 @@ class ServiceControlClient:
             except Exception as e:
                 logger.error(f"Error reading heartbeats: {e}")
 
-        # Read registry first to populate service entries, then read status/heartbeats in parallel
-        # This ensures services dict is populated before status and heartbeats try to update it
+        async def read_crash_restart():
+            """Read crash and restart events for services.
+
+            Uses last_per_subject to get only the most recent crash/restart event
+            for each service. Much faster than reading entire history.
+            """
+            start_time = time.time()
+            msg_count = 0
+
+            try:
+                crash_reader = MsgReader(
+                    subject=f"{self.subject_prefix}.registry.crashed.>",
+                    parent=self.messenger,
+                    deliver_policy="last_per_subject",  # Only get latest per subject
+                    nowait=True,
+                )
+                async with crash_reader:
+                    async for data, meta in crash_reader:
+                        msg_count += 1
+                        service_id = data.get('service_id')
+                        if not service_id or service_id not in services:
+                            continue
+
+                        # Record crash info
+                        timestamp = data.get('timestamp')
+                        if timestamp:
+                            services[service_id].last_crash_time = dt_from_array(timestamp)
+                        services[service_id].last_crash_exit_code = data.get('exit_code')
+                        services[service_id].restart_policy = data.get('restart_policy')
+                        services[service_id].restart_max = data.get('max_restarts')
+
+                elapsed = time.time() - start_time
+                logger.debug(f"read_crash_restart: {msg_count} messages in {elapsed:.3f}s")
+            except NotFoundError:
+                # No crashes (stream not found is OK)
+                pass
+            except Exception as e:
+                logger.error(f"Error reading crash events: {e}")
+
+        # Read registry first to populate service entries, then read status/heartbeats/crashes in parallel
+        # This ensures services dict is populated before other readers try to update it
         await read_registry()
         await asyncio.gather(
             read_status(),
-            read_heartbeats()
+            read_heartbeats(),
+            read_crash_restart()
         )
 
         # Calculate uptime for running services
@@ -507,6 +588,11 @@ class ServiceControlClient:
                         )
 
                     service = self._services[service_id]
+
+                    # Extract status from event if present (all events now include status)
+                    status_str = data.get('status')
+                    if status_str:
+                        service.status = Status(status_str)
 
                     # Update based on event type
                     if event == 'start':
@@ -547,6 +633,9 @@ class ServiceControlClient:
                     elif event == 'declared':
                         # Service is declared in launcher configuration
                         service.declared = True
+                        # Extract parent for hierarchical grouping
+                        if 'parent' in data:
+                            service.parent = data['parent']
 
                         # Trigger callback (configuration update)
                         if self.on_service_update:
