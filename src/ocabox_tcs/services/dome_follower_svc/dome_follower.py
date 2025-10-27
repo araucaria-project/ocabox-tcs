@@ -38,7 +38,10 @@ class DomeFollowerService(BaseBlockingPermanentService):
         await self.manager.set_follow_parameters()
         if self.config.turn_on_automatically:
             self.manager.follow_on = True
-            self.logger.warning(f"Dome follower configured to turned on automatically (depreaced method, use rpc instead)")
+            self.logger.warning(
+                f"Dome follower configured to turned on automatically "
+                f"(deprecated method, use rpc instead)"
+            )
 
     async def run_service(self):
         """Main service loop."""
