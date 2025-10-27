@@ -1,0 +1,29 @@
+# config/services.yaml
+nats:
+  host: localhost
+  port: 4222
+
+
+services:
+#  - type: dumb_permanent
+#    log_level: INFO
+#    interval: 10
+#    instance_context: dev
+#
+#  - type: dumb_complex
+#    log_level: INFO
+#    interval: 3
+#    instance_context: main
+
+#  - type: plan_runner
+#    log_level: INFO
+#    instance_context: zb08
+#
+#  - type: guider
+#    log_level: INFO
+#    instance_context: zb08
+#
+  - type: dome_follower
+    log_level: INFO
+    instance_context: dev
+    interval: 1  # Interval in seconds
