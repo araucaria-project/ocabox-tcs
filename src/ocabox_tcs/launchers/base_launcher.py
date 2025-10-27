@@ -274,6 +274,9 @@ class BaseLauncher(ABC):
     async def declare_services(self, subject_prefix: str = "svc"):
         """Publish declared events for all configured services.
 
+        Delegates to each runner's publish_declared() method. Runners only
+        publish if they have a runner_id (skips standalone/test services).
+
         This should be called after services are registered from configuration.
         Declared messages mark services as part of the formal configuration,
         distinguishing them from ad hoc ephemeral services.
@@ -281,49 +284,18 @@ class BaseLauncher(ABC):
         Args:
             subject_prefix: NATS subject prefix (default: "svc")
         """
-        from ocabox_tcs.management.process_context import ProcessContext
-        from serverish.messenger import single_publish
-        from serverish.base import dt_utcnow_array
-        from ocabox_tcs.monitoring.monitored_object import DummyMonitoredObject
-
-        # Skip if monitoring is disabled (no NATS connection)
-        if isinstance(self.monitor, DummyMonitoredObject):
-            self.logger.debug("Monitoring disabled, skipping service declaration")
-            return
-
-        # Get messenger from ProcessContext
-        process_ctx = ProcessContext()
-        if process_ctx is None or process_ctx.messenger is None:
-            self.logger.warning("No NATS messenger available, cannot declare services")
-            return
-
-        # Publish declared event for each registered service
+        # Delegate to each runner - they decide whether to publish based on runner_id
+        declared_count = 0
         for runner in self.runners.values():
-            try:
-                # Construct FULL service_id that matches what the service will publish
-                # This ensures declared events and start events use the same service_id
-                if runner.config.module:
-                    module_name = runner.config.module
-                else:
-                    module_name = f"ocabox_tcs.services.{runner.config.service_type}"
+            # Check if runner has publish_declared method (not all runner types may implement it)
+            if hasattr(runner, 'publish_declared'):
+                await runner.publish_declared()
+                # Count only if runner_id present (runner will skip otherwise)
+                if runner.config.runner_id:
+                    declared_count += 1
 
-                instance_id = runner.config.instance_context or runner.config.service_type
-                full_service_id = f"{module_name}:{instance_id}"
-
-                subject = f"{subject_prefix}.registry.declared.{full_service_id}"
-                data = {
-                    "event": "declared",
-                    "service_id": full_service_id,
-                    "timestamp": dt_utcnow_array(),
-                    "launcher_id": self.launcher_id,
-                    "parent": f"launcher.{self.launcher_id}"  # For hierarchical display
-                }
-                await single_publish(subject, data)
-                self.logger.debug(f"Declared service: {full_service_id}")
-            except Exception as e:
-                self.logger.error(f"Failed to declare service {runner.service_id}: {e}")
-
-        self.logger.info(f"Declared {len(self.runners)} services to registry")
+        if declared_count > 0:
+            self.logger.info(f"Declared {declared_count} services to registry")
 
     async def initialize_monitoring(self, monitor_name: str | None = None,
                                    subject_prefix: str = "svc"):

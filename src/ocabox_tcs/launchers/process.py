@@ -34,6 +34,7 @@ class ProcessRunner(BaseRunner):
         self.terminate_delay = terminate_delay
         self._log_monitor_task: asyncio.Task | None = None
         self._crash_monitor_task: asyncio.Task | None = None
+        self.subject_prefix = "svc"  # Default, will be set by launcher
 
     async def start(self) -> bool:
         """Start service in subprocess."""
@@ -85,6 +86,10 @@ class ProcessRunner(BaseRunner):
             self._log_monitor_task = asyncio.create_task(self._monitor_logs())
             self._crash_monitor_task = asyncio.create_task(self._monitor_crash())
             self.logger.info(f"Service {self.service_id} started (PID: {process.pid})")
+
+            # Publish START event (runner owns lifecycle events)
+            await self._publish_start_event(pid=process.pid)
+
             return True
 
         except Exception as e:
@@ -177,27 +182,31 @@ class ProcessRunner(BaseRunner):
             "uptime_seconds": (datetime.now() - self.process_info.start_time).total_seconds()
         }
 
-    async def _publish_stop_event(self, reason: str = "force_killed"):
-        """Publish STOP event to NATS registry.
+    async def _publish_start_event(self, pid: int):
+        """Publish START event to NATS registry.
 
-        Called when the launcher force-kills a service, since the subprocess
-        won't have a chance to send its own STOP message.
+        Called when subprocess starts successfully. Runner owns lifecycle events.
 
         Args:
-            reason: Reason for stop (e.g., "force_killed", "timeout")
+            pid: Process ID of started subprocess
         """
+        # Skip if no runner_id (standalone/test mode - no lifecycle pollution)
+        if not self.config.runner_id:
+            self.logger.debug(f"No runner_id, skipping START event for {self.service_id}")
+            return
+
         try:
             from serverish.messenger import single_publish
             from serverish.base import dt_utcnow_array
+            import socket
 
             # Get messenger from ProcessContext
             process_ctx = ProcessContext()
             if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish STOP event")
+                self.logger.debug("No NATS messenger available, cannot publish START event")
                 return
 
             # Construct service_id in same format as service uses: module_name:instance_id
-            # Service uses format like: ocabox_tcs.services.examples.01_minimal:minimal
             if self.config.module:
                 module_name = self.config.module
             else:
@@ -206,18 +215,72 @@ class ProcessRunner(BaseRunner):
             instance_id = self.config.instance_context or self.config.service_type
             service_id = f"{module_name}:{instance_id}"
 
-            subject = f"svc.registry.stop.{service_id}"
+            # Extract launcher_id from runner_id
+            launcher_id = self.config.runner_id.rsplit('.', 1)[0] if '.' in self.config.runner_id else self.config.runner_id
+
+            subject = f"{self.subject_prefix}.registry.start.{service_id}"
+            data = {
+                "event": "start",
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+                "status": "startup",  # Service is starting
+                "pid": pid,
+                "hostname": socket.gethostname(),
+                "runner_id": self.config.runner_id,
+                "parent": f"launcher.{launcher_id}"
+            }
+
+            await single_publish(subject, data)
+            self.logger.info(f"Published START event for {service_id} (PID: {pid})")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish START event for {self.service_id}: {e}")
+
+    async def _publish_stop_event(self, reason: str = "force_killed", exit_code: int = 0):
+        """Publish STOP event to NATS registry.
+
+        Called when service stops cleanly or is force-killed by launcher.
+
+        Args:
+            reason: Reason for stop (e.g., "completed", "force_killed")
+            exit_code: Process exit code
+        """
+        # Skip if no runner_id (standalone/test mode - no lifecycle pollution)
+        if not self.config.runner_id:
+            self.logger.debug(f"No runner_id, skipping STOP event for {self.service_id}")
+            return
+
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.debug("No NATS messenger available, cannot publish STOP event")
+                return
+
+            # Construct service_id in same format as service uses: module_name:instance_id
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+            instance_id = self.config.instance_context or self.config.service_type
+            service_id = f"{module_name}:{instance_id}"
+
+            subject = f"{self.subject_prefix}.registry.stop.{service_id}"
             data = {
                 "event": "stop",
                 "service_id": service_id,
                 "timestamp": dt_utcnow_array(),
                 "status": "shutdown",  # Graceful shutdown
                 "reason": reason,
-                "killed_by_launcher": True
+                "exit_code": exit_code
             }
 
             await single_publish(subject, data)
-            self.logger.info(f"Published STOP event for {service_id} (reason: {reason})")
+            self.logger.info(f"Published STOP event for {service_id} (reason: {reason}, exit_code: {exit_code})")
 
         except Exception as e:
             self.logger.error(f"Failed to publish STOP event for {self.service_id}: {e}", exc_info=True)
@@ -228,67 +291,83 @@ class ProcessRunner(BaseRunner):
             return
 
         try:
-            while self._is_running and self.process_info is not None:
-                # Check if process exited unexpectedly
-                returncode = self.process_info.process.poll()
+            # Block until process exits - immediate detection!
+            # This runs BEFORE Python cleanup triggers ServiceController.shutdown()
+            returncode = await asyncio.to_thread(self.process_info.process.wait)
 
-                if returncode is not None and self.process_info is not None:
-                    # Process exited! Clear process_info immediately to prevent duplicate handling
-                    process_info = self.process_info
-                    self.process_info = None
+            # Process exited! Clear process_info immediately to prevent duplicate handling
+            if self.process_info is not None:
+                process_info = self.process_info
+                self.process_info = None
 
-                    self.logger.warning(
-                        f"Service {self.service_id} exited unexpectedly "
-                        f"(exit code: {returncode})"
+                # Check if it's a clean exit (exit code 0)
+                if returncode == 0:
+                    self.logger.info(f"Service {self.service_id} exited cleanly (exit code: 0)")
+                    # Publish STOP event for clean exit
+                    await self._publish_stop_event(reason="completed", exit_code=returncode)
+                    self._is_running = False
+                    return
+
+                self.logger.warning(
+                    f"Service {self.service_id} exited unexpectedly "
+                    f"(exit code: {returncode})"
+                )
+
+                # Determine if we should restart
+                should_restart = self._should_restart(returncode)
+
+                if should_restart:
+                    # Check restart limits
+                    if self.config.restart_max > 0:
+                        self._cleanup_restart_history()
+                        if len(self._restart_history) >= self.config.restart_max:
+                            self.logger.error(
+                                f"Service {self.service_id} reached restart limit "
+                                f"({self.config.restart_max} restarts in {self.config.restart_window}s), giving up"
+                            )
+                            await self._publish_crash_event(exit_code=returncode)
+                            await self._publish_failed_event(reason="restart_limit_reached")
+                            self._is_running = False
+                            return
+
+                    # Publish CRASH event
+                    await self._publish_crash_event(exit_code=returncode)
+
+                    # Wait restart delay
+                    await asyncio.sleep(self.config.restart_sec)
+
+                    # Publish RESTARTING event
+                    await self._publish_restarting_event(attempt=len(self._restart_history) + 1)
+
+                    # Attempt restart
+                    self.logger.info(
+                        f"Restarting {self.service_id} "
+                        f"(attempt {len(self._restart_history) + 1})"
                     )
 
-                    # Determine if we should restart
-                    should_restart = self._should_restart(returncode)
+                    # Mark as not running (will be set to True by start())
+                    self._is_running = False
 
-                    if should_restart:
-                        # Publish CRASH event
-                        await self._publish_crash_event(exit_code=returncode)
+                    # Restart
+                    success = await self.start()
 
-                        # Wait restart delay
-                        await asyncio.sleep(self.config.restart_sec)
-
-                        # Publish RESTARTING event
-                        await self._publish_restarting_event(attempt=len(self._restart_history) + 1)
-
-                        # Attempt restart
-                        self.logger.info(
-                            f"Restarting {self.service_id} "
-                            f"(attempt {len(self._restart_history) + 1})"
-                        )
-
-                        # Mark as not running (will be set to True by start())
-                        self._is_running = False
-
-                        # Restart
-                        success = await self.start()
-
-                        if success:
-                            self._restart_history.append(time())
-                            self._cleanup_restart_history()
-                        else:
-                            self.logger.error(
-                                f"Failed to restart {self.service_id}, giving up"
-                            )
-                            await self._publish_failed_event(
-                                reason="restart_failed"
-                            )
-                            break
+                    if success:
+                        self._restart_history.append(time())
+                        self._cleanup_restart_history()
                     else:
-                        # No restart policy - publish crash event with failed status
-                        self.logger.info(
-                            f"Service {self.service_id} crashed (no restart policy)"
+                        self.logger.error(
+                            f"Failed to restart {self.service_id}, giving up"
                         )
-                        await self._publish_crash_event(exit_code=returncode)
-                        self._is_running = False
-                        break
-
-                # Check every second
-                await asyncio.sleep(1.0)
+                        await self._publish_failed_event(
+                            reason="restart_failed"
+                        )
+                else:
+                    # No restart policy - publish crash event with failed status
+                    self.logger.info(
+                        f"Service {self.service_id} crashed (no restart policy)"
+                    )
+                    await self._publish_crash_event(exit_code=returncode)
+                    self._is_running = False
 
         except asyncio.CancelledError:
             # Normal stop via stop() method
@@ -321,7 +400,7 @@ class ProcessRunner(BaseRunner):
             instance_id = self.config.instance_context or self.config.service_type
             service_id = f"{module_name}:{instance_id}"
 
-            subject = f"svc.registry.crashed.{service_id}"
+            subject = f"{self.subject_prefix}.registry.crashed.{service_id}"
             will_restart = self._should_restart(exit_code)
             data = {
                 "event": "crashed",
@@ -364,7 +443,7 @@ class ProcessRunner(BaseRunner):
             instance_id = self.config.instance_context or self.config.service_type
             service_id = f"{module_name}:{instance_id}"
 
-            subject = f"svc.registry.restarting.{service_id}"
+            subject = f"{self.subject_prefix}.registry.restarting.{service_id}"
             data = {
                 "event": "restarting",
                 "service_id": service_id,
@@ -405,7 +484,7 @@ class ProcessRunner(BaseRunner):
             instance_id = self.config.instance_context or self.config.service_type
             service_id = f"{module_name}:{instance_id}"
 
-            subject = f"svc.registry.failed.{service_id}"
+            subject = f"{self.subject_prefix}.registry.failed.{service_id}"
             data = {
                 "event": "failed",
                 "service_id": service_id,
@@ -420,6 +499,59 @@ class ProcessRunner(BaseRunner):
 
         except Exception as e:
             self.logger.error(f"Failed to publish FAILED event for {self.service_id}: {e}")
+
+    async def publish_declared(self):
+        """Publish DECLARED event to NATS registry.
+
+        Called by launcher after runner creation. Only publishes if runner_id
+        is present (skips for ad-hoc standalone/test runs).
+
+        This marks the service as part of the launcher's formal configuration,
+        distinguishing it from ephemeral services.
+        """
+        # Skip if no runner_id (standalone/test mode)
+        if not self.config.runner_id:
+            self.logger.debug(f"No runner_id, skipping DECLARED event for {self.service_id}")
+            return
+
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.debug("No NATS messenger available, cannot publish DECLARED event")
+                return
+
+            # Construct FULL service_id that matches what the service will publish
+            if self.config.module:
+                module_name = self.config.module
+            else:
+                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+            instance_id = self.config.instance_context or self.config.service_type
+            service_id = f"{module_name}:{instance_id}"
+
+            # Extract launcher_id from runner_id (format: "launcher-id.service-type")
+            launcher_id = self.config.runner_id.rsplit('.', 1)[0] if '.' in self.config.runner_id else self.config.runner_id
+
+            subject = f"{self.subject_prefix}.registry.declared.{service_id}"
+            data = {
+                "event": "declared",
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+                "launcher_id": launcher_id,
+                "parent": f"launcher.{launcher_id}",  # For hierarchical display
+                "restart_policy": self.config.restart,
+                "runner_id": self.config.runner_id
+            }
+
+            await single_publish(subject, data)
+            self.logger.debug(f"Published DECLARED event for {service_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish DECLARED event for {self.service_id}: {e}")
 
     async def _monitor_logs(self):
         """Monitor and relay service logs."""
@@ -467,8 +599,19 @@ class ProcessLauncher(BaseLauncher):
             self.process_ctx = process_ctx
             self.logger.debug("Using ProcessContext for process launcher")
 
+            # Get subject_prefix from NATS config
+            subject_prefix = 'svc'  # Default
+            if process_ctx.config_manager:
+                global_config = process_ctx.config_manager.resolve_config()
+                nats_config = global_config.get("nats", {})
+                subject_prefix = nats_config.get("subject_prefix", "svc")
+                self.logger.debug(f"Using NATS subject prefix: {subject_prefix}")
+
+            # Store subject_prefix for runners to use
+            self.subject_prefix = subject_prefix
+
             # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
-            await self.initialize_monitoring(subject_prefix="svc")
+            await self.initialize_monitoring(subject_prefix=subject_prefix)
 
             # Get services list from config_manager (use raw config to include 'services' key)
             raw_config = process_ctx.config_manager.get_raw_config()
@@ -493,6 +636,8 @@ class ProcessLauncher(BaseLauncher):
                 )
 
                 runner = ProcessRunner(runner_config, terminate_delay=self.terminate_delay)
+                # Pass subject_prefix to runner so it can use it in event publishing
+                runner.subject_prefix = subject_prefix
                 self.runners[runner.service_id] = runner
                 self.logger.debug(f"Registered runner for {runner.service_id}")
                 self.logger.debug(
@@ -501,7 +646,7 @@ class ProcessLauncher(BaseLauncher):
                 )
 
             # Declare services to registry (marks them as part of configuration)
-            await self.declare_services(subject_prefix="svc")
+            await self.declare_services(subject_prefix=subject_prefix)
 
             return True
 

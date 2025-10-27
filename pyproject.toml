@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "0.3.11"
+version = "0.3.12"
 description = "Telescope Control Services for OCABOX Astronomilacl Observatory Server"
 authors = ["Mikolaj et.al.", "Claude Code <noreply@anthropic.com>"]
 readme = "README.md"
@@ -42,6 +42,12 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# By default, skip tests marked as 'manual' (require external services)
+# To run manual tests: pytest -m manual
+addopts = "-m 'not manual'"
+markers = [
+    "manual: marks tests that require external services (deselect with '-m \"not manual\"')",
+]
 
 [tool.black]
 line-length = 100

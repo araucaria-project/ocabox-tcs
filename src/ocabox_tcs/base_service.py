@@ -80,10 +80,41 @@ def service(cls: type["BaseService"]) -> type["BaseService"]:
         except (ValueError, IndexError):
             # Fallback to just filename
             type_id = file_path.stem
+
+        # Derive module name from file path (for Feature #7: external module support)
+        # This allows services outside ocabox_tcs.services to work correctly
+        module_name = None
+        try:
+            # Try to construct module path from file path
+            # Look for common package markers (src/, tests/, etc.)
+            parts = file_path.parts
+
+            # Find a package root marker (src/, tests/)
+            for i, part in enumerate(parts):
+                if part in ('src', 'tests'):
+                    # Build module path from this marker (inclusive) onward
+                    # For src/, skip it (src/ocabox_tcs/... → ocabox_tcs....)
+                    # For tests/, include it (tests/services/... → tests.services....)
+                    if part == 'src':
+                        module_parts = list(parts[i+1:])
+                    else:  # tests or other markers
+                        module_parts = list(parts[i:])
+                    # Remove .py extension
+                    module_parts[-1] = Path(module_parts[-1]).stem
+                    module_name = '.'.join(module_parts)
+                    break
+
+            # If no marker found and cls.__module__ is not __main__, use it
+            if module_name is None and cls.__module__ != '__main__':
+                module_name = cls.__module__
+        except Exception:
+            pass
+
     except Exception as e:
         # Fallback to class name conversion
         import logging
         type_id = _class_name_to_type(cls.__name__)
+        module_name = None
         logger = logging.getLogger("service.decorator")
         logger.warning(
             f"Could not derive service type from filename for {cls.__name__}: {e}. "
@@ -94,8 +125,10 @@ def service(cls: type["BaseService"]) -> type["BaseService"]:
     # Register the service
     _service_registry[type_id] = cls
 
-    # Store type on the class for reference
+    # Store type and module name on the class for reference
     cls._service_type = type_id
+    if module_name:
+        cls._module_name = module_name
 
     return cls
 
@@ -299,7 +332,13 @@ class BaseService(ABC):
             process_ctx = await ProcessContext.initialize(config_file=args.config_file)
 
             # Create controller
-            module_name = f"ocabox_tcs.services.{service_type}"
+            # Support external modules (Feature #7) - use decorator's captured module name
+            if hasattr(cls, '_module_name'):
+                module_name = cls._module_name
+            else:
+                # Fallback for legacy services without decorator info
+                module_name = f"ocabox_tcs.services.{service_type}"
+
             controller = ServiceController(
                 module_name=module_name,
                 instance_id=args.instance_context,
@@ -353,12 +392,41 @@ class BaseBlockingPermanentService(BasePermanentService):
     """Base class for permanent services that block in run_service().
 
     This class handles the common pattern of permanent services that:
-    1. Start up (start_service)
+    1. Start up (on_start hook)
     2. Run continuously in a blocking method (run_service)
-    3. Clean up when stopped (stop_service)
+    3. Clean up when stopped (on_stop hook)
 
     The framework automatically manages the task lifecycle.
+
+    IMPORTANT: Do NOT override start_service() or stop_service() in subclasses!
+    - Override run_service() for your main service loop
+    - Override on_start() for initialization (optional)
+    - Override on_stop() for cleanup (optional)
+
+    The base class's start_service()/stop_service() manage the task lifecycle.
     """
+
+    def __init_subclass__(cls, **kwargs):
+        """Validate that subclasses don't override protected methods."""
+        super().__init_subclass__(**kwargs)
+
+        # Check if this class directly overrides start_service
+        if 'start_service' in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} should not override start_service(). "
+                f"For BaseBlockingPermanentService subclasses, override run_service() instead, "
+                f"and optionally use on_start()/on_stop() hooks for setup/cleanup. "
+                f"See BaseBlockingPermanentService docstring for details."
+            )
+
+        # Check if this class directly overrides stop_service
+        if 'stop_service' in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} should not override stop_service(). "
+                f"For BaseBlockingPermanentService subclasses, override run_service() instead, "
+                f"and optionally use on_start()/on_stop() hooks for setup/cleanup. "
+                f"See BaseBlockingPermanentService docstring for details."
+            )
 
     def __init__(self):
         super().__init__()
