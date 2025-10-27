@@ -183,18 +183,18 @@ class ConfigurationManager:
 
         return merged_config
     
-    def _extract_service_config(self, config: dict[str, Any], 
+    def _extract_service_config(self, config: dict[str, Any],
                                module: str | None, instance: str | None) -> dict[str, Any]:
         """Extract service-specific configuration, or global if module is None."""
         service_config = {}
-        
+
         # Look for exact match: services.module.instance
         if "services" in config and module and instance:
             services = config["services"]
             if isinstance(services, list):
                 # List format: find matching service entry
                 for service_entry in services:
-                    if (service_entry.get("type") == module.split(".")[-1] and 
+                    if (service_entry.get("type") == module.split(".")[-1] and
                         service_entry.get("instance_context") == instance):
                         service_config.update(service_entry)
             elif isinstance(services, dict):
@@ -206,12 +206,12 @@ class ConfigurationManager:
                         service_config.update(module_config[instance])
                     elif not isinstance(module_config, dict):
                         service_config.update(module_config)
-        
+
         # Also include global config
         global_config = {k: v for k, v in config.items() if k != "services"}
         if global_config:
             service_config = self._deep_merge(global_config, service_config)
-        
+
         return service_config
     
     def _deep_merge(self, base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:

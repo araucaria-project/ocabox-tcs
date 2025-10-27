@@ -155,9 +155,9 @@ class ServiceController:
         if self._running:
             await self.stop_service()
 
-        # Stop monitoring
+        # Stop monitoring (sets status to reflect shutdown reason)
+        # Note: No registry.stop event here - runner handles lifecycle events
         if self.monitor:
-            await self.monitor.send_shutdown()
             await self.monitor.stop_monitoring()
 
         # Unregister from process
@@ -166,7 +166,11 @@ class ServiceController:
         self.logger.info("Controller shutdown complete")
 
     async def _initialize_monitoring(self):
-        """Initialize monitoring system."""
+        """Initialize monitoring system.
+
+        Creates monitor for status updates and heartbeats.
+        Registry/lifecycle events are handled by runners (if launcher-managed).
+        """
         # Determine parent name from runner_id (for hierarchical display)
         # runner_id format: "{launcher-id}.{service-type}" → parent: "launcher.{launcher-id}"
         # Note: Both launcher-id and service-type may contain dots
@@ -188,26 +192,29 @@ class ServiceController:
                 parent_name = f"launcher.{launcher_id}"
                 self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
 
+        # Get subject_prefix from NATS config
+        subject_prefix = 'svc'  # Default
+        if self.process.config_manager:
+            global_config = self.process.config_manager.resolve_config()
+            nats_config = global_config.get("nats", {})
+            subject_prefix = nats_config.get("subject_prefix", "svc")
+            self.logger.debug(f"Using NATS subject prefix: {subject_prefix}")
+
         # Create monitor using factory (auto-detects NATS availability)
+        # Monitor publishes: status updates + heartbeats (NO registry events)
         self.monitor = await create_monitor(
             name=self.service_id,
             heartbeat_interval=10.0,
             healthcheck_interval=30.0,
-            parent_name=parent_name  # For hierarchical grouping in displays
+            parent_name=parent_name,  # For hierarchical grouping in displays
+            subject_prefix=subject_prefix  # Use configured prefix
         )
-
-        # Pass runner_id to monitor so it can include it in registry messages
-        if self.runner_id:
-            self.monitor.runner_id = self.runner_id
 
         # Set initial status BEFORE starting monitoring (to avoid initial "unknown" report)
         self.monitor.set_status(Status.STARTUP, "Initializing monitoring")
 
-        # Start monitoring
+        # Start monitoring (heartbeats + status updates)
         await self.monitor.start_monitoring()
-
-        # Send registration (no-op for DummyMonitoredObject)
-        await self.monitor.send_registration()
 
         self.logger.debug("Monitoring initialized")
 

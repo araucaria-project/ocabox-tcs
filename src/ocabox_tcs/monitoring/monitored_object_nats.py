@@ -116,59 +116,21 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             self.logger.error(f"Failed to send HEARTBEAT: {e}")
 
     async def send_registration(self):
-        """Send start event to NATS registry.
+        """No-op: Registry/lifecycle events are published by runners.
 
-        Subject: <prefix>.registry.start.<service_name>
-        Uses single_publish for one-time lifecycle event.
+        MonitoredObject only publishes:
+        - Status updates (on status change)
+        - Heartbeats (periodic)
+
+        Lifecycle/registry events (start, stop, crashed, etc.) are the
+        responsibility of runners (ProcessRunner, StandaloneRunner, etc.).
+        This keeps MonitoredObject reusable for any monitored entity.
         """
-        if self.messenger is None:
-            self.logger.warning("Messenger not set, cannot send registration")
-            return
-        try:
-            import socket
-            import os
-
-            subject = f"{self.subject_prefix}.registry.start.{self.name}"
-            data = {
-                "event": "start",
-                "service_id": self.name,
-                "timestamp": dt_utcnow_array(),
-                "status": self.get_status().value,
-                "hostname": socket.gethostname(),
-                "pid": os.getpid()
-            }
-
-            # Add runner_id if available (set by ServiceController)
-            if hasattr(self, 'runner_id') and self.runner_id:
-                data["runner_id"] = self.runner_id
-
-            # Add parent_name if set (for display grouping)
-            if self.parent_name:
-                data["parent"] = self.parent_name
-
-            await single_publish(subject, data)
-            self.logger.info(f"Sent START message to {subject}")
-        except Exception as e:
-            self.logger.error(f"Failed to send START message: {e}")
+        self.logger.debug(f"send_registration() called (no-op - runners handle registry events)")
 
     async def send_shutdown(self):
-        """Send stop event to NATS registry.
+        """No-op: Registry/lifecycle events are published by runners.
 
-        Subject: <prefix>.registry.stop.<service_name>
-        Uses single_publish for one-time lifecycle event.
+        See send_registration() for explanation.
         """
-        if self.messenger is None:
-            self.logger.warning("Messenger not set, cannot send shutdown")
-            return
-        try:
-            subject = f"{self.subject_prefix}.registry.stop.{self.name}"
-            data = {
-                "event": "stop",
-                "service_id": self.name,
-                "timestamp": dt_utcnow_array(),
-                "status": self.get_status().value  # Include current status (should be shutdown)
-            }
-            await single_publish(subject, data)
-            self.logger.info(f"Sent STOP message to {subject}")
-        except Exception as e:
-            self.logger.error(f"Failed to send STOP message: {e}")
+        self.logger.debug(f"send_shutdown() called (no-op - runners handle registry events)")
