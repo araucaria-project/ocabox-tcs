@@ -1,6 +1,6 @@
 # config/services.yaml
 nats:
-  host: 192.168.8.140
+  host: localhost
   port: 4222
 
 
