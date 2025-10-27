@@ -23,7 +23,7 @@ services:
 #    log_level: INFO
 #    instance_context: zb08
 #
-  - type: dome_follower
+  - type: dome_follower_svc.dome_follower
     log_level: INFO
     instance_context: dev
     interval: 1  # Interval in seconds
