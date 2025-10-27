@@ -16,8 +16,10 @@ from ocabox_tcs.services.dome_follower_svc.manager import Manager
 class DomeFollowerServiceConfig(BaseServiceConfig):
     """Configuration for DumbPermanent service."""
     interval: float = 1.0  # Interval in seconds
-    # instance_context: str = 'dev'   # This is set from command line / config file automatically
-    turn_on_automatically: bool = True  # Just for debug, TODO: delete it later.
+    turn_on_automatically: bool = False  # True is just for debug
+    dome_speed: float = 30 # deg / sec
+    follow_tolerance: float = 3.0 # deg
+    settle_time: float = 3.0 # sec
 
 
 @service

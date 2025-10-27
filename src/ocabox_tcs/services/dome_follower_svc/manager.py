@@ -51,14 +51,19 @@ class Manager:
         await self.nats_conn.close()
 
     async def set_follow_parameters(self):
-        self.follow_tolerance = 3.0 #TODO take from obs settings
-        # self.slew_tolerance = 3.0  #TODO take from obs settings
-        self.settle_time = 3.0  #TODO take from obs settings
-        self.dome_speed_deg =  0.03
+        self.follow_tolerance = self.config.follow_tolerance
+        self.settle_time = self.config.settle_time
+        self.dome_speed_deg =  self.config.dome_speed
+        self.logger.info(
+            f"Follow parameters: "
+            f"follow_tolerance: {self.follow_tolerance}deg "
+            f"settle_time: {self.settle_time}s "
+            f"dome_speed_deg: {self.dome_speed_deg}deg/s"
+        )
 
     async def dome_slew_settle(self, angle_to_go: Optional[float]) -> None:
         if self.dome_speed_deg and angle_to_go and self.dome_speed_deg:
-            _settle_time = angle_to_go * self.dome_speed_deg
+            _settle_time = angle_to_go / self.dome_speed_deg
             await asyncio.sleep(_settle_time)
         else:
             _settle_time = self.settle_time
@@ -85,8 +90,9 @@ class Manager:
                     self.dome_az_last = dome_az
                 except OcaboxServerError as e:
                     self.logger.error(f'Tic OcaboxServerError, {e}')
-                    self.service.monitor.set_status(Status.ERROR,
-                                                    f"Tic dome get Server Error {e}")
+                    self.service.monitor.set_status(
+                        Status.ERROR, f"Tic dome get Server Error {e}"
+                    )
                     return
                 except CommunicationTimeoutError:
                     self.logger.error(f'Tic CommunicationTimeoutError')
@@ -94,8 +100,9 @@ class Manager:
                     return
                 except OcaboxAccessDenied:
                     self.logger.error(f'Tic OcaboxAccessDenied')
-                    self.service.monitor.set_status(Status.ERROR,
-                                                    f"Tic dome get Access Denied")
+                    self.service.monitor.set_status(
+                        Status.ERROR, f"Tic dome get Access Denied"
+                    )
                     return
 
             if dome_slewing is False and mount_slewing is False:
