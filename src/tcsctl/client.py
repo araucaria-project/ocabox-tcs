@@ -75,6 +75,7 @@ class ServiceInfo:
 
     # Service lifecycle tracking
     declared: bool = False  # Tracks if service appeared in svc.registry.declared (from config)
+    declared_time: Optional[datetime] = None  # When service was declared (from config)
 
     # Crash and restart tracking
     last_crash_time: Optional[datetime] = None  # When service last crashed
@@ -410,6 +411,10 @@ class ServiceControlClient:
                         elif event == 'declared':
                             # Service is declared in launcher configuration
                             services[service_id].declared = True
+                            # Extract declaration timestamp
+                            timestamp = data.get('timestamp')
+                            if timestamp:
+                                services[service_id].declared_time = dt_from_array(timestamp)
                             # Extract parent for hierarchical grouping
                             if 'parent' in data:
                                 services[service_id].parent = data['parent']
@@ -441,8 +446,15 @@ class ServiceControlClient:
                     async for data, meta in status_reader:
                         msg_count += 1
                         service_id = data.get('name')
-                        if not service_id or service_id not in services:
+                        if not service_id:
                             continue
+
+                        # Initialize if not seen before (e.g., launchers only publish status, not registry.start)
+                        if service_id not in services:
+                            services[service_id] = ServiceInfo(
+                                service_id=service_id,
+                                status=Status.UNKNOWN
+                            )
 
                         # Use latest status
                         status_str = data.get('status')
@@ -487,8 +499,15 @@ class ServiceControlClient:
                     async for data, meta in heartbeat_reader:
                         msg_count += 1
                         service_id = data.get('service_id')
-                        if not service_id or service_id not in services:
+                        if not service_id:
                             continue
+
+                        # Initialize if not seen before
+                        if service_id not in services:
+                            services[service_id] = ServiceInfo(
+                                service_id=service_id,
+                                status=Status.UNKNOWN
+                            )
 
                         # Use latest heartbeat
                         timestamp = data.get('timestamp')
@@ -525,8 +544,15 @@ class ServiceControlClient:
                     async for data, meta in crash_reader:
                         msg_count += 1
                         service_id = data.get('service_id')
-                        if not service_id or service_id not in services:
+                        if not service_id:
                             continue
+
+                        # Initialize if not seen before
+                        if service_id not in services:
+                            services[service_id] = ServiceInfo(
+                                service_id=service_id,
+                                status=Status.UNKNOWN
+                            )
 
                         # Record crash info
                         timestamp = data.get('timestamp')
@@ -633,6 +659,10 @@ class ServiceControlClient:
                     elif event == 'declared':
                         # Service is declared in launcher configuration
                         service.declared = True
+                        # Extract declaration timestamp
+                        timestamp = data.get('timestamp')
+                        if timestamp:
+                            service.declared_time = dt_from_array(timestamp)
                         # Extract parent for hierarchical grouping
                         if 'parent' in data:
                             service.parent = data['parent']

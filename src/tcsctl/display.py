@@ -358,6 +358,17 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
                 detail.append(f" {rel_str}", style="dim")
             console.print(detail)
 
+        # Declaration time (if declared)
+        if service.declared_time:
+            iso_str, rel_str = _format_timestamp(service.declared_time)
+            detail = Text()
+            detail.append(f"{indent}", style="")
+            detail.append("Declared:    ", style="dim")
+            detail.append(iso_str, style="cyan")
+            if rel_str:
+                detail.append(f" {rel_str}", style="dim")
+            console.print(detail)
+
         # Stop time (if stopped)
         if service.stop_time:
             iso_str, rel_str = _format_timestamp(service.stop_time)
