@@ -45,8 +45,15 @@ class BaseRunner(ABC):
     Specialized subclasses handle different execution methods.
     """
 
-    def __init__(self, config: ServiceRunnerConfig):
+    def __init__(
+        self,
+        config: ServiceRunnerConfig,
+        launcher_id: str | None = None,
+        subject_prefix: str = "svc"
+    ):
         self.config = config
+        self.launcher_id = launcher_id  # Direct reference to parent launcher (not parsed!)
+        self.subject_prefix = subject_prefix  # NATS subject prefix
         self.logger = logging.getLogger(f"run|{self.config.service_id.rsplit('.', 1)[-1]})")
         self._is_running = False
         self._restart_count = 0
@@ -98,6 +105,76 @@ class BaseRunner(ABC):
             Dictionary containing service status details
         """
         pass
+
+    def _get_full_service_id(self) -> str:
+        """Get full service ID in format 'module:instance'.
+
+        Returns:
+            Service ID string (e.g., 'ocabox_tcs.services.guider:jk15')
+        """
+        if self.config.module:
+            module_name = self.config.module
+        else:
+            module_name = f"ocabox_tcs.services.{self.config.service_type}"
+
+        instance_id = self.config.instance_context or self.config.service_type
+        return f"{module_name}:{instance_id}"
+
+    async def _publish_registry_event(self, event: str, **extra_data):
+        """Universal method to publish registry events to NATS.
+
+        Handles all common logic: ProcessContext, messenger, service_id construction.
+        No more code duplication!
+
+        Args:
+            event: Event type ('start', 'stop', 'declared', 'crashed', etc.)
+            **extra_data: Additional fields for the event data dict
+        """
+        # Skip if no runner_id (standalone/test mode - no lifecycle pollution)
+        if not self.config.runner_id:
+            self.logger.debug(f"No runner_id, skipping {event.upper()} event for {self.service_id}")
+            return
+
+        try:
+            from serverish.messenger import single_publish
+            from serverish.base import dt_utcnow_array
+            from ocabox_tcs.management.process_context import ProcessContext
+
+            # Get messenger from ProcessContext
+            process_ctx = ProcessContext()
+            if process_ctx is None or process_ctx.messenger is None:
+                self.logger.debug(f"No NATS messenger available, cannot publish {event.upper()} event")
+                return
+
+            # Construct full service_id
+            service_id = self._get_full_service_id()
+
+            # Build subject
+            subject = f"{self.subject_prefix}.registry.{event}.{service_id}"
+
+            # Build base data (always include these)
+            data = {
+                "event": event,
+                "service_id": service_id,
+                "timestamp": dt_utcnow_array(),
+            }
+
+            # Add extra fields
+            data.update(extra_data)
+
+            # Add parent for hierarchical grouping if launcher_id is set
+            if self.launcher_id and "parent" not in data:
+                data["parent"] = f"launcher.{self.launcher_id}"
+
+            # Add runner_id if not already present
+            if "runner_id" not in data and self.config.runner_id:
+                data["runner_id"] = self.config.runner_id
+
+            await single_publish(subject, data)
+            self.logger.info(f"Published {event.upper()} event for {service_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish {event.upper()} event for {self.service_id}: {e}")
 
     def _should_restart(self, exit_code: int) -> bool:
         """Determine if service should be restarted based on policy.

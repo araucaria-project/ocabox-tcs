@@ -19,8 +19,13 @@ from ocabox_tcs.management.service_controller import ServiceController
 class AsyncioRunner(BaseRunner):
     """Runner that manages a service within the same process using asyncio."""
 
-    def __init__(self, config: ServiceRunnerConfig):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: ServiceRunnerConfig,
+        launcher_id: str | None = None,
+        subject_prefix: str = "svc"
+    ):
+        super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
         self.controller: ServiceController | None = None
         self.start_time: datetime | None = None
         self._crash_monitor_task: asyncio.Task | None = None
@@ -60,6 +65,10 @@ class AsyncioRunner(BaseRunner):
             self._is_running = True
             self.start_time = datetime.now()
             self._crash_monitor_task = asyncio.create_task(self._monitor_crash())
+
+            # Publish START event to registry
+            await self._publish_start_event()
+
             self.logger.info(f"Service {self.service_id} started in-process")
             return True
 
@@ -89,6 +98,10 @@ class AsyncioRunner(BaseRunner):
             self._is_running = False
             self.controller = None
             self.start_time = None
+
+            # Publish STOP event to registry
+            await self._publish_stop_event()
+
             self.logger.info(f"Service {self.service_id} stopped")
             return True
 
@@ -192,46 +205,45 @@ class AsyncioRunner(BaseRunner):
         except Exception as e:
             self.logger.error(f"Crash monitor error for {self.service_id}: {e}")
 
+    async def _publish_start_event(self):
+        """Publish START event to NATS registry."""
+        import socket
+        import os
+        await self._publish_registry_event(
+            "start",
+            status="startup",
+            pid=os.getpid(),
+            hostname=socket.gethostname()
+        )
+
+    async def _publish_stop_event(self, reason: str = "completed", exit_code: int = 0):
+        """Publish STOP event to NATS registry.
+
+        Args:
+            reason: Reason for stop (default: "completed")
+            exit_code: Exit code (default: 0)
+        """
+        await self._publish_registry_event(
+            "stop",
+            status="shutdown",
+            reason=reason,
+            exit_code=exit_code
+        )
+
     async def _publish_crash_event(self, exit_code: int):
         """Publish CRASH event to NATS registry.
 
         Args:
             exit_code: Exit code (1 for asyncio crash)
         """
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish CRASH event")
-                return
-
-            # Construct service_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"svc.registry.crashed.{service_id}"
-            data = {
-                "event": "crashed",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "exit_code": exit_code,
-                "restart_policy": self.config.restart,
-                "will_restart": self._should_restart(exit_code)
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published CRASH event for {service_id} (exit code: {exit_code})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish CRASH event for {self.service_id}: {e}")
+        will_restart = self._should_restart(exit_code)
+        await self._publish_registry_event(
+            "crashed",
+            status="error" if will_restart else "failed",
+            exit_code=exit_code,
+            restart_policy=self.config.restart,
+            will_restart=will_restart
+        )
 
     async def _publish_restarting_event(self, attempt: int):
         """Publish RESTARTING event to NATS registry.
@@ -239,39 +251,12 @@ class AsyncioRunner(BaseRunner):
         Args:
             attempt: Restart attempt number (1-based)
         """
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish RESTARTING event")
-                return
-
-            # Construct service_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"svc.registry.restarting.{service_id}"
-            data = {
-                "event": "restarting",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "restart_attempt": attempt,
-                "max_restarts": self.config.restart_max if self.config.restart_max > 0 else None
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published RESTARTING event for {service_id} (attempt {attempt})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish RESTARTING event for {self.service_id}: {e}")
+        await self._publish_registry_event(
+            "restarting",
+            status="startup",
+            restart_attempt=attempt,
+            max_restarts=self.config.restart_max if self.config.restart_max > 0 else None
+        )
 
     async def _publish_failed_event(self, reason: str):
         """Publish FAILED event to NATS registry.
@@ -279,39 +264,12 @@ class AsyncioRunner(BaseRunner):
         Args:
             reason: Reason for failure
         """
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish FAILED event")
-                return
-
-            # Construct service_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"svc.registry.failed.{service_id}"
-            data = {
-                "event": "failed",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "reason": reason,
-                "restart_count": len(self._restart_history)
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published FAILED event for {service_id} (reason: {reason})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish FAILED event for {self.service_id}: {e}")
+        await self._publish_registry_event(
+            "failed",
+            status="failed",
+            reason=reason,
+            restart_count=len(self._restart_history)
+        )
 
 
 class AsyncioLauncher(BaseLauncher):
@@ -367,7 +325,11 @@ class AsyncioLauncher(BaseLauncher):
                     restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
                 )
 
-                runner = AsyncioRunner(runner_config)
+                runner = AsyncioRunner(
+                    runner_config,
+                    launcher_id=self.launcher_id,
+                    subject_prefix="svc"  # TODO: get from config like ProcessLauncher does
+                )
                 self.runners[runner.service_id] = runner
                 self.logger.debug(f"Registered runner for {runner.service_id}")
                 self.logger.debug(

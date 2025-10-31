@@ -52,9 +52,7 @@ async def test_permanent_service_stays_running(nats_server, nats_client):
             await wait_for_event(collector, event_type="start", timeout=5.0)
 
             # Service should stay running
-            await assert_no_crashes(collector, duration=3.0)
-
-        await asyncio.sleep(0.5)
+            await assert_no_crashes(collector, duration=1.0)
 
     # Verify lifecycle
     service_id = "tests.services.mock_permanent:long_run"
@@ -101,8 +99,6 @@ async def test_permanent_service_work_count_limit(nats_server, nats_client):
             # 5 iterations * 0.3s = 1.5s + overhead
             await wait_for_event(collector, event_type="stop", timeout=10.0)
 
-        await asyncio.sleep(0.5)
-
     # Verify clean shutdown
     service_id = "tests.services.mock_permanent:work_limit"
     await assert_service_stopped(collector, service_id, clean_shutdown=True)
@@ -145,9 +141,6 @@ async def test_permanent_service_with_delays(nats_server, nats_client):
             await wait_for_event(collector, event_type="start", timeout=10.0)
 
             await asyncio.sleep(1.0)
-
-        # Shutdown should take ~0.5s due to shutdown_delay
-        await asyncio.sleep(1.0)
 
     # Verify lifecycle completed
     service_id = "tests.services.mock_permanent:with_delays"

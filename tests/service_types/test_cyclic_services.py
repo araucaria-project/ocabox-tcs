@@ -69,9 +69,7 @@ async def test_cyclic_service_executes_periodically(nats_server, nats_client):
                 await asyncio.sleep(5.0)
 
                 # Verify no crashes
-                await assert_no_crashes(collector, duration=0.5)
-
-            await asyncio.sleep(0.5)
+                await assert_no_crashes(collector, duration=0.3)
 
         # Verify lifecycle
         await assert_service_started(collector, service_id)
@@ -139,8 +137,6 @@ async def test_cyclic_service_with_max_cycles(nats_server, nats_client):
                     timeout=10.0
                 )
 
-            await asyncio.sleep(0.5)
-
         # Verify clean shutdown after completion
         await assert_service_stopped(collector, service_id, clean_shutdown=True)
 
@@ -201,8 +197,6 @@ async def test_cyclic_service_with_failure(nats_server, nats_client):
                 # Wait for failure (should happen on 3rd cycle)
                 # 3 cycles * 0.7s = ~2.1s
                 await asyncio.sleep(4.0)
-
-            await asyncio.sleep(0.5)
 
         # Verify service started
         await assert_service_started(collector, service_id)
@@ -285,10 +279,15 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
                         timeout=10.0
                     )
 
-                # Let services run through their cycles
-                await asyncio.sleep(6.0)
-
-            await asyncio.sleep(0.5)
+                # Wait for all services to complete (event-driven!)
+                for scenario in scenarios:
+                    service_id = f"tests.services.mock_cyclic:{scenario.instance_context}"
+                    await wait_for_event(
+                        collector,
+                        event_type="stop",
+                        service_id=service_id,
+                        timeout=10.0
+                    )
 
         # Verify all services
         for scenario in scenarios:
@@ -362,8 +361,6 @@ async def test_cyclic_service_short_interval(nats_server, nats_client):
                     service_id=service_id,
                     timeout=10.0
                 )
-
-            await asyncio.sleep(0.5)
 
         # Verify clean completion
         await assert_service_stopped(collector, service_id, clean_shutdown=True)

@@ -28,13 +28,18 @@ class ProcessInfo:
 class ProcessRunner(BaseRunner):
     """Runner that manages a service in a subprocess."""
 
-    def __init__(self, config: ServiceRunnerConfig, terminate_delay: float = 1.0):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: ServiceRunnerConfig,
+        launcher_id: str | None = None,
+        subject_prefix: str = "svc",
+        terminate_delay: float = 1.0
+    ):
+        super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
         self.process_info: ProcessInfo | None = None
         self.terminate_delay = terminate_delay
         self._log_monitor_task: asyncio.Task | None = None
         self._crash_monitor_task: asyncio.Task | None = None
-        self.subject_prefix = "svc"  # Default, will be set by launcher
 
     async def start(self) -> bool:
         """Start service in subprocess."""
@@ -190,51 +195,13 @@ class ProcessRunner(BaseRunner):
         Args:
             pid: Process ID of started subprocess
         """
-        # Skip if no runner_id (standalone/test mode - no lifecycle pollution)
-        if not self.config.runner_id:
-            self.logger.debug(f"No runner_id, skipping START event for {self.service_id}")
-            return
-
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-            import socket
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.debug("No NATS messenger available, cannot publish START event")
-                return
-
-            # Construct service_id in same format as service uses: module_name:instance_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            # Extract launcher_id from runner_id
-            launcher_id = self.config.runner_id.rsplit('.', 1)[0] if '.' in self.config.runner_id else self.config.runner_id
-
-            subject = f"{self.subject_prefix}.registry.start.{service_id}"
-            data = {
-                "event": "start",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "status": "startup",  # Service is starting
-                "pid": pid,
-                "hostname": socket.gethostname(),
-                "runner_id": self.config.runner_id,
-                "parent": f"launcher.{launcher_id}"
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published START event for {service_id} (PID: {pid})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish START event for {self.service_id}: {e}")
+        import socket
+        await self._publish_registry_event(
+            "start",
+            status="startup",
+            pid=pid,
+            hostname=socket.gethostname()
+        )
 
     async def _publish_stop_event(self, reason: str = "force_killed", exit_code: int = 0):
         """Publish STOP event to NATS registry.
@@ -245,45 +212,12 @@ class ProcessRunner(BaseRunner):
             reason: Reason for stop (e.g., "completed", "force_killed")
             exit_code: Process exit code
         """
-        # Skip if no runner_id (standalone/test mode - no lifecycle pollution)
-        if not self.config.runner_id:
-            self.logger.debug(f"No runner_id, skipping STOP event for {self.service_id}")
-            return
-
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.debug("No NATS messenger available, cannot publish STOP event")
-                return
-
-            # Construct service_id in same format as service uses: module_name:instance_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"{self.subject_prefix}.registry.stop.{service_id}"
-            data = {
-                "event": "stop",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "status": "shutdown",  # Graceful shutdown
-                "reason": reason,
-                "exit_code": exit_code
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published STOP event for {service_id} (reason: {reason}, exit_code: {exit_code})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish STOP event for {self.service_id}: {e}", exc_info=True)
+        await self._publish_registry_event(
+            "stop",
+            status="shutdown",
+            reason=reason,
+            exit_code=exit_code
+        )
 
     async def _monitor_crash(self):
         """Monitor subprocess for unexpected exits and handle restarts."""
@@ -381,42 +315,14 @@ class ProcessRunner(BaseRunner):
         Args:
             exit_code: Process exit code
         """
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish CRASH event")
-                return
-
-            # Construct service_id in same format as service uses: module_name:instance_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"{self.subject_prefix}.registry.crashed.{service_id}"
-            will_restart = self._should_restart(exit_code)
-            data = {
-                "event": "crashed",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "status": "error" if will_restart else "failed",  # error if restarting, failed if not
-                "exit_code": exit_code,
-                "restart_policy": self.config.restart,
-                "will_restart": will_restart
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published CRASH event for {service_id} (exit code: {exit_code})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish CRASH event for {self.service_id}: {e}")
+        will_restart = self._should_restart(exit_code)
+        await self._publish_registry_event(
+            "crashed",
+            status="error" if will_restart else "failed",
+            exit_code=exit_code,
+            restart_policy=self.config.restart,
+            will_restart=will_restart
+        )
 
     async def _publish_restarting_event(self, attempt: int):
         """Publish RESTARTING event to NATS registry.
@@ -424,40 +330,12 @@ class ProcessRunner(BaseRunner):
         Args:
             attempt: Restart attempt number (1-based)
         """
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish RESTARTING event")
-                return
-
-            # Construct service_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"{self.subject_prefix}.registry.restarting.{service_id}"
-            data = {
-                "event": "restarting",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "status": "startup",  # Service is restarting
-                "restart_attempt": attempt,
-                "max_restarts": self.config.restart_max if self.config.restart_max > 0 else None
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published RESTARTING event for {service_id} (attempt {attempt})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish RESTARTING event for {self.service_id}: {e}")
+        await self._publish_registry_event(
+            "restarting",
+            status="startup",
+            restart_attempt=attempt,
+            max_restarts=self.config.restart_max if self.config.restart_max > 0 else None
+        )
 
     async def _publish_failed_event(self, reason: str):
         """Publish FAILED event to NATS registry.
@@ -465,40 +343,12 @@ class ProcessRunner(BaseRunner):
         Args:
             reason: Reason for failure (e.g., 'restart_failed', 'restart_limit_reached')
         """
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.warning("No NATS messenger available, cannot publish FAILED event")
-                return
-
-            # Construct service_id
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            subject = f"{self.subject_prefix}.registry.failed.{service_id}"
-            data = {
-                "event": "failed",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "status": "failed",  # Service has failed
-                "reason": reason,
-                "restart_count": len(self._restart_history)
-            }
-
-            await single_publish(subject, data)
-            self.logger.info(f"Published FAILED event for {service_id} (reason: {reason})")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish FAILED event for {self.service_id}: {e}")
+        await self._publish_registry_event(
+            "failed",
+            status="failed",
+            reason=reason,
+            restart_count=len(self._restart_history)
+        )
 
     async def publish_declared(self):
         """Publish DECLARED event to NATS registry.
@@ -509,49 +359,11 @@ class ProcessRunner(BaseRunner):
         This marks the service as part of the launcher's formal configuration,
         distinguishing it from ephemeral services.
         """
-        # Skip if no runner_id (standalone/test mode)
-        if not self.config.runner_id:
-            self.logger.debug(f"No runner_id, skipping DECLARED event for {self.service_id}")
-            return
-
-        try:
-            from serverish.messenger import single_publish
-            from serverish.base import dt_utcnow_array
-
-            # Get messenger from ProcessContext
-            process_ctx = ProcessContext()
-            if process_ctx is None or process_ctx.messenger is None:
-                self.logger.debug("No NATS messenger available, cannot publish DECLARED event")
-                return
-
-            # Construct FULL service_id that matches what the service will publish
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-            instance_id = self.config.instance_context or self.config.service_type
-            service_id = f"{module_name}:{instance_id}"
-
-            # Extract launcher_id from runner_id (format: "launcher-id.service-type")
-            launcher_id = self.config.runner_id.rsplit('.', 1)[0] if '.' in self.config.runner_id else self.config.runner_id
-
-            subject = f"{self.subject_prefix}.registry.declared.{service_id}"
-            data = {
-                "event": "declared",
-                "service_id": service_id,
-                "timestamp": dt_utcnow_array(),
-                "launcher_id": launcher_id,
-                "parent": f"launcher.{launcher_id}",  # For hierarchical display
-                "restart_policy": self.config.restart,
-                "runner_id": self.config.runner_id
-            }
-
-            await single_publish(subject, data)
-            self.logger.debug(f"Published DECLARED event for {service_id}")
-
-        except Exception as e:
-            self.logger.error(f"Failed to publish DECLARED event for {self.service_id}: {e}")
+        await self._publish_registry_event(
+            "declared",
+            restart_policy=self.config.restart,
+            # Note: parent and runner_id are added automatically by _publish_registry_event
+        )
 
     async def _monitor_logs(self):
         """Monitor and relay service logs."""
@@ -635,9 +447,12 @@ class ProcessLauncher(BaseLauncher):
                     restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
                 )
 
-                runner = ProcessRunner(runner_config, terminate_delay=self.terminate_delay)
-                # Pass subject_prefix to runner so it can use it in event publishing
-                runner.subject_prefix = subject_prefix
+                runner = ProcessRunner(
+                    runner_config,
+                    launcher_id=self.launcher_id,
+                    subject_prefix=subject_prefix,
+                    terminate_delay=self.terminate_delay
+                )
                 self.runners[runner.service_id] = runner
                 self.logger.debug(f"Registered runner for {runner.service_id}")
                 self.logger.debug(
