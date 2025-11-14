@@ -1,4 +1,3 @@
-
 # OCM Telescope Control Services (ocabox-tcs)
 
 Collection of automation services for OCM telescopes.
@@ -16,21 +15,99 @@ Collection of automation services for OCM telescopes.
 
 #### For Library Use Only
 
-```bash
-pip install ocabox-tcs
-```
-
-This installs the core framework without CLI tools (minimal dependencies).
-
-#### For Library + CLI Tools
+The package is not published on PyPI. Install directly from the GitHub repository:
 
 ```bash
-pip install ocabox-tcs[cli]
+# stable (default branch)
+pip install git+https://github.com/araucaria-project/ocabox-tcs.git
+
+# install with the optional CLI extras (wrap in quotes to include extras)
+pip install "git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs[cli]"
 ```
 
-This includes the `tcsctl` command-line tool for service monitoring.
+Notes:
+- Use the `@<branch-or-tag>` suffix if you need a specific branch or tag, e.g.
+  `pip install git+https://github.com/araucaria-project/ocabox-tcs.git@main`.
+- If you prefer an editable/dev install after cloning the repo, see the Development section below.
 
-#### For Development
+#### Requirements.txt (old-school projects)
+
+Add this line to your requirements.txt to pin the repo as a dependency:
+
+```
+git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs
+```
+
+To include CLI extras in requirements.txt:
+
+```
+git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs[cli]
+```
+
+#### Editable / Development install (pip + venv)
+
+If you're developing or want an editable install:
+
+```bash
+# clone first
+git clone https://github.com/araucaria-project/ocabox-tcs.git
+cd ocabox-tcs
+
+# optional: create & activate a venv
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+
+# install editable (includes extras if desired)
+pip install -e .           # library only
+pip install -e ".[cli]"    # include CLI extras
+```
+
+#### Poetry
+
+Add directly from the repo:
+
+```bash
+poetry add git+https://github.com/araucaria-project/ocabox-tcs.git
+```
+
+Or add to pyproject.toml dependencies:
+
+```toml
+[tool.poetry.dependencies]
+# point to the repository (lock to branch/tag with 'rev' if desired)
+ocabox-tcs = { git = "https://github.com/araucaria-project/ocabox-tcs.git", rev = "main" }
+```
+
+#### uv (pyproject / PEP 621)
+
+If your project is managed with "uv" (or any tool that uses pyproject.toml / PEP‑621), add ocabox-tcs as a direct VCS dependency using a PEP‑508 direct URL. This works with tools that read [project].dependencies.
+
+Example (pyproject.toml):
+
+```toml
+[project]
+dependencies = [
+  # point to repository, lock to branch/tag/commit with @<rev>
+  "ocabox-tcs @ git+https://github.com/araucaria-project/ocabox-tcs.git@main",
+
+  # include extras if needed
+  "ocabox-tcs[cli] @ git+https://github.com/araucaria-project/ocabox-tcs.git@main"
+]
+```
+
+Notes:
+- Replace `@main` with a tag (e.g. `@v1.2.3`) or commit SHA to pin a revision.
+- If your tool instead expects a requirements-style file, use the `git+https://...#egg=...` form shown in the Requirements.txt section.
+
+#### Pipenv
+
+Install from the repo with pipenv:
+
+```bash
+pipenv install -e "git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs"
+```
+
+### For Development
 
 1. Clone the repository:
 ```bash
