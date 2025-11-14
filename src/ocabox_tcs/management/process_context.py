@@ -172,8 +172,8 @@ class ProcessContext:
             await instance._init_messenger(nats_config)
             await instance._add_nats_config_source(nats_config)
         else:
-            # No NATS config - try to discover existing Messenger (for external projects)
-            await instance._discover_existing_messenger()
+            # No NATS config - try discovery and default connection
+            await instance._discover_or_default_messenger()
 
         # Log all configuration sources
         instance.config_manager.log_sources()
@@ -241,15 +241,18 @@ class ProcessContext:
             )
             self.logger.debug(f"NATS config source added: {config_subject}")
 
-    async def _discover_existing_messenger(self):
-        """Discover existing Messenger singleton if available.
+    async def _discover_or_default_messenger(self):
+        """Discover existing Messenger or attempt default connection.
 
-        Called when no NATS config is provided. Useful for external projects
-        that manage their own Messenger but want monitoring via ProcessContext.
+        Called when no NATS config is provided. This method:
+        1. First tries to discover an existing Messenger singleton (for external projects)
+        2. If not found, attempts connection to default localhost:4222
+        3. If both fail, continues without NATS (monitoring disabled)
 
         Note: Discovered messengers are NOT owned by ProcessContext - they won't
         be closed on shutdown since they're managed elsewhere.
         """
+        # First try to discover existing Messenger
         try:
             from serverish.messenger import Messenger
             m = Messenger()
@@ -257,10 +260,25 @@ class ProcessContext:
                 self._messenger = m
                 self._owns_messenger = False  # We discovered but don't own this
                 self.logger.info("Discovered existing open Messenger (not owned)")
+                return  # Success - we have a messenger
             else:
                 self.logger.debug("Messenger singleton exists but not open")
         except Exception as e:
             self.logger.debug(f"No existing Messenger found: {e}")
+
+        # No existing messenger - try default connection to localhost:4222
+        self.logger.info("Attempting default NATS connection to localhost:4222")
+        try:
+            await self.initialize_messenger(host="localhost", port=4222, timeout=2.0)
+            self._owns_messenger = True
+            self.logger.info("Connected to default NATS server (localhost:4222)")
+        except Exception as e:
+            # Failed to connect - continue without NATS
+            self.logger.warning(
+                f"Could not connect to default NATS server: {e}. "
+                "Continuing without NATS (monitoring disabled). "
+                "To enable NATS, provide a config file or start a NATS server on localhost:4222."
+            )
 
     async def shutdown(self):
         """Shutdown the process and all controllers."""

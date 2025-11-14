@@ -20,8 +20,15 @@ docker run -p 4222:4222 nats:latest
 Each example can be run in three ways:
 
 1. **Standalone** - Single service in its own process
+   - **Minimal**: `python example.py` (uses defaults: context="dev", no config file)
+   - **With config**: `python example.py config.yaml context_name`
 2. **Asyncio Launcher** - All services in one process (shared resources)
 3. **Process Launcher** - Each service in separate subprocess
+
+**Note**: All parameters are optional! You can run any service with just `python service.py` for quick testing. The framework will:
+- Use instance context "dev" by default
+- Attempt to connect to NATS at localhost:4222 automatically
+- Continue without NATS if connection fails (monitoring disabled)
 
 ## Example Progression
 
@@ -37,7 +44,10 @@ The absolute simplest TCS service - perfect starting point.
 
 **Run it:**
 ```bash
-# Standalone
+# Standalone (minimal invocation - uses defaults)
+python src/ocabox_tcs/services/examples/01_minimal.py
+
+# Standalone with config and context (full specification)
 python src/ocabox_tcs/services/examples/01_minimal.py config/examples.yaml minimal
 
 # With asyncio launcher (all examples together)
@@ -77,6 +87,10 @@ services:
 
 **Run it:**
 ```bash
+# Minimal (uses defaults - no custom config)
+python src/ocabox_tcs/services/examples/02_basic.py
+
+# With config file (uses configured values)
 python src/ocabox_tcs/services/examples/02_basic.py config/examples.yaml basic
 ```
 
@@ -101,6 +115,10 @@ Demonstrates logging best practices.
 
 **Run it:**
 ```bash
+# Minimal (uses defaults)
+python src/ocabox_tcs/services/examples/03_logging.py
+
+# With config
 python src/ocabox_tcs/services/examples/03_logging.py config/examples.yaml logging
 ```
 
@@ -129,6 +147,10 @@ Shows the monitoring and health check framework.
 
 **Run it:**
 ```bash
+# Minimal (uses defaults)
+python src/ocabox_tcs/services/examples/04_monitoring.py
+
+# With config
 python src/ocabox_tcs/services/examples/04_monitoring.py config/examples.yaml monitoring
 ```
 

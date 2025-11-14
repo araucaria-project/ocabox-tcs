@@ -288,7 +288,10 @@ class BaseService(ABC):
     def main(cls):
         """Entry point for running service as a script.
 
-        Usage: python service_file.py config.yaml instance_context [--runner-id ID]
+        Usage:
+            python service_file.py                              # Use defaults
+            python service_file.py instance_context             # Custom context, no config
+            python service_file.py config.yaml instance_context # Full specification
 
         The service type is automatically derived from the filename.
 
@@ -304,11 +307,33 @@ class BaseService(ABC):
         from ocabox_tcs.management.service_controller import ServiceController
 
         parser = argparse.ArgumentParser(description="Start a TCS service.")
-        parser.add_argument("config_file", type=str, help="Path to the config file")
-        parser.add_argument("instance_context", type=str, help="Service instance context/ID")
+        parser.add_argument(
+            "config_file",
+            nargs='?',
+            default=None,
+            type=str,
+            help="Path to the config file (optional, defaults to None)"
+        )
+        parser.add_argument(
+            "instance_context",
+            nargs='?',
+            default="dev",
+            type=str,
+            help="Service instance context/ID (optional, defaults to 'dev')"
+        )
         parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
         parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
         args = parser.parse_args()
+
+        # Smart detection: if config_file is provided but instance_context is "dev" (default),
+        # check if config_file looks like a file path (ends with .yaml/.yml)
+        # If not, treat it as instance_context instead
+        if args.config_file is not None and args.instance_context == "dev":
+            # Single argument provided - is it a config file or instance context?
+            if not (args.config_file.endswith('.yaml') or args.config_file.endswith('.yml')):
+                # Doesn't look like a config file - treat as instance_context
+                args.instance_context = args.config_file
+                args.config_file = None
 
         service_type = cls._service_type
 
@@ -324,6 +349,10 @@ class BaseService(ABC):
             logger.info("=" * 60)
             logger.info("TCS - Telescope Control Services")
             logger.info(f"Standalone Service: {service_type}:{args.instance_context}")
+            if args.config_file:
+                logger.info(f"Config: {args.config_file}")
+            else:
+                logger.info("Config: Using defaults (no config file)")
             logger.info("=" * 60)
 
         async def amain():
