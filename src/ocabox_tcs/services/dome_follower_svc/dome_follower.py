@@ -32,13 +32,13 @@ class DomeFollowerService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Setup before main loop starts."""
-        self.logger.info(f"Starting dome follower service, with interval: {self.config.interval}")
+        self.svc_logger.info(f"Starting dome follower service, with interval: {self.svc_config.interval}")
         self.manager = Manager(service=self, config=self.config)
         await self.manager.start_comm()
         await self.manager.set_follow_parameters()
-        if self.config.turn_on_automatically:
+        if self.svc_config.turn_on_automatically:
             self.manager.follow_on = True
-            self.logger.warning(
+            self.svc_logger.warning(
                 f"Dome follower configured to turned on automatically "
                 f"(deprecated method, use rpc instead)"
             )
@@ -48,13 +48,13 @@ class DomeFollowerService(BaseBlockingPermanentService):
         while self.is_running:
             try:
                 await self.manager.dome_follow()
-                await asyncio.sleep(self.config.interval)
+                await asyncio.sleep(self.svc_config.interval)
             except asyncio.CancelledError:
                 break
 
     async def on_stop(self):
         """Cleanup after main loop stops."""
-        self.logger.info(f"Stopping service dome follower")
+        self.svc_logger.info(f"Stopping service dome follower")
         await self.manager.stop_comm()
 
 

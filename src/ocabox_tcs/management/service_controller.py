@@ -284,24 +284,12 @@ class ServiceController:
                         f"Example: @service\\nclass {class_name}(BaseService): ..."
                     )
 
-            # 4. Try convention-based discovery for config (undocumented heuristic)
-            if self._config_class is None and self._service_class is not None:
-                class_name = self._service_class.__name__.replace('Service', 'Config')
-                if hasattr(module, class_name):
-                    self._config_class = getattr(module, class_name)
-                    self.logger.warning(
-                        f"Config class discovered via naming convention heuristic in {self.module_name}. "
-                        f"This is an undocumented fallback and may fail in future versions. "
-                        f"Please add '@config' decorator to your config class for reliable discovery. "
-                        f"Example: @config\\n@dataclass\\nclass {class_name}(BaseServiceConfig): ..."
-                    )
-
-            # 5. Service class is required
+            # 4. Service class is required
             if self._service_class is None:
                 self.logger.error(f"Could not find service class in {self.module_name}")
                 return False
 
-            # 6. Config class is optional - use base class if not found
+            # 5. Config class is optional - use base class if not found
             if self._config_class is None:
                 from ..base_service import BaseServiceConfig
                 self._config_class = BaseServiceConfig
@@ -367,8 +355,8 @@ class ServiceController:
 
             # Set up service properties
             self._service.controller = self
-            self._service.config = self._config
-            self._service.logger = logging.getLogger(f"svc|{self._short_service_id()}")
+            self._service.svc_config = self._config
+            self._service.svc_logger = logging.getLogger(f"svc|{self._short_service_id()}")
 
             self.logger.debug("Service instance created")
             return True

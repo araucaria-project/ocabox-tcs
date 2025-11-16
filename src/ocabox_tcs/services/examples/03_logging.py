@@ -34,8 +34,8 @@ class LoggingService(BaseBlockingPermanentService):
     async def on_start(self):
         """Called before main loop starts."""
         self.cycle = 0
-        self.logger.info("Logging service starting up")
-        self.logger.debug("Debug mode enabled - verbose output")
+        self.svc_logger.info("Logging service starting up")
+        self.svc_logger.debug("Debug mode enabled - verbose output")
 
     async def run_service(self):
         """Main service loop with various log levels."""
@@ -43,28 +43,28 @@ class LoggingService(BaseBlockingPermanentService):
             self.cycle += 1
 
             # Normal operation - INFO level
-            self.logger.info(f"Processing cycle {self.cycle}")
+            self.svc_logger.info(f"Processing cycle {self.cycle}")
 
             # Detailed diagnostic - DEBUG level
-            self.logger.debug(f"Cycle details: interval={self.config.interval}s")
+            self.svc_logger.debug(f"Cycle details: interval={self.svc_config.interval}s")
 
             # Warning for unusual situations
             if self.cycle % 5 == 0:
-                self.logger.warning(f"Cycle {self.cycle} - entering maintenance mode")
+                self.svc_logger.warning(f"Cycle {self.cycle} - entering maintenance mode")
 
             # Error simulation
-            if self.config.simulate_errors and self.cycle % 10 == 0:
+            if self.svc_config.simulate_errors and self.cycle % 10 == 0:
                 try:
                     # Simulate an error
                     raise ValueError("Simulated error for demonstration")
                 except ValueError as e:
-                    self.logger.error(f"Caught error in cycle {self.cycle}: {e}")
+                    self.svc_logger.error(f"Caught error in cycle {self.cycle}: {e}")
 
-            await asyncio.sleep(self.config.interval)
+            await asyncio.sleep(self.svc_config.interval)
 
     async def on_stop(self):
         """Called after main loop stops."""
-        self.logger.info(f"Logging service stopping after {self.cycle} cycles")
+        self.svc_logger.info(f"Logging service stopping after {self.cycle} cycles")
 
 
 if __name__ == '__main__':

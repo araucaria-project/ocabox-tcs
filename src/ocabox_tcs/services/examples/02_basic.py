@@ -31,8 +31,8 @@ class BasicService(BaseBlockingPermanentService):
     async def run_service(self):
         """Main service loop using configuration."""
         while self.is_running:
-            self.logger.info(f"{self.config.message} (every {self.config.interval}s)")
-            await asyncio.sleep(self.config.interval)
+            self.svc_logger.info(f"{self.svc_config.message} (every {self.svc_config.interval}s)")
+            await asyncio.sleep(self.svc_config.interval)
 
 
 if __name__ == '__main__':

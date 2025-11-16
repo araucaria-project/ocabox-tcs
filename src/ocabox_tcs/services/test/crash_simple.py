@@ -24,5 +24,5 @@ class TestCrashSimpleService(BaseSingleShotService):
 
     async def execute(self) -> None:
         """Exit immediately with configured code."""
-        self.logger.info(f"Exiting with code {self.config.exit_code}")
-        sys.exit(self.config.exit_code)
+        self.svc_logger.info(f"Exiting with code {self.svc_config.exit_code}")
+        sys.exit(self.svc_config.exit_code)

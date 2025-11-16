@@ -38,7 +38,7 @@ class ExternalWorkerService(BaseBlockingPermanentService):
         counter = 0
         while self.is_running:
             counter += 1
-            self.logger.info(f"External worker tick {counter}")
+            self.svc_logger.info(f"External worker tick {counter}")
             await asyncio.sleep(2)
 
 

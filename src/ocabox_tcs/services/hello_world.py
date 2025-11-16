@@ -31,24 +31,24 @@ class HelloWorldService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Setup before main loop starts."""
-        self.logger.info(f"Hello World service ready with {self.config.interval}s interval")
+        self.svc_logger.info(f"Hello World service ready with {self.svc_config.interval}s interval")
 
     async def on_stop(self):
         """Cleanup after main loop stops."""
-        self.logger.info("Hello World service cleanup complete")
+        self.svc_logger.info("Hello World service cleanup complete")
 
     async def run_service(self):
         """Main service loop - framework handles task management."""
         while self.is_running:
             try:
-                self.logger.info(f"{self.config.message} (interval: {self.config.interval}s)")
-                await asyncio.sleep(self.config.interval)
+                self.svc_logger.info(f"{self.svc_config.message} (interval: {self.svc_config.interval}s)")
+                await asyncio.sleep(self.svc_config.interval)
             except asyncio.CancelledError:
                 # Expected when service is stopped
                 break
             except Exception as e:
-                self.logger.error(f"Error in hello loop: {e}")
-                await asyncio.sleep(min(self.config.interval, 10))
+                self.svc_logger.error(f"Error in hello loop: {e}")
+                await asyncio.sleep(min(self.svc_config.interval, 10))
 
 
 if __name__ == '__main__':

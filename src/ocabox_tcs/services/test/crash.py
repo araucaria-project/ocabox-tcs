@@ -28,9 +28,9 @@ class TestCrashService(BaseBlockingPermanentService):
 
     async def run_service(self) -> None:
         """Run until it's time to crash."""
-        self.logger.info(
-            f"Crash test service starting - will crash in {self.config.run_duration}s "
-            f"with exit code {self.config.exit_code}"
+        self.svc_logger.info(
+            f"Crash test service starting - will crash in {self.svc_config.run_duration}s "
+            f"with exit code {self.svc_config.exit_code}"
         )
 
         # Run for the configured duration
@@ -38,18 +38,18 @@ class TestCrashService(BaseBlockingPermanentService):
 
         while self.is_running:
             elapsed = asyncio.get_event_loop().time() - start_time
-            remaining = self.config.run_duration - elapsed
+            remaining = self.svc_config.run_duration - elapsed
 
             if remaining <= 0:
                 # Time to crash!
-                self.logger.error(
-                    f"{self.config.crash_message} (exit code: {self.config.exit_code})"
+                self.svc_logger.error(
+                    f"{self.svc_config.crash_message} (exit code: {self.svc_config.exit_code})"
                 )
-                sys.exit(self.config.exit_code)
+                sys.exit(self.svc_config.exit_code)
 
             # Log progress
             if int(elapsed) % 2 == 0 and elapsed > int(elapsed) - 0.1:
-                self.logger.info(
+                self.svc_logger.info(
                     f"Service running - will crash in {remaining:.1f}s"
                 )
 

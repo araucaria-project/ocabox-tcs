@@ -53,26 +53,26 @@ class MockSingleShotService(BaseSingleShotService):
         This method is called once when the service starts.
         After completion, the service terminates.
         """
-        self.logger.info("Starting single-shot execution")
+        self.svc_logger.info("Starting single-shot execution")
 
         # Simulate work with multiple iterations
-        for i in range(1, self.config.work_iterations + 1):
-            self.logger.info(f"Work iteration {i}/{self.config.work_iterations}")
-            await asyncio.sleep(self.config.execution_delay / self.config.work_iterations)
+        for i in range(1, self.svc_config.work_iterations + 1):
+            self.svc_logger.info(f"Work iteration {i}/{self.svc_config.work_iterations}")
+            await asyncio.sleep(self.svc_config.execution_delay / self.svc_config.work_iterations)
 
             # Check for failure condition mid-execution
-            if self.config.should_fail and i == self.config.work_iterations // 2:
-                self.logger.error("Simulated failure during execution")
+            if self.svc_config.should_fail and i == self.svc_config.work_iterations // 2:
+                self.svc_logger.error("Simulated failure during execution")
                 self.monitor.set_status(Status.ERROR, "Execution failed")
                 raise RuntimeError("Simulated execution failure")
 
         # Successful completion
-        self.logger.info("Single-shot execution completed successfully")
+        self.svc_logger.info("Single-shot execution completed successfully")
 
         # Exit with configured exit code if non-zero
-        if self.config.exit_code != 0:
-            self.logger.warning(f"Exiting with code {self.config.exit_code}")
-            sys.exit(self.config.exit_code)
+        if self.svc_config.exit_code != 0:
+            self.svc_logger.warning(f"Exiting with code {self.svc_config.exit_code}")
+            sys.exit(self.svc_config.exit_code)
 
 
 if __name__ == '__main__':

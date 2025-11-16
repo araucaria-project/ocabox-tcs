@@ -27,7 +27,7 @@ class DataImporterService(BaseSingleShotService):
     async def execute(self):
         # Import data once
         await self.import_data_from_file()
-        self.logger.info("Import completed")
+        self.svc_logger.info("Import completed")
 ```
 
 ---
@@ -113,7 +113,7 @@ Config classes are **optional**. If you don't need custom configuration:
 class SimpleService(BaseBlockingPermanentService):
     async def run_service(self):
         # Uses BaseServiceConfig automatically
-        self.logger.info(f"Service type: {self.config.type}")
+        self.svc_logger.info(f"Service type: {self.svc_config.type}")
 ```
 
 ### Custom Config Classes
@@ -132,7 +132,7 @@ class AdvancedConfig(BaseServiceConfig):
 class AdvancedService(BaseBlockingPermanentService):
     async def run_service(self):
         # Access custom config
-        response = await self.call_api(self.config.api_url)
+        response = await self.call_api(self.svc_config.api_url)
 ```
 
 ## Best Practices
@@ -372,7 +372,7 @@ try:
 except asyncio.CancelledError:
     raise  # Expected when service stops
 except Exception as e:
-    self.logger.error(f"Error in run_service: {e}")
+    self.svc_logger.error(f"Error in run_service: {e}")
     monitor.set_status(Status.ERROR, f"Runtime error: {e}")
     raise  # Re-raise for controller awareness
 ```
@@ -419,7 +419,7 @@ class MyService(BaseBlockingPermanentService):
                 self.error_count = 0  # Reset on success
             except Exception as e:
                 self.error_count += 1
-                self.logger.error(f"Error: {e}")
+                self.svc_logger.error(f"Error: {e}")
                 await asyncio.sleep(1)  # Back off before retry
 
     def healthcheck(self) -> Status | None:
@@ -519,7 +519,7 @@ class ResilientService(BaseBlockingPermanentService):
         try:
             self.connection = await self.connect_to_database()
         except Exception as e:
-            self.logger.error(f"Failed to connect: {e}")
+            self.svc_logger.error(f"Failed to connect: {e}")
             raise  # Will set status to FAILED
 
     async def run_service(self):
@@ -532,16 +532,16 @@ class ResilientService(BaseBlockingPermanentService):
 
             except ConnectionError as e:
                 self.errors_since_last_recovery += 1
-                self.logger.warning(f"Connection error #{self.errors_since_last_recovery}: {e}")
+                self.svc_logger.warning(f"Connection error #{self.errors_since_last_recovery}: {e}")
                 # Try to reconnect
                 try:
                     self.connection = await self.connect_to_database()
                 except Exception:
-                    self.logger.error("Reconnect failed, backing off...")
+                    self.svc_logger.error("Reconnect failed, backing off...")
                     await asyncio.sleep(min(2 ** self.errors_since_last_recovery, 60))
 
             except Exception as e:
-                self.logger.error(f"Unexpected error: {e}")
+                self.svc_logger.error(f"Unexpected error: {e}")
                 raise  # Will set status to ERROR, but service still running
 
             await asyncio.sleep(1)

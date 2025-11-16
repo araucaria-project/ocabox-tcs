@@ -38,23 +38,23 @@ class Manager:
         super().__init__()
 
     async def start_comm(self):
-        self.logger.info(f'Starting communication.')
+        self.svc_logger.info(f'Starting communication.')
         self.nats_conn = NatsConn(manager=self)
         self.tic_conn = TicConn(manager=self)
-        await self.tic_conn.init_peripherals(telescope_id=self.config.instance_context)
+        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.instance_context)
         await self.nats_conn.connect()
         await self.tic_conn.get_obs_cfg()
         await self.nats_conn.start_responders()
 
     async def stop_comm(self):
-        self.logger.info(f'Stopping communication.')
+        self.svc_logger.info(f'Stopping communication.')
         await self.nats_conn.close()
 
     async def set_follow_parameters(self):
-        self.follow_tolerance = self.config.follow_tolerance
-        self.settle_time = self.config.settle_time
-        self.dome_speed_deg =  self.config.dome_speed
-        self.logger.info(
+        self.follow_tolerance = self.svc_config.follow_tolerance
+        self.settle_time = self.svc_config.settle_time
+        self.dome_speed_deg =  self.svc_config.dome_speed
+        self.svc_logger.info(
             f"Follow parameters: "
             f"follow_tolerance: {self.follow_tolerance}deg "
             f"settle_time: {self.settle_time}s "
@@ -68,7 +68,7 @@ class Manager:
         else:
             _settle_time = self.settle_time
             await asyncio.sleep(_settle_time)
-        self.logger.info(f"Dome follow settle done: {_settle_time:.1f}s")
+        self.svc_logger.info(f"Dome follow settle done: {_settle_time:.1f}s")
 
     async def dome_follow(self) -> None:
         if self.follow_on:
@@ -84,22 +84,22 @@ class Manager:
                         if self.turn_time != 0:
                             self.dome_current_speed = min(diff, 360 - diff) / self.turn_time
                             if self.dome_current_speed != 0.0:
-                                self.logger.info(
+                                self.svc_logger.info(
                                     f"Dome speed: {self.dome_current_speed:.1f} deg/s"
                                 )
                     self.dome_az_last = dome_az
                 except OcaboxServerError as e:
-                    self.logger.error(f'Tic OcaboxServerError, {e}')
+                    self.svc_logger.error(f'Tic OcaboxServerError, {e}')
                     self.service.monitor.set_status(
                         Status.ERROR, f"Tic dome get Server Error {e}"
                     )
                     return
                 except CommunicationTimeoutError:
-                    self.logger.error(f'Tic CommunicationTimeoutError')
+                    self.svc_logger.error(f'Tic CommunicationTimeoutError')
                     self.service.monitor.set_status(Status.DEGRADED, f"Tic dome get Time out")
                     return
                 except OcaboxAccessDenied:
-                    self.logger.error(f'Tic OcaboxAccessDenied')
+                    self.svc_logger.error(f'Tic OcaboxAccessDenied')
                     self.service.monitor.set_status(
                         Status.ERROR, f"Tic dome get Access Denied"
                     )
@@ -109,20 +109,20 @@ class Manager:
                 diff = abs(dome_az - mount_az) % 360
                 min_diff = min(diff, 360 - diff)
                 if min_diff > self.follow_tolerance and self.dome_current_speed == 0.0:
-                    self.logger.info(f"Dome is following: {dome_az:.3f} -> {mount_az:.3f}")
+                    self.svc_logger.info(f"Dome is following: {dome_az:.3f} -> {mount_az:.3f}")
                     async with self.service.monitor.track_task('slewing'):
                         try:
                             await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
                         except OcaboxServerError as e:
-                            self.logger.error(f'Tic OcaboxServerError, {e}')
+                            self.svc_logger.error(f'Tic OcaboxServerError, {e}')
                             self.service.monitor.set_status(Status.ERROR, f"Tic slewtoazimuth Server Error {e}")
                             return
                         except CommunicationTimeoutError:
-                            self.logger.error(f'Tic CommunicationTimeoutError')
+                            self.svc_logger.error(f'Tic CommunicationTimeoutError')
                             self.service.monitor.set_status(Status.DEGRADED, f"Tic slewtoazimuth Time out")
                             return
                         except OcaboxAccessDenied:
-                            self.logger.error(f'Tic OcaboxAccessDenied')
+                            self.svc_logger.error(f'Tic OcaboxAccessDenied')
                             self.service.monitor.set_status(Status.ERROR, f"Tic slewtoazimuth Access Denied")
                             return
                         self.service.monitor.cancel_error_status()

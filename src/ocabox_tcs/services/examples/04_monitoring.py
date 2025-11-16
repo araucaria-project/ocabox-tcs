@@ -57,7 +57,7 @@ class MonitoringService(BaseBlockingPermanentService):
         # The controller already set status to OK after start_service() completed
         self.monitor.set_status(Status.OK, "Service started and monitoring configured")
 
-        self.logger.info("Monitoring service ready")
+        self.svc_logger.info("Monitoring service ready")
 
     async def run_service(self):
         """Main loop with error handling and status reporting."""
@@ -75,28 +75,28 @@ class MonitoringService(BaseBlockingPermanentService):
                 # Manual status update - NOTE: Not necessary! The healthcheck callback
                 # below will automatically report OK status. This is just for demonstration.
                 self.monitor.set_status(Status.OK, f"Cycle {self.cycle_count}")
-                self.logger.info(f"Cycle {self.cycle_count} completed")
+                self.svc_logger.info(f"Cycle {self.cycle_count} completed")
 
-                await asyncio.sleep(self.config.interval)
+                await asyncio.sleep(self.svc_config.interval)
 
             except asyncio.CancelledError:
                 # Normal shutdown
                 break
             except Exception as e:
                 self.error_count += 1
-                self.logger.error(f"Error in cycle {self.cycle_count}: {e}")
+                self.svc_logger.error(f"Error in cycle {self.cycle_count}: {e}")
 
                 # Manual status update on error
                 # This is one case where manual updates make sense - immediate feedback
                 # rather than waiting for next healthcheck cycle
-                if self.error_count >= self.config.max_errors:
+                if self.error_count >= self.svc_config.max_errors:
                     self.monitor.set_status(Status.FAILED, "Max errors exceeded")
-                    self.logger.critical("Too many errors, shutting down")
+                    self.svc_logger.critical("Too many errors, shutting down")
                     break
                 else:
                     self.monitor.set_status(Status.ERROR, f"Error count: {self.error_count}")
 
-                await asyncio.sleep(self.config.interval)
+                await asyncio.sleep(self.svc_config.interval)
 
     def healthcheck(self) -> Status:
         """Health check callback - return current health status.
@@ -107,7 +107,7 @@ class MonitoringService(BaseBlockingPermanentService):
 
         This is the preferred way to manage status for most services.
         """
-        if self.error_count >= self.config.max_errors:
+        if self.error_count >= self.svc_config.max_errors:
             return Status.FAILED
         elif self.error_count > 0:
             return Status.DEGRADED
@@ -118,7 +118,7 @@ class MonitoringService(BaseBlockingPermanentService):
         # Manual status update - NOTE: Not necessary! Controller automatically
         # sets SHUTDOWN status during stop_service(). Shown for demonstration.
         self.monitor.set_status(Status.SHUTDOWN, "Service stopping")
-        self.logger.info(f"Service stopped after {self.cycle_count} cycles")
+        self.svc_logger.info(f"Service stopped after {self.cycle_count} cycles")
 
 
 if __name__ == '__main__':

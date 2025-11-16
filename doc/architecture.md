@@ -105,8 +105,8 @@ class HelloWorldConfig(BaseServiceConfig):
 class HelloWorldService(BasePermanentService):
     async def start_service(self):
         while self.is_running:
-            self.logger.info(self.config.message)
-            await asyncio.sleep(self.config.interval)
+            self.svc_logger.info(self.svc_config.message)
+            await asyncio.sleep(self.svc_config.interval)
 ```
 
 ### Discovery Priority

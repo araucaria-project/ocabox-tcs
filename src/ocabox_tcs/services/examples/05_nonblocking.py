@@ -42,22 +42,22 @@ class NonBlockingService(BasePermanentService):
 
     async def start_service(self):
         """Start the service by spawning background workers."""
-        self.logger.info(f"Starting {self.config.worker_count} background workers")
+        self.svc_logger.info(f"Starting {self.svc_config.worker_count} background workers")
 
         # Initialize state
         self.workers: list[asyncio.Task] = []
         self.stop_event = asyncio.Event()
 
         # Spawn worker tasks
-        for i in range(self.config.worker_count):
+        for i in range(self.svc_config.worker_count):
             task = asyncio.create_task(self._worker(i))
             self.workers.append(task)
 
-        self.logger.info(f"Service started with {self.config.worker_count} background workers")
+        self.svc_logger.info(f"Service started with {self.svc_config.worker_count} background workers")
 
     async def stop_service(self):
         """Stop the service and clean up all workers."""
-        self.logger.info("Stopping service, cleaning up workers...")
+        self.svc_logger.info("Stopping service, cleaning up workers...")
 
         # Signal all workers to stop
         self.stop_event.set()
@@ -69,16 +69,16 @@ class NonBlockingService(BasePermanentService):
                     asyncio.gather(*self.workers, return_exceptions=True),
                     timeout=5.0
                 )
-                self.logger.info("All workers stopped gracefully")
+                self.svc_logger.info("All workers stopped gracefully")
             except asyncio.TimeoutError:
-                self.logger.warning("Worker cleanup timeout, cancelling remaining tasks")
+                self.svc_logger.warning("Worker cleanup timeout, cancelling remaining tasks")
                 for task in self.workers:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*self.workers, return_exceptions=True)
 
         self.workers.clear()
-        self.logger.info("Service cleanup complete")
+        self.svc_logger.info("Service cleanup complete")
 
     async def _worker(self, worker_id: int):
         """Background worker task.
@@ -86,26 +86,26 @@ class NonBlockingService(BasePermanentService):
         Args:
             worker_id: Unique identifier for this worker
         """
-        self.logger.info(f"Worker {worker_id} started")
+        self.svc_logger.info(f"Worker {worker_id} started")
 
         try:
             cycle = 0
             while not self.stop_event.is_set():
                 cycle += 1
-                self.logger.debug(f"Worker {worker_id} cycle {cycle}")
+                self.svc_logger.debug(f"Worker {worker_id} cycle {cycle}")
 
                 # Simulate work
-                await asyncio.sleep(self.config.interval)
+                await asyncio.sleep(self.svc_config.interval)
 
         except asyncio.CancelledError:
-            self.logger.info(f"Worker {worker_id} cancelled")
+            self.svc_logger.info(f"Worker {worker_id} cancelled")
             raise
         except Exception as e:
-            self.logger.error(f"Worker {worker_id} error: {e}")
+            self.svc_logger.error(f"Worker {worker_id} error: {e}")
             # Note: In production, you might want to add error handling here
             # For example, restart the worker or set a DEGRADED status via healthcheck
         finally:
-            self.logger.info(f"Worker {worker_id} stopped")
+            self.svc_logger.info(f"Worker {worker_id} stopped")
 
 
 if __name__ == '__main__':

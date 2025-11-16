@@ -250,8 +250,8 @@ class BaseService(ABC):
     def __init__(self):
         # These will be set by ServiceController
         self.controller: ServiceController | None = None
-        self.config: Any = None  # Use Any to avoid linter warnings with subclass-specific configs
-        self.logger: logging.Logger | None = None
+        self.svc_config: Any = None  # Service config - renamed to avoid collision with user code
+        self.svc_logger: logging.Logger | None = None  # Service logger - renamed to avoid collision with user code
         self._is_running = False
 
     @property
@@ -410,11 +410,11 @@ class BasePermanentService(BaseService):
 
     async def start_service(self):
         """Default implementation for permanent services - override for custom logic."""
-        self.logger.info("Permanent service started")
+        self.svc_logger.info("Permanent service started")
 
     async def stop_service(self):
         """Default implementation for permanent services - override for custom cleanup."""
-        self.logger.info("Permanent service stopping")
+        self.svc_logger.info("Permanent service stopping")
 
 
 class BaseBlockingPermanentService(BasePermanentService):
@@ -463,16 +463,16 @@ class BaseBlockingPermanentService(BasePermanentService):
 
     async def start_service(self):
         """Start the service and launch the main task."""
-        self.logger.info("Starting blocking permanent service")
+        self.svc_logger.info("Starting blocking permanent service")
         await self.on_start()
 
         # Start the main blocking task
         self._main_task = asyncio.create_task(self._run_wrapper())
-        self.logger.info("Blocking permanent service started")
+        self.svc_logger.info("Blocking permanent service started")
 
     async def stop_service(self):
         """Stop the service and cancel the main task."""
-        self.logger.info("Stopping blocking permanent service")
+        self.svc_logger.info("Stopping blocking permanent service")
 
         # Cancel the main task
         if self._main_task and not self._main_task.done():
@@ -484,7 +484,7 @@ class BaseBlockingPermanentService(BasePermanentService):
             self._main_task = None
 
         await self.on_stop()
-        self.logger.info("Blocking permanent service stopped")
+        self.svc_logger.info("Blocking permanent service stopped")
 
     async def _run_wrapper(self):
         """Wrapper that handles the blocking run_service method."""
@@ -494,7 +494,7 @@ class BaseBlockingPermanentService(BasePermanentService):
             # Expected when service is stopped
             raise
         except Exception as e:
-            self.logger.error(f"Error in run_service: {e}")
+            self.svc_logger.error(f"Error in run_service: {e}")
             self.monitor.set_status(Status.ERROR, f"Error in run_service: {e}")
             raise
 
@@ -532,7 +532,7 @@ class BaseSingleShotService(BaseService):
 
     async def stop_service(self):
         """Default implementation for single-shot services."""
-        self.logger.info("Single-shot service stopped")
+        self.svc_logger.info("Single-shot service stopped")
 
     @abstractmethod
     async def execute(self):

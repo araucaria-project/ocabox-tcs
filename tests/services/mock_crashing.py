@@ -54,60 +54,60 @@ class MockCrashingService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Called before run_service starts."""
-        self.logger.info(f"MockCrashingService starting (will crash soon)")
-        self.logger.info(f"Config: crash_delay={self.config.crash_delay}, exit_code={self.config.exit_code}, "
-                        f"crash_on_iteration={self.config.crash_on_iteration}, crash_type={self.config.crash_type}")
+        self.svc_logger.info(f"MockCrashingService starting (will crash soon)")
+        self.svc_logger.info(f"Config: crash_delay={self.svc_config.crash_delay}, exit_code={self.svc_config.exit_code}, "
+                        f"crash_on_iteration={self.svc_config.crash_on_iteration}, crash_type={self.svc_config.crash_type}")
 
     async def on_stop(self):
         """Called after run_service stops."""
-        self.logger.info("MockCrashingService stopped")
+        self.svc_logger.info("MockCrashingService stopped")
 
     async def run_service(self):
         """Main service loop - crashes after configured delay/iteration."""
-        self.logger.info("run_service() called - entering main loop")
-        self.logger.info(f"is_running={self.is_running}")
+        self.svc_logger.info("run_service() called - entering main loop")
+        self.svc_logger.info(f"is_running={self.is_running}")
 
         while self.is_running:
             self.iteration_count += 1
-            self.logger.info(f"Iteration {self.iteration_count}")
+            self.svc_logger.info(f"Iteration {self.iteration_count}")
 
             # Check if we should crash this iteration
-            if self.iteration_count >= self.config.crash_on_iteration:
-                self.logger.warning(
-                    f"Crashing now (type={self.config.crash_type}, "
-                    f"exit_code={self.config.exit_code})"
+            if self.iteration_count >= self.svc_config.crash_on_iteration:
+                self.svc_logger.warning(
+                    f"Crashing now (type={self.svc_config.crash_type}, "
+                    f"exit_code={self.svc_config.exit_code})"
                 )
-                await asyncio.sleep(self.config.crash_delay)
+                await asyncio.sleep(self.svc_config.crash_delay)
                 self._trigger_crash()
                 break
 
             await asyncio.sleep(0.1)
 
-        self.logger.info("run_service() loop exited")
+        self.svc_logger.info("run_service() loop exited")
 
     def _trigger_crash(self):
         """Trigger configured crash type."""
-        crash_type = self.config.crash_type.lower()
+        crash_type = self.svc_config.crash_type.lower()
 
         if crash_type == "exit":
             # Clean exit with non-zero code
-            self.logger.error(f"Exiting with code {self.config.exit_code}")
-            sys.exit(self.config.exit_code)
+            self.svc_logger.error(f"Exiting with code {self.svc_config.exit_code}")
+            sys.exit(self.svc_config.exit_code)
 
         elif crash_type == "exception":
             # Unhandled exception
-            self.logger.error("Raising unhandled exception")
-            raise RuntimeError(f"Mock crash exception (exit_code={self.config.exit_code})")
+            self.svc_logger.error("Raising unhandled exception")
+            raise RuntimeError(f"Mock crash exception (exit_code={self.svc_config.exit_code})")
 
         elif crash_type == "signal":
             # Send signal to self
-            sig = self.config.signal_number
-            self.logger.error(f"Sending signal {sig} to self")
+            sig = self.svc_config.signal_number
+            self.svc_logger.error(f"Sending signal {sig} to self")
             os.kill(os.getpid(), sig)
 
         else:
-            self.logger.error(f"Unknown crash type: {crash_type}, using exit")
-            sys.exit(self.config.exit_code)
+            self.svc_logger.error(f"Unknown crash type: {crash_type}, using exit")
+            sys.exit(self.svc_config.exit_code)
 
 
 if __name__ == '__main__':

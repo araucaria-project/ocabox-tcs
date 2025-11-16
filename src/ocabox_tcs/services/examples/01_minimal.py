@@ -24,7 +24,7 @@ class MinimalService(BaseBlockingPermanentService):
     async def run_service(self):
         """Main service loop."""
         while self.is_running:
-            self.logger.info("Service running...")
+            self.svc_logger.info("Service running...")
             await asyncio.sleep(5)
 
 

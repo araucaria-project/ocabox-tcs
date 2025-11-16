@@ -52,37 +52,37 @@ class MockPermanentService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Called before run_service starts - handle startup delay."""
-        if self.config.startup_delay > 0:
-            self.logger.info(f"Startup delay: {self.config.startup_delay}s")
-            await asyncio.sleep(self.config.startup_delay)
+        if self.svc_config.startup_delay > 0:
+            self.svc_logger.info(f"Startup delay: {self.svc_config.startup_delay}s")
+            await asyncio.sleep(self.svc_config.startup_delay)
 
     async def on_stop(self):
         """Called after run_service stops - handle shutdown delay."""
-        if self.config.shutdown_delay > 0:
-            self.logger.info(f"Shutdown delay: {self.config.shutdown_delay}s")
-            await asyncio.sleep(self.config.shutdown_delay)
+        if self.svc_config.shutdown_delay > 0:
+            self.svc_logger.info(f"Shutdown delay: {self.svc_config.shutdown_delay}s")
+            await asyncio.sleep(self.svc_config.shutdown_delay)
 
     async def run_service(self):
         """Main service loop."""
         while self.is_running:
             self.iteration_count += 1
-            self.logger.debug(f"Mock work iteration {self.iteration_count}")
+            self.svc_logger.debug(f"Mock work iteration {self.iteration_count}")
 
             # Check if we should stop after N iterations
-            if self.config.work_count > 0 and self.iteration_count >= self.config.work_count:
-                self.logger.info(f"Reached work_count limit ({self.config.work_count}), stopping")
+            if self.svc_config.work_count > 0 and self.iteration_count >= self.svc_config.work_count:
+                self.svc_logger.info(f"Reached work_count limit ({self.svc_config.work_count}), stopping")
                 break
 
-            await asyncio.sleep(self.config.work_interval)
+            await asyncio.sleep(self.svc_config.work_interval)
 
     def healthcheck(self) -> Status:
         """Custom healthcheck with configurable status."""
         # Override via config if specified
-        if self.config.healthcheck_status:
-            status_str = self.config.healthcheck_status.upper()
+        if self.svc_config.healthcheck_status:
+            status_str = self.svc_config.healthcheck_status.upper()
             if hasattr(Status, status_str):
                 status = getattr(Status, status_str)
-                self.logger.debug(f"Healthcheck override: {status}")
+                self.svc_logger.debug(f"Healthcheck override: {status}")
                 return status
 
         # Default: OK
