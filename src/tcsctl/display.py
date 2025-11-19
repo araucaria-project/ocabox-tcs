@@ -1,11 +1,12 @@
 """Display formatting for TCS CLI using Rich library."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from rich.console import Console
 from rich.text import Text
 
-from tcsctl.client import ServiceInfo
 from ocabox_tcs.monitoring import Status
+from tcsctl.client import ServiceInfo
 
 
 # Status symbols (simple ASCII)
@@ -46,8 +47,8 @@ HEARTBEAT_COLORS = {
 # Restart symbols and colors
 RESTART_SYMBOLS = {
     "restarting": "⟳",  # Counterclockwise arrows
-    "failed": "✗",      # Failed to restart
-    "recovered": "↻",   # Clockwise arrows (recovered from crash)
+    "failed": "✗",  # Failed to restart
+    "recovered": "↻",  # Clockwise arrows (recovered from crash)
 }
 
 RESTART_COLORS = {
@@ -78,17 +79,17 @@ def _format_service_name(service_id: str, show_full_with_dim: bool = False) -> T
     text = Text()
 
     # Split at colon to separate module path from instance
-    if ':' in service_id:
-        module_part, instance_part = service_id.split(':', 1)
+    if ":" in service_id:
+        module_part, instance_part = service_id.split(":", 1)
     else:
         module_part = service_id
         instance_part = ""
 
     # Find last dot in module part
-    if '.' in module_part:
-        last_dot_idx = module_part.rfind('.')
-        prefix = module_part[:last_dot_idx + 1]  # Include the dot
-        service_type = module_part[last_dot_idx + 1:]
+    if "." in module_part:
+        last_dot_idx = module_part.rfind(".")
+        prefix = module_part[: last_dot_idx + 1]  # Include the dot
+        service_type = module_part[last_dot_idx + 1 :]
     else:
         prefix = ""
         service_type = module_part
@@ -184,7 +185,7 @@ def _format_timestamp(dt: datetime | None) -> tuple[str, str]:
     iso_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Relative time
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     delta = now - dt
     total_seconds = delta.total_seconds()
 
@@ -221,7 +222,9 @@ def _format_restart_counter(service: ServiceInfo) -> str:
         return f"({current}/{max_restarts})"
 
 
-def display_services_detailed(services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None):
+def display_services_detailed(
+    services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None
+):
     """Display services in detailed multi-line format with hierarchical grouping.
 
     Services with a parent are grouped under their parent.
@@ -244,7 +247,8 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
         # Default: show running + (fresh AND ERROR/FAILED)
         # But exclude old ephemeral even if "running" (likely zombie/stale)
         services = [
-            s for s in services
+            s
+            for s in services
             if (s.is_running and not (s.is_old and s.is_ephemeral))
             or (s.is_fresh and s.status in (Status.ERROR, Status.FAILED))
         ]
@@ -497,7 +501,9 @@ def display_services_detailed(services: list[ServiceInfo], show_all: bool = Fals
     console.print()
 
 
-def display_services_table(services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None):
+def display_services_table(
+    services: list[ServiceInfo], show_all: bool = False, service_filter: str | None = None
+):
     """Display services in systemctl-like format with hierarchical grouping.
 
     Services with a parent are grouped and indented under their parent.
@@ -520,7 +526,8 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
         # Default: show running + (fresh AND ERROR/FAILED)
         # But exclude old ephemeral even if "running" (likely zombie/stale)
         services = [
-            s for s in services
+            s
+            for s in services
             if (s.is_running and not (s.is_old and s.is_ephemeral))
             or (s.is_fresh and s.status in (Status.ERROR, Status.FAILED))
         ]
@@ -609,6 +616,12 @@ def display_services_table(services: list[ServiceInfo], show_all: bool = False, 
         # Uptime
         if service.is_running:
             line.append(f" up:{service.uptime_str}", style="cyan")
+
+        # PID and hostname (compact format)
+        if service.pid:
+            line.append(f" pid:{service.pid}", style="dim")
+        if service.hostname:
+            line.append(f" @{service.hostname}", style="dim")
 
         # Restart status (compact indicator)
         if service.has_crashed or (service.restart_count and service.restart_count > 0):

@@ -1,5 +1,5 @@
 from serverish.base import dt_utcnow_array
-from serverish.messenger import get_publisher, single_publish
+from serverish.messenger import get_publisher
 
 from ocabox_tcs.monitoring.monitored_object import MonitoredObject, ReportingMonitoredObject
 
@@ -38,6 +38,13 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
         self.subject_prefix = subject_prefix
         self.parent_name = parent_name  # For display grouping (e.g., launcher name)
 
+        # Cache PID and hostname (expensive operations, don't change during runtime)
+        import os
+        import socket
+
+        self._cached_pid = os.getpid()
+        self._cached_hostname = socket.gethostname()
+
         # Publisher for status changes (sent immediately on status change)
         self._status_publisher = None
         # Publisher for periodic heartbeats (sent every check_interval)
@@ -67,6 +74,7 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
         """Called when status changes - trigger immediate status send."""
         # Use asyncio to schedule the async send (called from sync context)
         import asyncio
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -90,6 +98,9 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             # Add parent_name if set (for display grouping)
             if self.parent_name:
                 data["parent"] = self.parent_name
+            # Add cached PID and hostname for monitoring
+            data["pid"] = self._cached_pid
+            data["hostname"] = self._cached_hostname
             await self._status_publisher.publish(data=data)
             self.logger.debug(f"Sent STATUS report to {self._status_publisher.subject}")
         except Exception as e:
@@ -108,7 +119,7 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
             data = {
                 "service_id": self.name,
                 "timestamp": dt_utcnow_array(),
-                "status": self.get_status().value  # Include current status in heartbeat
+                "status": self.get_status().value,  # Include current status in heartbeat
             }
             await self._heartbeat_publisher.publish(data=data)
             self.logger.debug(f"Sent HEARTBEAT to {self._heartbeat_publisher.subject}")
@@ -126,11 +137,11 @@ class MessengerMonitoredObject(ReportingMonitoredObject):
         responsibility of runners (ProcessRunner, StandaloneRunner, etc.).
         This keeps MonitoredObject reusable for any monitored entity.
         """
-        self.logger.debug(f"send_registration() called (no-op - runners handle registry events)")
+        self.logger.debug("send_registration() called (no-op - runners handle registry events)")
 
     async def send_shutdown(self):
         """No-op: Registry/lifecycle events are published by runners.
 
         See send_registration() for explanation.
         """
-        self.logger.debug(f"send_shutdown() called (no-op - runners handle registry events)")
+        self.logger.debug("send_shutdown() called (no-op - runners handle registry events)")
