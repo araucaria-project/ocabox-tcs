@@ -10,20 +10,23 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     pass
 
+from ocabox_tcs.base_service import BaseService, BaseServiceConfig
 from ocabox_tcs.management.configuration import ConfigurationManager
 from ocabox_tcs.management.process_context import ProcessContext
-
-from ocabox_tcs.base_service import BaseService, BaseServiceConfig
-from ocabox_tcs.monitoring import create_monitor, Status
-from ocabox_tcs.monitoring.monitored_object import  MonitoredObject
+from ocabox_tcs.monitoring import Status, create_monitor
+from ocabox_tcs.monitoring.monitored_object import MonitoredObject
 
 
 class ServiceController:
     """Controls single service in same process as service."""
 
-    def __init__(self, module_name: str, instance_id: str,
-                 config_sources: dict[str, Any] | None = None,
-                 runner_id: str | None = None):
+    def __init__(
+        self,
+        module_name: str,
+        instance_id: str,
+        config_sources: dict[str, Any] | None = None,
+        runner_id: str | None = None,
+    ):
         self.module_name = module_name
         self.instance_id = instance_id
         self.runner_id = runner_id
@@ -109,6 +112,10 @@ class ServiceController:
             await self._service._internal_start()
 
             self._running = True
+
+            # Publish registry.start event with PID and hostname
+            await self._publish_start_event()
+
             self.monitor.set_status(Status.OK, "Service running")
             self.logger.info("Service started successfully")
             return True
@@ -131,6 +138,10 @@ class ServiceController:
                 await self._service._internal_stop()
 
             self._running = False
+
+            # Publish registry.stop event
+            await self._publish_stop_event()
+
             self.monitor.set_status(Status.OK, "Service stopped")
             self.logger.info("Service stopped successfully")
             return True
@@ -156,7 +167,6 @@ class ServiceController:
             await self.stop_service()
 
         # Stop monitoring (sets status to reflect shutdown reason)
-        # Note: No registry.stop event here - runner handles lifecycle events
         if self.monitor:
             await self.monitor.stop_monitoring()
 
@@ -164,6 +174,82 @@ class ServiceController:
         self.process.unregister_controller(self)
 
         self.logger.info("Controller shutdown complete")
+
+    async def _publish_start_event(self):
+        """Publish START event to NATS registry with PID and hostname.
+
+        This allows standalone services (not launched by process launcher) to
+        report their PID and hostname for monitoring purposes.
+        """
+        try:
+            import os
+            import socket
+
+            from serverish.base import dt_utcnow_array
+            from serverish.messenger import single_publish
+
+            # Get messenger from ProcessContext
+            if self.process is None or self.process.messenger is None:
+                self.logger.debug("No NATS messenger available, cannot publish START event")
+                return
+
+            # Build subject
+            subject = f"svc.registry.start.{self.service_id}"
+
+            # Build event data with PID and hostname
+            data = {
+                "event": "start",
+                "service_id": self.service_id,
+                "timestamp": dt_utcnow_array(),
+                "status": "startup",
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+            }
+
+            # Add runner_id if available
+            if self.runner_id:
+                data["runner_id"] = self.runner_id
+
+            await single_publish(subject, data)
+            self.logger.debug(f"Published START event for {self.service_id}")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to publish START event: {e}")
+
+    async def _publish_stop_event(self):
+        """Publish STOP event to NATS registry.
+
+        This allows standalone services to report their stop event.
+        """
+        try:
+            from serverish.base import dt_utcnow_array
+            from serverish.messenger import single_publish
+
+            # Get messenger from ProcessContext
+            if self.process is None or self.process.messenger is None:
+                self.logger.debug("No NATS messenger available, cannot publish STOP event")
+                return
+
+            # Build subject
+            subject = f"svc.registry.stop.{self.service_id}"
+
+            # Build event data
+            data = {
+                "event": "stop",
+                "service_id": self.service_id,
+                "timestamp": dt_utcnow_array(),
+                "status": "shutdown",
+            }
+
+            # Add runner_id if available
+            if self.runner_id:
+                data["runner_id"] = self.runner_id
+
+            await single_publish(subject, data)
+            self.logger.debug(f"Published STOP event for {self.service_id}")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to publish STOP event: {e}")
 
     async def _initialize_monitoring(self):
         """Initialize monitoring system.
@@ -177,23 +263,23 @@ class ServiceController:
         # (e.g., "asyncio-launcher.majkmacc0h2L4D6Qc.examples.01_minimal")
         # So we need to extract service-type from module_name and strip it from runner_id
         parent_name = None
-        if self.runner_id and '.' in self.runner_id:
+        if self.runner_id and "." in self.runner_id:
             # Extract service type from module_name (same logic as _discover_classes)
-            module_parts = self.module_name.split('.')
-            if 'services' in module_parts:
-                services_idx = module_parts.index('services')
-                service_type_with_path = '.'.join(module_parts[services_idx + 1:])
+            module_parts = self.module_name.split(".")
+            if "services" in module_parts:
+                services_idx = module_parts.index("services")
+                service_type_with_path = ".".join(module_parts[services_idx + 1 :])
             else:
                 service_type_with_path = module_parts[-1]
 
             # Strip service type from end of runner_id to get launcher_id
             if self.runner_id.endswith(f".{service_type_with_path}"):
-                launcher_id = self.runner_id[:-len(f".{service_type_with_path}")]
+                launcher_id = self.runner_id[: -len(f".{service_type_with_path}")]
                 parent_name = f"launcher.{launcher_id}"
                 self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
 
         # Get subject_prefix from NATS config
-        subject_prefix = 'svc'  # Default
+        subject_prefix = "svc"  # Default
         if self.process.config_manager:
             global_config = self.process.config_manager.resolve_config()
             nats_config = global_config.get("nats", {})
@@ -207,7 +293,7 @@ class ServiceController:
             heartbeat_interval=10.0,
             healthcheck_interval=30.0,
             parent_name=parent_name,  # For hierarchical grouping in displays
-            subject_prefix=subject_prefix  # Use configured prefix
+            subject_prefix=subject_prefix,  # Use configured prefix
         )
 
         # Set initial status BEFORE starting monitoring (to avoid initial "unknown" report)
@@ -228,13 +314,13 @@ class ServiceController:
             # For ocabox_tcs.services.examples.01_minimal → try both:
             #   1. examples.01_minimal (subdirectory path)
             #   2. 01_minimal (just filename)
-            module_parts = self.module_name.split('.')
+            module_parts = self.module_name.split(".")
             service_type_full = module_parts[-1]  # Just filename
 
             # Try to get relative path from 'services'
-            if 'services' in module_parts:
-                services_idx = module_parts.index('services')
-                service_type_with_path = '.'.join(module_parts[services_idx + 1:])
+            if "services" in module_parts:
+                services_idx = module_parts.index("services")
+                service_type_with_path = ".".join(module_parts[services_idx + 1 :])
             else:
                 service_type_with_path = service_type_full
 
@@ -246,17 +332,21 @@ class ServiceController:
                 self._service_class = get_service_class(service_type_full)
 
             if self._service_class is not None:
-                self.logger.debug(f"Service class discovered via @service decorator: {self._service_class.__name__}")
+                self.logger.debug(
+                    f"Service class discovered via @service decorator: {self._service_class.__name__}"
+                )
 
             self._config_class = get_config_class(service_type_with_path)
             if self._config_class is None:
                 self._config_class = get_config_class(service_type_full)
 
             if self._config_class is not None:
-                self.logger.debug(f"Config class discovered via @config decorator: {self._config_class.__name__}")
+                self.logger.debug(
+                    f"Config class discovered via @config decorator: {self._config_class.__name__}"
+                )
 
             # 2. Fall back to module variable approach (deprecated)
-            if self._service_class is None and hasattr(module, 'service_class'):
+            if self._service_class is None and hasattr(module, "service_class"):
                 self._service_class = module.service_class
                 self.logger.warning(
                     f"Service class discovered via deprecated 'service_class' module variable in {self.module_name}. "
@@ -264,7 +354,7 @@ class ServiceController:
                     f"Example: @service\\nclass {self._service_class.__name__}(BaseService): ..."
                 )
 
-            if self._config_class is None and hasattr(module, 'config_class'):
+            if self._config_class is None and hasattr(module, "config_class"):
                 self._config_class = module.config_class
                 self.logger.warning(
                     f"Config class discovered via deprecated 'config_class' module variable in {self.module_name}. "
@@ -274,7 +364,9 @@ class ServiceController:
 
             # 3. Try convention-based discovery for service (undocumented heuristic)
             if self._service_class is None:
-                class_name = ''.join(word.capitalize() for word in service_type_full.split('_')) + 'Service'
+                class_name = (
+                    "".join(word.capitalize() for word in service_type_full.split("_")) + "Service"
+                )
                 if hasattr(module, class_name):
                     self._service_class = getattr(module, class_name)
                     self.logger.warning(
@@ -292,10 +384,13 @@ class ServiceController:
             # 5. Config class is optional - use base class if not found
             if self._config_class is None:
                 from ..base_service import BaseServiceConfig
+
                 self._config_class = BaseServiceConfig
                 self.logger.debug("No config class found, using BaseServiceConfig")
 
-            self.logger.debug(f"Discovered classes: {self._service_class.__name__}, {self._config_class.__name__}")
+            self.logger.debug(
+                f"Discovered classes: {self._service_class.__name__}, {self._config_class.__name__}"
+            )
             return True
 
         except Exception as e:
@@ -310,26 +405,26 @@ class ServiceController:
         try:
             # Use ProcessContext's config manager
             if not self.process.config_manager:
-                raise RuntimeError("ProcessContext.config_manager not initialized. Call ProcessContext.initialize() first.")
+                raise RuntimeError(
+                    "ProcessContext.config_manager not initialized. Call ProcessContext.initialize() first."
+                )
 
             self._config_manager = self.process.config_manager
 
             # Resolve configuration for this service
-            config_dict = self._config_manager.resolve_config(
-                self.module_name, self.instance_id
-            )
+            config_dict = self._config_manager.resolve_config(self.module_name, self.instance_id)
 
             # Extract service type for config
-            module_parts = self.module_name.split('.')
+            module_parts = self.module_name.split(".")
             service_type = module_parts[-1]
 
             # Create config instance
             if issubclass(self._config_class, BaseServiceConfig):
                 # Ensure type and instance_context are set
-                if 'type' not in config_dict:
-                    config_dict['type'] = service_type
-                if 'instance_context' not in config_dict:
-                    config_dict['instance_context'] = self.instance_id
+                if "type" not in config_dict:
+                    config_dict["type"] = service_type
+                if "instance_context" not in config_dict:
+                    config_dict["instance_context"] = self.instance_id
 
                 # Filter config_dict to only include fields the config class accepts
                 filtered_config = self._filter_config_for_class(config_dict, self._config_class)
@@ -375,7 +470,9 @@ class ServiceController:
         """Get service configuration."""
         return self._config
 
-    def _filter_config_for_class(self, config_dict: dict[str, Any], config_class: type) -> dict[str, Any]:
+    def _filter_config_for_class(
+        self, config_dict: dict[str, Any], config_class: type
+    ) -> dict[str, Any]:
         """Filter configuration dictionary to only include fields the config class accepts."""
         import inspect
         from dataclasses import fields, is_dataclass
@@ -387,7 +484,7 @@ class ServiceController:
         else:
             # For regular classes, get __init__ parameters
             sig = inspect.signature(config_class.__init__)
-            valid_fields = set(sig.parameters.keys()) - {'self'}
+            valid_fields = set(sig.parameters.keys()) - {"self"}
 
         # Filter config_dict to only include valid fields
         filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
@@ -395,7 +492,9 @@ class ServiceController:
         # Log what was filtered out for debugging
         filtered_out = set(config_dict.keys()) - set(filtered_config.keys())
         if filtered_out:
-            self.logger.debug(f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}")
+            self.logger.debug(
+                f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}"
+            )
 
         return filtered_config
 
@@ -404,5 +503,5 @@ class ServiceController:
 
         Converts: ocabox_tcs.services.hello_world:dev → hello_world:dev
         """
-        service_type = self.module_name.split('.')[-1]
+        service_type = self.module_name.split(".")[-1]
         return f"{service_type}:{self.instance_id}"
