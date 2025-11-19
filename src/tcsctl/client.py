@@ -36,16 +36,17 @@ Example usage:
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Optional
+from datetime import UTC, datetime
 
+from nats.js.errors import NotFoundError
 from serverish.base import dt_from_array
 from serverish.messenger import Messenger
 from serverish.messenger.msg_reader import MsgReader
-from nats.js.errors import NotFoundError
 
 from ocabox_tcs.monitoring import Status
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,34 +57,35 @@ class ServiceInfo:
 
     Universal data structure for any MessengerMonitoredObject.
     """
+
     service_id: str
     status: Status
-    status_message: Optional[str] = None
-    start_time: Optional[datetime] = None
-    stop_time: Optional[datetime] = None
-    last_heartbeat: Optional[datetime] = None
-    uptime_seconds: Optional[float] = None
+    status_message: str | None = None
+    start_time: datetime | None = None
+    stop_time: datetime | None = None
+    last_heartbeat: datetime | None = None
+    uptime_seconds: float | None = None
 
     # Detailed metadata fields
-    runner_id: Optional[str] = None
-    hostname: Optional[str] = None
-    last_status_update: Optional[datetime] = None
-    pid: Optional[int] = None
+    runner_id: str | None = None
+    hostname: str | None = None
+    last_status_update: datetime | None = None
+    pid: int | None = None
 
     # Hierarchical grouping field
-    parent: Optional[str] = None  # Parent entity name for grouping (e.g., launcher name)
+    parent: str | None = None  # Parent entity name for grouping (e.g., launcher name)
 
     # Service lifecycle tracking
     declared: bool = False  # Tracks if service appeared in svc.registry.declared (from config)
-    declared_time: Optional[datetime] = None  # When service was declared (from config)
+    declared_time: datetime | None = None  # When service was declared (from config)
 
     # Crash and restart tracking
-    last_crash_time: Optional[datetime] = None  # When service last crashed
-    last_crash_exit_code: Optional[int] = None  # Exit code of last crash
-    restart_policy: Optional[str] = None  # "no", "on-failure", "on-abnormal", "always"
-    restart_count: Optional[int] = None  # Total number of restarts so far
-    restart_attempt: Optional[int] = None  # Current restart attempt number (if restarting)
-    restart_max: Optional[int] = None  # Maximum allowed restarts (0 = unlimited)
+    last_crash_time: datetime | None = None  # When service last crashed
+    last_crash_exit_code: int | None = None  # Exit code of last crash
+    restart_policy: str | None = None  # "no", "on-failure", "on-abnormal", "always"
+    restart_count: int | None = None  # Total number of restarts so far
+    restart_attempt: int | None = None  # Current restart attempt number (if restarting)
+    restart_max: int | None = None  # Maximum allowed restarts (0 = unlimited)
     is_restarting: bool = False  # Whether service is currently in restart delay
     restart_failed: bool = False  # Restart failed (e.g., hit restart limit)
 
@@ -118,7 +120,7 @@ class ServiceInfo:
         """
         if self.last_heartbeat is None:
             return False
-        age = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
+        age = (datetime.now(UTC) - self.last_heartbeat).total_seconds()
         return age < 86400  # 24 hours
 
     @property
@@ -160,7 +162,7 @@ class ServiceInfo:
             # Stopped service without heartbeat = expected (none)
             return "dead" if self.is_running else "none"
 
-        age = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
+        age = (datetime.now(UTC) - self.last_heartbeat).total_seconds()
         if age < 30:  # Within 3x heartbeat interval
             return "alive"
         elif age < 120:  # Within ~2 minutes
@@ -173,7 +175,7 @@ class ServiceInfo:
         """Check if service has crashed recently (within last 5 minutes)."""
         if self.last_crash_time is None:
             return False
-        age = (datetime.now(timezone.utc) - self.last_crash_time).total_seconds()
+        age = (datetime.now(UTC) - self.last_crash_time).total_seconds()
         return age < 300  # 5 minutes
 
     @property
@@ -199,7 +201,7 @@ class ServiceControlClient:
     Assumes an already-open Messenger instance.
     """
 
-    def __init__(self, messenger: Messenger, subject_prefix: str = 'svc'):
+    def __init__(self, messenger: Messenger, subject_prefix: str = "svc"):
         """Initialize the service control client.
 
         Args:
@@ -215,9 +217,9 @@ class ServiceControlClient:
         self._follow_tasks: list[asyncio.Task] = []
 
         # Callbacks for streaming mode
-        self.on_service_update: Optional[Callable[[ServiceInfo], None]] = None
-        self.on_service_start: Optional[Callable[[ServiceInfo], None]] = None
-        self.on_service_stop: Optional[Callable[[ServiceInfo], None]] = None
+        self.on_service_update: Callable[[ServiceInfo], None] | None = None
+        self.on_service_start: Callable[[ServiceInfo], None] | None = None
+        self.on_service_stop: Callable[[ServiceInfo], None] | None = None
 
         logger.debug(f"ServiceControlClient initialized with prefix '{subject_prefix}'")
 
@@ -239,7 +241,7 @@ class ServiceControlClient:
 
         return services
 
-    async def get_service(self, service_id: str) -> Optional[ServiceInfo]:
+    async def get_service(self, service_id: str) -> ServiceInfo | None:
         """Get information about a specific service.
 
         Args:
@@ -325,7 +327,7 @@ class ServiceControlClient:
 
         return services
 
-    def get_current_service(self, service_id: str) -> Optional[ServiceInfo]:
+    def get_current_service(self, service_id: str) -> ServiceInfo | None:
         """Get specific service from internal state (streaming mode only).
 
         Args:
@@ -368,8 +370,8 @@ class ServiceControlClient:
                 async with registry_reader:
                     async for data, meta in registry_reader:
                         msg_count += 1
-                        event = data.get('event')
-                        service_id = data.get('service_id')
+                        event = data.get("event")
+                        service_id = data.get("service_id")
 
                         if not service_id:
                             continue
@@ -377,52 +379,53 @@ class ServiceControlClient:
                         # Initialize service info if new
                         if service_id not in services:
                             services[service_id] = ServiceInfo(
-                                service_id=service_id,
-                                status=Status.UNKNOWN
+                                service_id=service_id, status=Status.UNKNOWN
                             )
 
                         # Extract status from event if present (all events now include status)
-                        status_str = data.get('status')
+                        status_str = data.get("status")
                         if status_str:
                             services[service_id].status = Status(status_str)
 
                         # Update based on event type
-                        if event == 'start':
-                            timestamp = data.get('timestamp')
+                        if event == "start":
+                            timestamp = data.get("timestamp")
                             if timestamp:
                                 services[service_id].start_time = dt_from_array(timestamp)
                                 services[service_id].stop_time = None  # Clear stop if restarted
 
                             # Extract metadata from start event
-                            if 'runner_id' in data:
-                                services[service_id].runner_id = data['runner_id']
-                            if 'hostname' in data:
-                                services[service_id].hostname = data['hostname']
-                            if 'pid' in data:
-                                services[service_id].pid = data['pid']
-                            if 'parent' in data:
-                                services[service_id].parent = data['parent']
+                            if "runner_id" in data:
+                                services[service_id].runner_id = data["runner_id"]
+                            if "hostname" in data:
+                                services[service_id].hostname = data["hostname"]
+                            if "pid" in data:
+                                services[service_id].pid = data["pid"]
+                            if "parent" in data:
+                                services[service_id].parent = data["parent"]
 
-                        elif event == 'stop':
-                            timestamp = data.get('timestamp')
+                        elif event == "stop":
+                            timestamp = data.get("timestamp")
                             if timestamp:
                                 services[service_id].stop_time = dt_from_array(timestamp)
 
-                        elif event == 'declared':
+                        elif event == "declared":
                             # Service is declared in launcher configuration
                             services[service_id].declared = True
                             # Extract declaration timestamp
-                            timestamp = data.get('timestamp')
+                            timestamp = data.get("timestamp")
                             if timestamp:
                                 services[service_id].declared_time = dt_from_array(timestamp)
                             # Extract parent for hierarchical grouping
-                            if 'parent' in data:
-                                services[service_id].parent = data['parent']
+                            if "parent" in data:
+                                services[service_id].parent = data["parent"]
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
             except NotFoundError:
-                logger.warning(f"Registry stream not found (prefix: {self.subject_prefix}), skipping")
+                logger.warning(
+                    f"Registry stream not found (prefix: {self.subject_prefix}), skipping"
+                )
             except Exception as e:
                 logger.error(f"Error reading registry: {e}")
 
@@ -437,38 +440,43 @@ class ServiceControlClient:
 
             try:
                 status_reader = MsgReader(
-                    subject=f'{self.subject_prefix}.status.>',
+                    subject=f"{self.subject_prefix}.status.>",
                     parent=self.messenger,
-                    deliver_policy='last_per_subject',  # Only get latest per service
-                    nowait=True
+                    deliver_policy="last_per_subject",  # Only get latest per service
+                    nowait=True,
                 )
                 async with status_reader:
                     async for data, meta in status_reader:
                         msg_count += 1
-                        service_id = data.get('name')
+                        service_id = data.get("name")
                         if not service_id:
                             continue
 
                         # Initialize if not seen before (e.g., launchers only publish status, not registry.start)
                         if service_id not in services:
                             services[service_id] = ServiceInfo(
-                                service_id=service_id,
-                                status=Status.UNKNOWN
+                                service_id=service_id, status=Status.UNKNOWN
                             )
 
                         # Use latest status
-                        status_str = data.get('status')
+                        status_str = data.get("status")
                         if status_str:
                             services[service_id].status = Status(status_str)
-                            services[service_id].status_message = data.get('message')
+                            services[service_id].status_message = data.get("message")
 
                             # Extract parent for hierarchical grouping
-                            if 'parent' in data:
-                                services[service_id].parent = data['parent']
+                            if "parent" in data:
+                                services[service_id].parent = data["parent"]
+
+                            # Extract PID and hostname from status events
+                            if "pid" in data:
+                                services[service_id].pid = data["pid"]
+                            if "hostname" in data:
+                                services[service_id].hostname = data["hostname"]
 
                             # Capture last status update timestamp from meta
-                            if 'timestamp' in meta:
-                                ts = meta['timestamp']
+                            if "timestamp" in meta:
+                                ts = meta["timestamp"]
                                 if isinstance(ts, list):
                                     services[service_id].last_status_update = dt_from_array(ts)
 
@@ -498,29 +506,32 @@ class ServiceControlClient:
                 async with heartbeat_reader:
                     async for data, meta in heartbeat_reader:
                         msg_count += 1
-                        service_id = data.get('service_id')
+                        service_id = data.get("service_id")
                         if not service_id:
                             continue
 
                         # Initialize if not seen before
                         if service_id not in services:
                             services[service_id] = ServiceInfo(
-                                service_id=service_id,
-                                status=Status.UNKNOWN
+                                service_id=service_id, status=Status.UNKNOWN
                             )
 
                         # Use latest heartbeat
-                        timestamp = data.get('timestamp')
+                        timestamp = data.get("timestamp")
                         if timestamp:
                             hb_time = dt_from_array(timestamp)
-                            if (services[service_id].last_heartbeat is None or
-                                    hb_time > services[service_id].last_heartbeat):
+                            if (
+                                services[service_id].last_heartbeat is None
+                                or hb_time > services[service_id].last_heartbeat
+                            ):
                                 services[service_id].last_heartbeat = hb_time
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_heartbeats: {msg_count} messages in {elapsed:.3f}s")
             except NotFoundError:
-                logger.warning(f"Heartbeat stream not found (prefix: {self.subject_prefix}), skipping")
+                logger.warning(
+                    f"Heartbeat stream not found (prefix: {self.subject_prefix}), skipping"
+                )
             except Exception as e:
                 logger.error(f"Error reading heartbeats: {e}")
 
@@ -543,24 +554,23 @@ class ServiceControlClient:
                 async with crash_reader:
                     async for data, meta in crash_reader:
                         msg_count += 1
-                        service_id = data.get('service_id')
+                        service_id = data.get("service_id")
                         if not service_id:
                             continue
 
                         # Initialize if not seen before
                         if service_id not in services:
                             services[service_id] = ServiceInfo(
-                                service_id=service_id,
-                                status=Status.UNKNOWN
+                                service_id=service_id, status=Status.UNKNOWN
                             )
 
                         # Record crash info
-                        timestamp = data.get('timestamp')
+                        timestamp = data.get("timestamp")
                         if timestamp:
                             services[service_id].last_crash_time = dt_from_array(timestamp)
-                        services[service_id].last_crash_exit_code = data.get('exit_code')
-                        services[service_id].restart_policy = data.get('restart_policy')
-                        services[service_id].restart_max = data.get('max_restarts')
+                        services[service_id].last_crash_exit_code = data.get("exit_code")
+                        services[service_id].restart_policy = data.get("restart_policy")
+                        services[service_id].restart_max = data.get("max_restarts")
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_crash_restart: {msg_count} messages in {elapsed:.3f}s")
@@ -573,14 +583,10 @@ class ServiceControlClient:
         # Read registry first to populate service entries, then read status/heartbeats/crashes in parallel
         # This ensures services dict is populated before other readers try to update it
         await read_registry()
-        await asyncio.gather(
-            read_status(),
-            read_heartbeats(),
-            read_crash_restart()
-        )
+        await asyncio.gather(read_status(), read_heartbeats(), read_crash_restart())
 
         # Calculate uptime for running services
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for service in services.values():
             if service.start_time and not service.stop_time:
                 service.uptime_seconds = (now - service.start_time).total_seconds()
@@ -600,8 +606,8 @@ class ServiceControlClient:
                     if not self._following:
                         break
 
-                    event = data.get('event')
-                    service_id = data.get('service_id')
+                    event = data.get("event")
+                    service_id = data.get("service_id")
 
                     if not service_id:
                         continue
@@ -609,35 +615,36 @@ class ServiceControlClient:
                     # Initialize service info if new
                     if service_id not in self._services:
                         self._services[service_id] = ServiceInfo(
-                            service_id=service_id,
-                            status=Status.UNKNOWN
+                            service_id=service_id, status=Status.UNKNOWN
                         )
 
                     service = self._services[service_id]
 
                     # Extract status from event if present (all events now include status)
-                    status_str = data.get('status')
+                    status_str = data.get("status")
                     if status_str:
                         service.status = Status(status_str)
 
                     # Update based on event type
-                    if event == 'start':
-                        timestamp = data.get('timestamp')
+                    if event == "start":
+                        timestamp = data.get("timestamp")
                         if timestamp:
                             service.start_time = dt_from_array(timestamp)
                             service.stop_time = None
 
                         # Extract metadata
-                        if 'runner_id' in data:
-                            service.runner_id = data['runner_id']
-                        if 'hostname' in data:
-                            service.hostname = data['hostname']
-                        if 'pid' in data:
-                            service.pid = data['pid']
+                        if "runner_id" in data:
+                            service.runner_id = data["runner_id"]
+                        if "hostname" in data:
+                            service.hostname = data["hostname"]
+                        if "pid" in data:
+                            service.pid = data["pid"]
 
                         # Calculate uptime
                         if service.start_time:
-                            service.uptime_seconds = (datetime.now(timezone.utc) - service.start_time).total_seconds()
+                            service.uptime_seconds = (
+                                datetime.now(UTC) - service.start_time
+                            ).total_seconds()
 
                         # Trigger callback
                         if self.on_service_start:
@@ -645,8 +652,8 @@ class ServiceControlClient:
                         if self.on_service_update:
                             self.on_service_update(service)
 
-                    elif event == 'stop':
-                        timestamp = data.get('timestamp')
+                    elif event == "stop":
+                        timestamp = data.get("timestamp")
                         if timestamp:
                             service.stop_time = dt_from_array(timestamp)
 
@@ -656,16 +663,16 @@ class ServiceControlClient:
                         if self.on_service_update:
                             self.on_service_update(service)
 
-                    elif event == 'declared':
+                    elif event == "declared":
                         # Service is declared in launcher configuration
                         service.declared = True
                         # Extract declaration timestamp
-                        timestamp = data.get('timestamp')
+                        timestamp = data.get("timestamp")
                         if timestamp:
                             service.declared_time = dt_from_array(timestamp)
                         # Extract parent for hierarchical grouping
-                        if 'parent' in data:
-                            service.parent = data['parent']
+                        if "parent" in data:
+                            service.parent = data["parent"]
 
                         # Trigger callback (configuration update)
                         if self.on_service_update:
@@ -681,37 +688,42 @@ class ServiceControlClient:
         """Continuously follow status updates."""
         try:
             status_reader = MsgReader(
-                subject=f'{self.subject_prefix}.status.>',
+                subject=f"{self.subject_prefix}.status.>",
                 parent=self.messenger,
-                deliver_policy='last_per_subject',  # Start from most recent per service
+                deliver_policy="last_per_subject",  # Start from most recent per service
             )
             async with status_reader:
                 async for data, meta in status_reader:
                     if not self._following:
                         break
 
-                    service_id = data.get('name')
+                    service_id = data.get("name")
                     if not service_id:
                         continue
 
                     # Initialize if unknown service
                     if service_id not in self._services:
                         self._services[service_id] = ServiceInfo(
-                            service_id=service_id,
-                            status=Status.UNKNOWN
+                            service_id=service_id, status=Status.UNKNOWN
                         )
 
                     service = self._services[service_id]
 
                     # Update status
-                    status_str = data.get('status')
+                    status_str = data.get("status")
                     if status_str:
                         service.status = Status(status_str)
-                        service.status_message = data.get('message')
+                        service.status_message = data.get("message")
+
+                        # Extract PID and hostname from status events
+                        if "pid" in data:
+                            service.pid = data["pid"]
+                        if "hostname" in data:
+                            service.hostname = data["hostname"]
 
                         # Capture timestamp
-                        if 'timestamp' in meta:
-                            ts = meta['timestamp']
+                        if "timestamp" in meta:
+                            ts = meta["timestamp"]
                             if isinstance(ts, list):
                                 service.last_status_update = dt_from_array(ts)
 
@@ -738,20 +750,22 @@ class ServiceControlClient:
                     if not self._following:
                         break
 
-                    service_id = data.get('service_id')
+                    service_id = data.get("service_id")
                     if not service_id or service_id not in self._services:
                         continue
 
                     service = self._services[service_id]
 
                     # Update heartbeat
-                    timestamp = data.get('timestamp')
+                    timestamp = data.get("timestamp")
                     if timestamp:
                         service.last_heartbeat = dt_from_array(timestamp)
 
                         # Update uptime if running
                         if service.start_time and not service.stop_time:
-                            service.uptime_seconds = (datetime.now(timezone.utc) - service.start_time).total_seconds()
+                            service.uptime_seconds = (
+                                datetime.now(UTC) - service.start_time
+                            ).total_seconds()
 
                         # Trigger callback (heartbeat updates don't need separate callback)
                         if self.on_service_update:
