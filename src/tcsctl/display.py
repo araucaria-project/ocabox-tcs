@@ -467,15 +467,25 @@ def display_services_detailed(
         if show_separator:
             console.print()
 
-    # Display services hierarchically
+    # Display services hierarchically (recursive to support arbitrary depth)
+    def print_detailed_hierarchy(service_obj, depth: int = 0):
+        """Recursively print service details and its children.
+
+        Args:
+            service_obj: Service to print
+            depth: Current depth in hierarchy (0 = root)
+        """
+        print_service_detailed(service_obj, show_separator=True)
+
+        # Recursively print children
+        if service_obj.service_id in parent_to_children:
+            for child in parent_to_children[service_obj.service_id]:
+                print_detailed_hierarchy(child, depth + 1)
+
     # First, display entities without parents (top-level)
     if None in parent_to_children:
         for service in parent_to_children[None]:
-            print_service_detailed(service, show_separator=True)
-            # If this service is a parent, display its children
-            if service.service_id in parent_to_children:
-                for child in parent_to_children[service.service_id]:
-                    print_service_detailed(child, show_separator=True)
+            print_detailed_hierarchy(service, depth=0)
 
     # Then, display orphaned children (parent exists but not in current list)
     all_parent_ids = {s.service_id for s in services}
@@ -645,15 +655,32 @@ def display_services_table(
 
         console.print(line)
 
-    # Display services hierarchically
+    # Display services hierarchically (recursive to support arbitrary depth)
+    def print_hierarchy(service_obj, depth: int = 0):
+        """Recursively print service and its children.
+
+        Args:
+            service_obj: Service to print
+            depth: Current depth in hierarchy (0 = root)
+        """
+        # Calculate indent based on depth
+        if depth == 0:
+            indent = ""
+        else:
+            # Create tree structure: "  ├─ " for children
+            indent = "  " * (depth - 1) + "  ├─ "
+
+        print_service(service_obj, indent=indent)
+
+        # Recursively print children
+        if service_obj.service_id in parent_to_children:
+            for child in parent_to_children[service_obj.service_id]:
+                print_hierarchy(child, depth + 1)
+
     # First, display entities without parents (top-level)
     if None in parent_to_children:
         for service in parent_to_children[None]:
-            print_service(service)
-            # If this service is a parent, display its children indented
-            if service.service_id in parent_to_children:
-                for child in parent_to_children[service.service_id]:
-                    print_service(child, indent="  ├─ ")
+            print_hierarchy(service, depth=0)
 
     # Then, display orphaned children (parent exists but not in current list)
     all_parent_ids = {s.service_id for s in services}

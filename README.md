@@ -342,6 +342,109 @@ async def process_item(item):
 
 The monitoring system handles all NATS communication, status transitions, and heartbeat publishing automatically.
 
+### Advanced: Creating Service Hierarchies
+
+For applications that spawn child processes or manage subcomponents, you can create hierarchical displays in `tcsctl` using the `parent_name` parameter. This is especially useful for:
+- Services that launch helper subprocesses
+- Applications managing worker pools
+- Main servers coordinating with tool processes (e.g., MCP servers, language servers)
+
+**How It Works:**
+1. Parent process passes its **own monitor name** to child as `--parent-name` CLI argument
+2. Child process uses this value when creating its monitor
+3. `tcsctl` displays the hierarchy automatically (supports unlimited depth)
+
+**Example: Service Launching Subprocesses**
+
+```python
+# parent_service.py - Main service
+from ocabox_tcs.base_service import service, BaseBlockingPermanentService
+import asyncio
+
+@service
+class ParentService(BaseBlockingPermanentService):
+    async def on_start(self):
+        """Launch child processes with parent tracking."""
+
+        # STEP 1: Get your own monitor name
+        my_name = self.controller.monitor.name
+        # For service "parent_service:dev", this is: "parent_service:dev"
+
+        # STEP 2: Pass your name to child as --parent-name
+        self.child_process = await asyncio.create_subprocess_exec(
+            "python", "-m", "my_package.child_service",
+            "config.yaml",
+            "dev",
+            "--parent-name", my_name,  # ← Declare parent relationship
+        )
+```
+
+```python
+# child_service.py - Child subprocess
+from ocabox_tcs.base_service import service, BaseBlockingPermanentService
+
+@service
+class ChildService(BaseBlockingPermanentService):
+    # Child receives --parent-name via CLI args
+    # TCS framework automatically handles this and sets monitor.parent_name
+
+    async def run_service(self):
+        while self.is_running:
+            await asyncio.sleep(1)
+```
+
+**Result in tcsctl:**
+```bash
+$ tcsctl list
+◐ parent_service:dev [ok] (♥) up:5m - Main service
+  ├─ child_service:dev [ok] (♥) up:5m - Child process
+```
+
+**Three-Level Hierarchy (Launcher → Service → Subprocess):**
+
+When using a TCS launcher, you automatically get a third level:
+
+```bash
+$ poetry run tcs_asyncio --config config/services.yaml
+$ tcsctl list
+◐ launcher.asyncio-launcher.hostname-abc123 [ok] (♥) up:10m - Launcher
+  ├─ parent_service:dev [ok] (♥) up:10m - Main service
+      ├─ worker_1:dev [ok] (♥) up:10m - Worker process 1
+      └─ worker_2:dev [ok] (♥) up:10m - Worker process 2
+```
+
+**For Non-TCS Applications:**
+
+If you're not using TCS `BaseService`, manually pass `parent_name` when creating the monitor:
+
+```python
+import argparse
+from ocabox_tcs.monitoring import create_monitor
+
+async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--parent-name", default=None)
+    args = parser.parse_args()
+
+    # Create monitor with parent_name
+    monitor = await create_monitor(
+        name="my_worker:dev",
+        parent_name=args.parent_name,  # From CLI argument
+    )
+
+    async with monitor:
+        await do_work()
+```
+
+**Key Points:**
+- `parent_name` is **optional** - entities without it appear as top-level
+- Parent passes **its own `monitor.name`** to children
+- For TCS services: Access via `self.controller.monitor.name`
+- Supports **unlimited hierarchy depth** (2, 3, 4+ levels)
+- Only affects **display** in `tcsctl` - doesn't change process relationships
+
+For complete guidelines, see [doc/parent-name-guidelines.md](doc/parent-name-guidelines.md).
+
 ## Quick Start: Writing Monitoring UI
 
 Use `ServiceControlClient` to build custom monitoring interfaces, dashboards, or GUIs.

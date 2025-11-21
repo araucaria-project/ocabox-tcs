@@ -322,6 +322,8 @@ class BaseService(ABC):
             help="Service instance context/ID (optional, defaults to 'dev')"
         )
         parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
+        parser.add_argument("--parent-name", type=str, default=None,
+                           help="Parent entity name for hierarchical display in tcsctl")
         parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
         args = parser.parse_args()
 
@@ -376,6 +378,10 @@ class BaseService(ABC):
 
             # Initialize and start service
             if await controller.initialize():
+                # Set parent_name if provided (for hierarchical display)
+                if args.parent_name and controller.monitor:
+                    controller.monitor.parent_name = args.parent_name
+
                 if await controller.start_service():
                     try:
                         # Wait for shutdown signal
