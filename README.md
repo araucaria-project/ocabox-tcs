@@ -594,132 +594,79 @@ Services are defined in `config/services.yaml` and can be launched via multiple 
 
 ## Configuration
 
-### Configuration System Overview
+### Quick Reference
 
-The universal service framework supports multiple configuration sources with clear precedence:
+| Source | Priority | Use Case |
+|--------|----------|----------|
+| YAML file | highest | Production, multi-service |
+| Env vars `SERVICE_FIELD` | medium | Service config without YAML |
+| `@config` class defaults | lowest | Code defaults |
 
-1. **Command-line arguments** (highest priority)
-2. **NATS configuration** (planned, not implemented yet)
-3. **YAML config file** (specified via CLI)
-4. **Default values** (lowest priority)
+**NATS connection**: `nats:` section in YAML, or `NATS_HOST`/`NATS_PORT` env vars
 
-### Configuration File Structure
-
-**Location**: `config/services.yaml` (created by copying `config/services.sample.yaml`)
-
-```yaml
-# Global configuration (applies to all services)
-nats:
-  host: nats.oca.lan
-  port: 4222
-
-# Service-specific configuration
-services:
-  - type: hello_world         # Must match service filename (hello_world.py)
-    instance_context: main    # Instance identifier
-    interval: 5              # Service-specific config options
-    message: "Hello World!"  # Service-specific config options
-    log_level: INFO          # Optional log level override
-
-  - type: hello_world         # Same service, different instance
-    instance_context: fast   # Different instance identifier
-    interval: 1              # Different configuration values
-    message: "Fast hello!"
-    log_level: DEBUG
-```
-
-### Configuration Resolution
-
-1. **Service Type**: Automatically derived from filename (`hello_world.py` → `hello_world`)
-2. **Instance Matching**: Finds service entry with matching `type` and `instance_context`
-3. **Config Merging**: Global config is merged with service-specific config
-4. **Precedence**: Service-specific values override global values
-
-### Available Configuration Files
-
-- `config/services.sample.yaml` - Template for main configuration (copy to `services.yaml`)
-- `config/services.yaml` - Your customized configuration (gitignored, create from sample)
-- `config/examples.yaml` - Tutorial examples configuration
-
-### Environment Variables and Secrets Management
-
-**Problem**: Configuration files should never contain secrets (API keys, passwords, etc.) that could be accidentally committed to version control.
-
-**Solution**: Use environment variable expansion in YAML files and `.env` files for development.
-
-#### Using Environment Variables in Configuration
-
-You can use `${VAR_NAME}` syntax in any YAML configuration file:
+### With YAML (Recommended for Production)
 
 ```yaml
 # config/services.yaml
 nats:
-  host: "${NATS_HOST}"    # String: "localhost" → "localhost"
-  port: ${NATS_PORT}      # Auto-converts: "4222" → 4222 (int)
+  host: "${NATS_HOST}"   # env var expansion supported
+  port: 4222
 
 services:
-  - type: my_service
+  - type: my_service     # matches my_service.py
     instance_context: prod
-    api_key: "${API_KEY}"              # Replaced with env var value
-    database_url: "${DATABASE_URL}"    # Supports any config field
-    timeout: 30                        # Regular values work as before
+    api_key: "${API_KEY}"
+    timeout: 30
 ```
 
-**Behavior:**
-- Defined variables are replaced with their values at load time
-- Undefined variables keep the placeholder `${UNDEFINED_VAR}` and log a warning
-- **Automatic type conversion**: Pure variable references like `port: ${NATS_PORT}` auto-convert numeric strings to int/float
-- Works recursively in dictionaries and lists
-- Only alphanumeric + underscore variable names supported: `${VAR_NAME_123}`
-
-#### Development: Using .env Files
-
-For local development, create a `.env` file in the project root:
-
 ```bash
-# 1. Copy the template
-cp .env.example .env
-
-# 2. Edit with your secrets (never commit this file!)
-cat .env
-API_KEY=sk-your-key-here
-DATABASE_URL=postgresql://localhost/mydb
-ANTHROPIC_API_KEY=sk-ant-...
-
-# 3. Run launcher (automatically loads .env)
+cp config/services.sample.yaml config/services.yaml
 poetry run tcs_asyncio --config config/services.yaml
 ```
 
-**Notes:**
-- `.env` is automatically loaded by launchers and standalone services
-- Existing environment variables take precedence over `.env` values
-- `.env` is in `.gitignore` (safe from accidental commits)
-- Use `.env.example` as a template for your team
+### Without YAML (External Projects)
 
-#### Production: Environment Variables
-
-For production deployment (systemd, Docker, etc.), set environment variables directly:
-
-**Systemd Example:**
-```ini
-[Service]
-Environment="API_KEY=your-production-key"
-EnvironmentFile=/etc/ocabox-tcs/secrets.env
-ExecStart=/usr/bin/poetry run tcs_process --config /etc/ocabox-tcs/services.yaml
-```
-
-**Docker Example:**
 ```bash
-docker run -e API_KEY=your-key -e DATABASE_URL=postgresql://... my-service
+# .env
+NATS_HOST=nats.oca.lan
+NATS_PORT=4222
+MY_SERVICE_API_KEY=secret123
+MY_SERVICE_TIMEOUT=30
 ```
 
-**Security Best Practices:**
-- ✅ Use environment variables for all secrets
-- ✅ Use `.env` files for development only
-- ✅ Keep `.env` in `.gitignore`
-- ✅ Provide `.env.example` template for team setup
-- ❌ Never commit secrets to version control
-- ❌ Never use `.env` files in production
+```python
+# my_service.py
+@config
+@dataclass
+class MyServiceConfig(BaseServiceConfig):
+    api_key: str = ""
+    timeout: int = 60
+
+@service
+class MyService(BaseBlockingPermanentService):
+    async def run_service(self):
+        print(self.svc_config.api_key)  # "secret123" from env
+```
+
+```bash
+python my_service.py  # No config file needed
+```
+
+### Env Var Convention
+
+Service config: `{SERVICE_TYPE}_{FIELD}` (uppercase)
+- `my_service.py` + `api_key` → `MY_SERVICE_API_KEY`
+- Auto-converts: `"30"` → `30`, `"true"` → `True`
+
+NATS connection (global):
+- `NATS_HOST` (default: localhost)
+- `NATS_PORT` (default: 4222)
+
+### Files
+
+- `config/services.sample.yaml` - Template (copy to `services.yaml`)
+- `config/services.yaml` - Your config (gitignored)
+- `.env` - Local secrets (gitignored, auto-loaded)
 
 ## Documentation
 

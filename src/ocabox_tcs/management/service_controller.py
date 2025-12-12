@@ -306,7 +306,10 @@ class ServiceController:
         """Setup configuration management.
 
         Uses ProcessContext's config_manager which is already initialized.
+        Then applies env var overrides using SERVICE_TYPE_FIELD convention.
         """
+        from ocabox_tcs.management.configuration import EnvConfigSource
+
         try:
             # Use ProcessContext's config manager
             if not self.process.config_manager:
@@ -314,14 +317,23 @@ class ServiceController:
 
             self._config_manager = self.process.config_manager
 
-            # Resolve configuration for this service
+            # Extract service type for config
+            module_parts = self.module_name.split('.')
+            service_type = module_parts[-1]
+
+            # Resolve configuration for this service from file/args sources
             config_dict = self._config_manager.resolve_config(
                 self.module_name, self.instance_id
             )
 
-            # Extract service type for config
-            module_parts = self.module_name.split('.')
-            service_type = module_parts[-1]
+            # Apply env var overrides (SERVICE_TYPE_FIELD convention)
+            # Priority: @config defaults < env vars < YAML < YAML ${VAR}
+            env_source = EnvConfigSource(service_type)
+            if env_source.is_available():
+                env_config = env_source.load()
+                # Env vars have lower priority than YAML, so merge env first, then config_dict
+                config_dict = {**env_config, **config_dict}
+                self.logger.debug(f"Applied env config for {service_type}: {list(env_config.keys())}")
 
             # Create config instance
             if issubclass(self._config_class, BaseServiceConfig):

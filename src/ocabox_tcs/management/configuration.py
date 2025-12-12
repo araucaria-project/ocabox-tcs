@@ -165,18 +165,67 @@ class NATSConfigSource(ConfigSource):
 
 class DefaultConfigSource(ConfigSource):
     """Default configuration values."""
-    
+
     def __init__(self, defaults: dict[str, Any] = None, priority: int = 0):
         super().__init__(priority)
         self.defaults = defaults or {}
-    
+
     def load(self) -> dict[str, Any]:
         """Return default configuration."""
         return self.defaults
-    
+
     def is_available(self) -> bool:
         """Always available."""
         return True
+
+
+class EnvConfigSource(ConfigSource):
+    """Configuration from environment variables.
+
+    Convention: {SERVICE_TYPE}_{FIELD} (uppercase, underscores)
+    Example: my_service.py with field api_key → MY_SERVICE_API_KEY
+
+    Note: .env files are loaded by launchers/base_service before ProcessContext
+    initialization, so env vars from .env are already in os.environ.
+    """
+
+    def __init__(self, service_type: str, priority: int = 5):
+        super().__init__(priority)
+        self.service_type = service_type
+        self.prefix = service_type.upper().replace(".", "_") + "_"
+        self.logger = logging.getLogger("cfg")
+
+    def load(self) -> dict[str, Any]:
+        """Load config from env vars matching {SERVICE_TYPE}_{FIELD} pattern."""
+        config = {}
+
+        for key, value in os.environ.items():
+            if key.startswith(self.prefix):
+                field_name = key[len(self.prefix):].lower()
+                config[field_name] = self._convert_type(value)
+                self.logger.debug(f"Env config: {key} → {field_name}")
+
+        return config
+
+    def _convert_type(self, value: str) -> Any:
+        """Auto-convert string to int/float/bool if possible."""
+        # Boolean
+        if value.lower() in ("true", "yes", "1", "on"):
+            return True
+        if value.lower() in ("false", "no", "0", "off"):
+            return False
+
+        # Numeric
+        try:
+            if "." in value:
+                return float(value)
+            return int(value)
+        except ValueError:
+            return value
+
+    def is_available(self) -> bool:
+        """Check if any matching env vars exist."""
+        return any(key.startswith(self.prefix) for key in os.environ)
 
 
 class ConfigurationManager:
