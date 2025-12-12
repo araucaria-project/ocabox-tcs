@@ -641,6 +641,86 @@ services:
 - `config/services.yaml` - Your customized configuration (gitignored, create from sample)
 - `config/examples.yaml` - Tutorial examples configuration
 
+### Environment Variables and Secrets Management
+
+**Problem**: Configuration files should never contain secrets (API keys, passwords, etc.) that could be accidentally committed to version control.
+
+**Solution**: Use environment variable expansion in YAML files and `.env` files for development.
+
+#### Using Environment Variables in Configuration
+
+You can use `${VAR_NAME}` syntax in any YAML configuration file:
+
+```yaml
+# config/services.yaml
+nats:
+  host: "${NATS_HOST}"    # String: "localhost" → "localhost"
+  port: ${NATS_PORT}      # Auto-converts: "4222" → 4222 (int)
+
+services:
+  - type: my_service
+    instance_context: prod
+    api_key: "${API_KEY}"              # Replaced with env var value
+    database_url: "${DATABASE_URL}"    # Supports any config field
+    timeout: 30                        # Regular values work as before
+```
+
+**Behavior:**
+- Defined variables are replaced with their values at load time
+- Undefined variables keep the placeholder `${UNDEFINED_VAR}` and log a warning
+- **Automatic type conversion**: Pure variable references like `port: ${NATS_PORT}` auto-convert numeric strings to int/float
+- Works recursively in dictionaries and lists
+- Only alphanumeric + underscore variable names supported: `${VAR_NAME_123}`
+
+#### Development: Using .env Files
+
+For local development, create a `.env` file in the project root:
+
+```bash
+# 1. Copy the template
+cp .env.example .env
+
+# 2. Edit with your secrets (never commit this file!)
+cat .env
+API_KEY=sk-your-key-here
+DATABASE_URL=postgresql://localhost/mydb
+ANTHROPIC_API_KEY=sk-ant-...
+
+# 3. Run launcher (automatically loads .env)
+poetry run tcs_asyncio --config config/services.yaml
+```
+
+**Notes:**
+- `.env` is automatically loaded by launchers and standalone services
+- Existing environment variables take precedence over `.env` values
+- `.env` is in `.gitignore` (safe from accidental commits)
+- Use `.env.example` as a template for your team
+
+#### Production: Environment Variables
+
+For production deployment (systemd, Docker, etc.), set environment variables directly:
+
+**Systemd Example:**
+```ini
+[Service]
+Environment="API_KEY=your-production-key"
+EnvironmentFile=/etc/ocabox-tcs/secrets.env
+ExecStart=/usr/bin/poetry run tcs_process --config /etc/ocabox-tcs/services.yaml
+```
+
+**Docker Example:**
+```bash
+docker run -e API_KEY=your-key -e DATABASE_URL=postgresql://... my-service
+```
+
+**Security Best Practices:**
+- ✅ Use environment variables for all secrets
+- ✅ Use `.env` files for development only
+- ✅ Keep `.env` in `.gitignore`
+- ✅ Provide `.env.example` template for team setup
+- ❌ Never commit secrets to version control
+- ❌ Never use `.env` files in production
+
 ## Documentation
 
 ### [Tutorial Examples](src/ocabox_tcs/services/examples/README.md) 📚 **START HERE**

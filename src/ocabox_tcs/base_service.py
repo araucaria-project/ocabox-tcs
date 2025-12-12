@@ -339,6 +339,10 @@ class BaseService(ABC):
 
         service_type = cls._service_type
 
+        # Load .env file if it exists (before logging setup)
+        from ocabox_tcs.management.environment import load_dotenv_if_available
+        env_loaded, env_file_path = load_dotenv_if_available()
+
         # Setup logging first - basic format for subprocess output
         logging.basicConfig(
             level=logging.INFO,
@@ -348,6 +352,9 @@ class BaseService(ABC):
         # Print startup banner (unless suppressed)
         if not args.no_banner:
             logger = logging.getLogger("launch")
+            # Log if .env was loaded
+            if env_loaded and env_file_path:
+                logger.info(f"Loaded environment from {env_file_path}")
             logger.info("=" * 60)
             logger.info("TCS - Telescope Control Services")
             logger.info(f"Standalone Service: {service_type}:{args.instance_context}")

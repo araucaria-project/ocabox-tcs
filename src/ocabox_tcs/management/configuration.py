@@ -1,12 +1,88 @@
 """Configuration management with multiple sources and precedence."""
 
 import logging
+import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 import yaml
 from serverish.messenger import Messenger
+
+
+def expand_env_vars(value: Any) -> Any:
+    """Recursively expand ${VAR_NAME} environment variables in config.
+
+    Pattern: ${VAR_NAME} - strict format (alphanumeric + underscore only)
+
+    Behavior:
+        - If VAR_NAME is set: Replace with environment variable value
+        - If VAR_NAME is unset: Keep placeholder and log warning
+        - If the entire value is ${VAR} and result is numeric, convert to int/float
+
+    Examples:
+        >>> os.environ["API_KEY"] = "secret123"
+        >>> expand_env_vars("key: ${API_KEY}")
+        'key: secret123'
+        >>> os.environ["PORT"] = "4222"
+        >>> expand_env_vars("${PORT}")  # Pure variable reference
+        4222  # Auto-converted to int
+        >>> expand_env_vars("key: ${MISSING}")  # MISSING not in env
+        'key: ${MISSING}'  # Keeps placeholder, logs warning
+
+    Args:
+        value: Config value to expand (can be str, dict, list, or other types)
+
+    Returns:
+        Value with environment variables expanded (with type conversion for numbers)
+    """
+    if isinstance(value, str):
+        # Pattern: ${VAR_NAME} - alphanumeric + underscore only
+        pattern = r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}'
+
+        # Check if entire value is a single variable reference (for type conversion)
+        full_match = re.fullmatch(pattern, value)
+        if full_match:
+            var_name = full_match.group(1)
+            env_value = os.getenv(var_name)
+            if env_value is None:
+                logging.getLogger("cfg").warning(
+                    f"Environment variable '${{{var_name}}}' not set, keeping placeholder"
+                )
+                return value  # Keep ${VAR_NAME}
+
+            # Try to convert to int/float for pure variable references
+            try:
+                if '.' in env_value:
+                    return float(env_value)
+                else:
+                    return int(env_value)
+            except ValueError:
+                # Not a number, return as string
+                return env_value
+
+        # Partial substitution in a string (e.g., "host:${PORT}")
+        def replacer(match):
+            var_name = match.group(1)
+            env_value = os.getenv(var_name)
+            if env_value is None:
+                logging.getLogger("cfg").warning(
+                    f"Environment variable '${{{var_name}}}' not set, keeping placeholder"
+                )
+                return match.group(0)  # Keep ${VAR_NAME}
+            return env_value
+
+        return re.sub(pattern, replacer, value)
+
+    elif isinstance(value, dict):
+        return {k: expand_env_vars(v) for k, v in value.items()}
+
+    elif isinstance(value, list):
+        return [expand_env_vars(item) for item in value]
+
+    else:
+        return value
 
 
 class ConfigSource(ABC):
@@ -28,16 +104,21 @@ class ConfigSource(ABC):
 
 class FileConfigSource(ConfigSource):
     """Configuration from YAML file."""
-    
+
     def __init__(self, file_path: str | Path, priority: int = 10):
         super().__init__(priority)
         self.file_path = file_path
-    
+
     def load(self) -> dict[str, Any]:
-        """Load configuration from file."""
+        """Load configuration from file and expand environment variables."""
         try:
             with open(self.file_path) as f:
-                return yaml.safe_load(f) or {}
+                config = yaml.safe_load(f) or {}
+
+            # Expand environment variables (${VAR_NAME} → os.getenv("VAR_NAME"))
+            config = expand_env_vars(config)
+
+            return config
         except Exception as e:
             logging.getLogger("cfg").warning(f"Failed to load config from {self.file_path}: {e}")
             return {}
