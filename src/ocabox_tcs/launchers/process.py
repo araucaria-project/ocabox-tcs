@@ -427,14 +427,11 @@ class ProcessLauncher(BaseLauncher):
 
             # Get services list from config_manager (use raw config to include 'services' key)
             raw_config = process_ctx.config_manager.get_raw_config()
-            services_raw = raw_config.get('services', [])
+            services_list = raw_config.get('services', [])
 
-            if not services_raw:
+            if not services_list:
                 self.logger.warning("No services found in configuration")
                 return True
-
-            # Normalize services config (support both list and dict formats)
-            services_list = self._normalize_services_config(services_raw)
 
             # Register runners for each service
             for service_cfg in services_list:
