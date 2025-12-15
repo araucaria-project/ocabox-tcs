@@ -12,13 +12,16 @@ from serverish.messenger import Messenger
 
 
 def expand_env_vars(value: Any) -> Any:
-    """Recursively expand ${VAR_NAME} environment variables in config.
+    """Recursively expand ${VAR_NAME} and ${VAR_NAME:-default} environment variables in config.
 
-    Pattern: ${VAR_NAME} - strict format (alphanumeric + underscore only)
+    Patterns supported:
+        - ${VAR_NAME} - simple variable reference
+        - ${VAR_NAME:-default} - variable with default value (bash-style)
 
     Behavior:
         - If VAR_NAME is set: Replace with environment variable value
-        - If VAR_NAME is unset: Keep placeholder and log warning
+        - If VAR_NAME is unset and default provided: Use default value
+        - If VAR_NAME is unset and no default: Keep placeholder and log warning
         - If the entire value is ${VAR} and result is numeric, convert to int/float
 
     Examples:
@@ -28,7 +31,9 @@ def expand_env_vars(value: Any) -> Any:
         >>> os.environ["PORT"] = "4222"
         >>> expand_env_vars("${PORT}")  # Pure variable reference
         4222  # Auto-converted to int
-        >>> expand_env_vars("key: ${MISSING}")  # MISSING not in env
+        >>> expand_env_vars("${MISSING:-8080}")  # MISSING not in env, use default
+        8080  # Auto-converted to int
+        >>> expand_env_vars("key: ${MISSING}")  # MISSING not in env, no default
         'key: ${MISSING}'  # Keeps placeholder, logs warning
 
     Args:
@@ -38,39 +43,54 @@ def expand_env_vars(value: Any) -> Any:
         Value with environment variables expanded (with type conversion for numbers)
     """
     if isinstance(value, str):
-        # Pattern: ${VAR_NAME} - alphanumeric + underscore only
-        pattern = r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}'
+        # Pattern: ${VAR_NAME} or ${VAR_NAME:-default}
+        # Group 1: variable name, Group 2: optional default value
+        pattern = r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}'
 
         # Check if entire value is a single variable reference (for type conversion)
         full_match = re.fullmatch(pattern, value)
         if full_match:
             var_name = full_match.group(1)
+            default_value = full_match.group(2)  # May be None
+
             env_value = os.getenv(var_name)
             if env_value is None:
-                logging.getLogger("cfg").warning(
-                    f"Environment variable '${{{var_name}}}' not set, keeping placeholder"
-                )
-                return value  # Keep ${VAR_NAME}
+                if default_value is not None:
+                    # Use default value
+                    resolved_value = default_value
+                else:
+                    # No env var and no default - keep placeholder
+                    logging.getLogger("cfg").warning(
+                        f"Environment variable '${{{var_name}}}' not set, keeping placeholder"
+                    )
+                    return value  # Keep ${VAR_NAME}
+            else:
+                resolved_value = env_value
 
             # Try to convert to int/float for pure variable references
             try:
-                if '.' in env_value:
-                    return float(env_value)
+                if '.' in resolved_value:
+                    return float(resolved_value)
                 else:
-                    return int(env_value)
+                    return int(resolved_value)
             except ValueError:
                 # Not a number, return as string
-                return env_value
+                return resolved_value
 
         # Partial substitution in a string (e.g., "host:${PORT}")
         def replacer(match):
             var_name = match.group(1)
+            default_value = match.group(2)  # May be None
+
             env_value = os.getenv(var_name)
             if env_value is None:
-                logging.getLogger("cfg").warning(
-                    f"Environment variable '${{{var_name}}}' not set, keeping placeholder"
-                )
-                return match.group(0)  # Keep ${VAR_NAME}
+                if default_value is not None:
+                    return default_value
+                else:
+                    logging.getLogger("cfg").warning(
+                        f"Environment variable '${{{var_name}}}' not set, keeping placeholder"
+                    )
+                    return match.group(0)  # Keep ${VAR_NAME}
             return env_value
 
         return re.sub(pattern, replacer, value)

@@ -211,8 +211,20 @@ class ProcessContext:
         Otherwise uses a short timeout to avoid blocking startup.
         """
         host = nats_config.get("host", "localhost")
-        port = nats_config.get("port", 4222)
+        port_raw = nats_config.get("port", 4222)
         required = nats_config.get("required", True)  # Default: block until NATS available
+
+        # Defensive type conversion for port (in case config expansion didn't handle it)
+        try:
+            port = int(port_raw)
+        except (ValueError, TypeError) as e:
+            self.logger.error(
+                f"Invalid NATS port value '{port_raw}' (type: {type(port_raw).__name__}). "
+                f"Port must be an integer. Check your configuration file and environment variables."
+            )
+            raise ValueError(
+                f"Invalid NATS port configuration: '{port_raw}' cannot be converted to integer"
+            ) from e
 
         # If NATS is required, block until connected (useful for server restart scenarios)
         # Otherwise use short timeout to avoid blocking startup if NATS is unavailable

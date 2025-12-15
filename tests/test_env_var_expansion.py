@@ -122,6 +122,95 @@ class TestExpandEnvVars:
             del os.environ["VAR_NAME_123"]
             del os.environ["_LEADING_UNDERSCORE"]
 
+    def test_bash_style_default_with_missing_var(self):
+        """Test bash-style default value syntax ${VAR:-default}."""
+        # Ensure variable doesn't exist
+        if "MISSING_VAR" in os.environ:
+            del os.environ["MISSING_VAR"]
+
+        result = expand_env_vars("${MISSING_VAR:-fallback_value}")
+        assert result == "fallback_value"
+
+    def test_bash_style_default_with_existing_var(self):
+        """Test bash-style default - should use env var if set."""
+        os.environ["EXISTING_VAR"] = "env_value"
+        try:
+            result = expand_env_vars("${EXISTING_VAR:-default_value}")
+            assert result == "env_value"
+        finally:
+            del os.environ["EXISTING_VAR"]
+
+    def test_bash_style_default_numeric_conversion(self):
+        """Test bash-style default with numeric values."""
+        # Ensure variable doesn't exist
+        if "PORT" in os.environ:
+            del os.environ["PORT"]
+
+        # Integer default
+        result = expand_env_vars("${PORT:-4222}")
+        assert result == 4222
+        assert isinstance(result, int)
+
+        # Float default
+        result = expand_env_vars("${TIMEOUT:-2.5}")
+        assert result == 2.5
+        assert isinstance(result, float)
+
+    def test_bash_style_default_in_partial_string(self):
+        """Test bash-style default in partial string substitution."""
+        if "HOST" in os.environ:
+            del os.environ["HOST"]
+
+        result = expand_env_vars("server:${HOST:-localhost}:8080")
+        assert result == "server:localhost:8080"
+
+    def test_bash_style_default_in_dict(self):
+        """Test bash-style default in nested dictionaries."""
+        # Ensure variables don't exist
+        if "NATS_HOST" in os.environ:
+            del os.environ["NATS_HOST"]
+        if "NATS_PORT" in os.environ:
+            del os.environ["NATS_PORT"]
+
+        config = {
+            "nats": {
+                "host": "${NATS_HOST:-nats.oca.lan}",
+                "port": "${NATS_PORT:-4222}"
+            }
+        }
+        result = expand_env_vars(config)
+        assert result["nats"]["host"] == "nats.oca.lan"
+        assert result["nats"]["port"] == 4222
+        assert isinstance(result["nats"]["port"], int)
+
+    def test_bash_style_default_empty_default(self):
+        """Test bash-style default with empty default value."""
+        if "EMPTY_VAR" in os.environ:
+            del os.environ["EMPTY_VAR"]
+
+        result = expand_env_vars("${EMPTY_VAR:-}")
+        assert result == ""
+
+    def test_bash_style_default_with_special_chars(self):
+        """Test bash-style default with special characters in default."""
+        if "URL" in os.environ:
+            del os.environ["URL"]
+
+        result = expand_env_vars("${URL:-http://localhost:8080/api}")
+        assert result == "http://localhost:8080/api"
+
+    def test_mixed_simple_and_default_syntax(self):
+        """Test mixing simple ${VAR} and ${VAR:-default} syntax."""
+        os.environ["VAR1"] = "value1"
+        try:
+            if "VAR2" in os.environ:
+                del os.environ["VAR2"]
+
+            result = expand_env_vars("${VAR1} and ${VAR2:-default2}")
+            assert result == "value1 and default2"
+        finally:
+            del os.environ["VAR1"]
+
 
 class TestFileConfigSourceWithExpansion:
     """Test FileConfigSource with environment variable expansion."""
