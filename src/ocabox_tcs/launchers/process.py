@@ -55,7 +55,7 @@ class ProcessRunner(BaseRunner):
                 module_name = f"ocabox_tcs.services.{self.config.service_type}"
 
             args = [
-                "poetry", "run", "python", "-m",
+                "python", "-m",
                 module_name,
             ]
 
@@ -427,11 +427,14 @@ class ProcessLauncher(BaseLauncher):
 
             # Get services list from config_manager (use raw config to include 'services' key)
             raw_config = process_ctx.config_manager.get_raw_config()
-            services_list = raw_config.get('services', [])
+            services_raw = raw_config.get('services', [])
 
-            if not services_list:
+            if not services_raw:
                 self.logger.warning("No services found in configuration")
                 return True
+
+            # Normalize services config (support both list and dict formats)
+            services_list = self._normalize_services_config(services_raw)
 
             # Register runners for each service
             for service_cfg in services_list:

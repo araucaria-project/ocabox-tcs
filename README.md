@@ -613,11 +613,15 @@ nats:
   port: 4222
 
 services:
-  - type: my_service     # matches my_service.py
+  - type: my_service     # ⚠️ YAML list (dash required!)
     instance_context: prod
     api_key: "${API_KEY}"
     timeout: 30
+  - type: another_service  # Multiple services as list items
+    instance_context: prod
 ```
+
+**Important:** `services:` must be a **YAML list** (each item starts with `-`), not a dictionary.
 
 ```bash
 cp config/services.sample.yaml config/services.yaml
