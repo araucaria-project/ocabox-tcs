@@ -16,12 +16,26 @@ if TYPE_CHECKING:
 
 @dataclass
 class ServiceRunnerConfig:
-    """Configuration for a service runner."""
+    """Configuration for a service runner.
+
+    Attributes:
+        service_type: Service type identifier (from @service decorator)
+        variant: Instance variant identifier (cannot contain dots)
+        config_file: Optional path to config file
+        runner_id: Optional runner ID for tracking
+        parent_name: Optional parent entity name for hierarchical display
+
+        Restart policy fields (systemd-inspired):
+        restart: Policy - 'no', 'always', 'on-failure', 'on-abnormal'
+        restart_sec: Delay before restart (seconds)
+        restart_max: Max restarts in window (0 = unlimited)
+        restart_window: Time window for restart counting (seconds)
+    """
     service_type: str
-    instance_context: str | None = None
+    variant: str = "dev"  # Default variant
     config_file: str | None = None
     runner_id: str | None = None
-    module: str | None = None  # Optional: full module path for external packages
+    parent_name: str | None = None  # For hierarchical display
 
     # Restart policy fields
     restart: str = "no"  # Options: no, always, on-failure, on-abnormal
@@ -31,10 +45,8 @@ class ServiceRunnerConfig:
 
     @property
     def service_id(self) -> str:
-        """Get service identifier."""
-        if self.instance_context:
-            return f"{self.service_type}-{self.instance_context}"
-        return self.service_type
+        """Get full service identifier in format '{type}.{variant}'."""
+        return f"{self.service_type}.{self.variant}"
 
 
 class BaseRunner(ABC):
@@ -107,18 +119,12 @@ class BaseRunner(ABC):
         pass
 
     def _get_full_service_id(self) -> str:
-        """Get full service ID in format 'module:instance'.
+        """Get full service ID in format '{type}.{variant}'.
 
         Returns:
-            Service ID string (e.g., 'ocabox_tcs.services.guider:jk15')
+            Service ID string (e.g., 'hello_world.dev', 'halina.server.prod')
         """
-        if self.config.module:
-            module_name = self.config.module
-        else:
-            module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-        instance_id = self.config.instance_context or self.config.service_type
-        return f"{module_name}:{instance_id}"
+        return self.config.service_id
 
     async def _publish_registry_event(self, event: str, **extra_data):
         """Universal method to publish registry events to NATS.

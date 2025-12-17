@@ -88,12 +88,19 @@ class ConfigGenerator:
         Returns:
             Configuration dictionary
         """
+        # Build registry for mock services
+        registry = {}
+        for scenario in scenarios:
+            if scenario.service_type.startswith("mock_"):
+                registry[scenario.service_type] = f"tests.services.{scenario.service_type}"
+
         config = {
             "nats": {
                 "host": self.nats_host,
                 "port": self.nats_port,
                 "subject_prefix": self.subject_prefix,
             },
+            "registry": registry,
             "services": []
         }
 
@@ -101,12 +108,8 @@ class ConfigGenerator:
         for scenario in scenarios:
             service_config = {
                 "type": scenario.service_type,
-                "instance_context": scenario.instance_context,
+                "variant": scenario.variant,  # New field name
             }
-
-            # Add module path for test services (they're in tests.services, not ocabox_tcs.services)
-            if scenario.service_type.startswith("mock_"):
-                service_config["module"] = f"tests.services.{scenario.service_type}"
 
             # Add restart policy if not default
             if scenario.restart != "no":
@@ -147,7 +150,7 @@ class ConfigGenerator:
 
 def create_simple_config(
     service_type: str,
-    instance_context: str,
+    variant: str,
     restart: str = "no",
     nats_host: str = "localhost",
     nats_port: int = 4222,
@@ -159,7 +162,7 @@ def create_simple_config(
 
     Args:
         service_type: Service type name
-        instance_context: Instance context identifier
+        variant: Instance variant identifier
         restart: Restart policy (default: "no")
         nats_host: NATS server host (default: "localhost")
         nats_port: NATS server port (default: 4222)
@@ -172,7 +175,7 @@ def create_simple_config(
     """
     scenario = ServiceScenario(
         service_type=service_type,
-        instance_context=instance_context,
+        variant=variant,
         restart=restart,
         config=config
     )
@@ -231,7 +234,7 @@ def create_crash_test_config(
     """
     scenario = ServiceScenario(
         service_type="mock_crashing",
-        instance_context=f"policy_{restart_policy}",
+        variant=f"policy_{restart_policy}",
         config={
             "crash_delay": crash_delay,
             "exit_code": exit_code
@@ -273,7 +276,7 @@ def create_restart_limit_config(
     """
     scenario = ServiceScenario(
         service_type="mock_crashing",
-        instance_context="restart_limit_test",
+        variant="restart_limit_test",
         config={
             "crash_delay": crash_delay,
             "exit_code": 1

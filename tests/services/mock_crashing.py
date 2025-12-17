@@ -23,8 +23,8 @@ from ocabox_tcs.base_service import BaseBlockingPermanentService, config, servic
 logger = logging.getLogger(__name__)
 
 
+@config('mock_crashing')
 @dataclass
-@config
 class MockCrashingConfig:
     """Configuration for mock crashing service."""
     crash_delay: float = 0.5  # Delay before crash (seconds)
@@ -34,7 +34,7 @@ class MockCrashingConfig:
     signal_number: int = signal.SIGTERM  # Signal to use for signal crash
 
 
-@service
+@service('mock_crashing')
 class MockCrashingService(BaseBlockingPermanentService):
     """Mock service that deliberately crashes.
 

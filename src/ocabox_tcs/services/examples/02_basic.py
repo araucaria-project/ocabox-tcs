@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
 
 
-@config
+@config('examples.basic')
 @dataclass
 class BasicConfig(BaseServiceConfig):
     """Configuration for basic service."""
@@ -24,7 +24,7 @@ class BasicConfig(BaseServiceConfig):
     message: str = "Hello from basic service"
 
 
-@service
+@service('examples.basic')
 class BasicService(BaseBlockingPermanentService):
     """Service demonstrating configuration usage."""
 

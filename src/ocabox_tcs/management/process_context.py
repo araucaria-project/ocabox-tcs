@@ -100,20 +100,20 @@ class ProcessContext:
     
     def register_controller(self, controller: ServiceController):
         """Register a service controller."""
-        service_id = f"{controller.module_name}:{controller.instance_id}"
+        service_id = controller.service_id
         self._controllers[service_id] = controller
         self.logger.debug(f"Registered controller: {service_id}")
-    
+
     def unregister_controller(self, controller: ServiceController):
         """Unregister a service controller."""
-        service_id = f"{controller.module_name}:{controller.instance_id}"
+        service_id = controller.service_id
         if service_id in self._controllers:
             del self._controllers[service_id]
             self.logger.debug(f"Unregistered controller: {service_id}")
-    
-    def get_controller(self, module_name: str, instance_id: str) -> ServiceController | None:
+
+    def get_controller(self, service_type: str, variant: str) -> ServiceController | None:
         """Get a registered controller."""
-        service_id = f"{module_name}:{instance_id}"
+        service_id = f"{service_type}.{variant}"
         return self._controllers.get(service_id)
     
     def cache_config(self, key: str, config: Any):

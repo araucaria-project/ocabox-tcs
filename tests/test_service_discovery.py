@@ -12,16 +12,17 @@ importlib.import_module("ocabox_tcs.services.hello_world")
 
 def test_minimal_service_registered():
     """Test that minimal service is registered with decorator."""
-    # Service type is "examples.01_minimal" (path-aware)
-    service_class = get_service_class("examples.01_minimal")
+    # Service type is now explicit: "examples.minimal"
+    service_class = get_service_class("examples.minimal")
     assert service_class is not None
     assert service_class.__name__ == "MinimalService"
 
 
 def test_basic_service_registered():
     """Test that basic service and config are registered."""
-    service_class = get_service_class("examples.02_basic")
-    config_class = get_config_class("examples.02_basic")
+    # Service type is now explicit: "examples.basic"
+    service_class = get_service_class("examples.basic")
+    config_class = get_config_class("examples.basic")
 
     assert service_class is not None
     assert service_class.__name__ == "BasicService"

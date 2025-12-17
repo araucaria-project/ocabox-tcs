@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
 
 
-@config
+@config('examples.logging')
 @dataclass
 class LoggingConfig(BaseServiceConfig):
     """Configuration for logging service."""
@@ -27,7 +27,7 @@ class LoggingConfig(BaseServiceConfig):
     simulate_errors: bool = True
 
 
-@service
+@service('examples.logging')
 class LoggingService(BaseBlockingPermanentService):
     """Service demonstrating logging best practices."""
 

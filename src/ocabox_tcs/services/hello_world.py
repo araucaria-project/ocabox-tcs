@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
 
 
-@config
+@config('hello_world')
 @dataclass
 class HelloWorldConfig(BaseServiceConfig):
     """Configuration for HelloWorld service."""
@@ -18,7 +18,7 @@ class HelloWorldConfig(BaseServiceConfig):
     message: str = "Hello World!"
 
 
-@service
+@service('hello_world')
 class HelloWorldService(BaseBlockingPermanentService):
     """Simple service that logs a message periodically.
 

@@ -25,7 +25,7 @@ from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceCon
 from ocabox_tcs.monitoring import Status
 
 
-@config
+@config('examples.monitoring')
 @dataclass
 class MonitoringConfig(BaseServiceConfig):
     """Configuration for monitoring service."""
@@ -33,7 +33,7 @@ class MonitoringConfig(BaseServiceConfig):
     max_errors: int = 3  # Fail after this many consecutive errors
 
 
-@service
+@service('examples.monitoring')
 class MonitoringService(BaseBlockingPermanentService):
     """Service demonstrating ADVANCED monitoring with manual status control.
 

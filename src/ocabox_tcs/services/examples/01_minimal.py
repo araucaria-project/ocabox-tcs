@@ -17,7 +17,7 @@ import asyncio
 from ocabox_tcs.base_service import BaseBlockingPermanentService, service
 
 
-@service
+@service('examples.minimal')
 class MinimalService(BaseBlockingPermanentService):
     """Simplest service - just prints a message every 5 seconds."""
 

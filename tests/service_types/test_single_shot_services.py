@@ -27,7 +27,7 @@ async def test_single_shot_successful_execution(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="success",
+            variant="success",
             config={
                 "execution_delay": 1.0,
                 "work_iterations": 3,
@@ -56,7 +56,7 @@ async def test_single_shot_successful_execution(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start
-                service_id = "tests.services.mock_single_shot:success"
+                service_id = "mock_single_shot.success"
                 await wait_for_event(
                     collector,
                     event_type="start",
@@ -99,7 +99,7 @@ async def test_single_shot_with_failure(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="failure",
+            variant="failure",
             config={
                 "execution_delay": 1.0,
                 "work_iterations": 4,
@@ -128,7 +128,7 @@ async def test_single_shot_with_failure(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start
-                service_id = "tests.services.mock_single_shot:failure"
+                service_id = "mock_single_shot.failure"
                 await wait_for_event(
                     collector,
                     event_type="start",
@@ -166,7 +166,7 @@ async def test_single_shot_with_non_zero_exit_code(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="exit_code",
+            variant="exit_code",
             config={
                 "execution_delay": 0.5,
                 "work_iterations": 2,
@@ -195,7 +195,7 @@ async def test_single_shot_with_non_zero_exit_code(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start and complete
-                service_id = "tests.services.mock_single_shot:exit_code"
+                service_id = "mock_single_shot.exit_code"
                 await wait_for_event(
                     collector,
                     event_type="start",
@@ -236,17 +236,17 @@ async def test_multiple_single_shot_services(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="batch_1",
+            variant="batch_1",
             config={"execution_delay": 0.5, "work_iterations": 2}
         ),
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="batch_2",
+            variant="batch_2",
             config={"execution_delay": 0.7, "work_iterations": 3}
         ),
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="batch_3",
+            variant="batch_3",
             config={"execution_delay": 0.3, "work_iterations": 2}
         )
     ]
@@ -272,7 +272,7 @@ async def test_multiple_single_shot_services(nats_server, nats_client):
             ) as harness:
                 # Wait for all services to start
                 for scenario in scenarios:
-                    service_id = f"tests.services.mock_single_shot:{scenario.instance_context}"
+                    service_id = f"mock_single_shot.{scenario.instance_context}"
                     await wait_for_event(
                         collector,
                         event_type="start",
@@ -287,7 +287,7 @@ async def test_multiple_single_shot_services(nats_server, nats_client):
 
         # Verify all services started
         for scenario in scenarios:
-            service_id = f"tests.services.mock_single_shot:{scenario.instance_context}"
+            service_id = f"mock_single_shot.{scenario.instance_context}"
             await assert_service_started(collector, service_id)
 
             # Verify termination
@@ -312,7 +312,7 @@ async def test_single_shot_fast_execution(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_single_shot",
-            instance_context="fast",
+            variant="fast",
             config={
                 "execution_delay": 0.1,
                 "work_iterations": 1
@@ -340,7 +340,7 @@ async def test_single_shot_fast_execution(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Service should start and complete quickly
-                service_id = "tests.services.mock_single_shot:fast"
+                service_id = "mock_single_shot.fast"
 
                 # Wait for start event
                 await wait_for_event(

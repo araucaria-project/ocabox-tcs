@@ -21,8 +21,8 @@ from ocabox_tcs.monitoring import Status
 logger = logging.getLogger(__name__)
 
 
+@config('mock_cyclic')
 @dataclass
-@config
 class MockCyclicConfig:
     """Configuration for mock cyclic service."""
     cycle_interval: float = 2.0  # Interval between cycles (seconds)
@@ -31,7 +31,7 @@ class MockCyclicConfig:
     fail_on_cycle: int = 0  # Cycle number to fail on (0 = never)
 
 
-@service
+@service('mock_cyclic')
 class MockCyclicService(BasePermanentService):
     """Mock cyclic/periodic service for testing.
 

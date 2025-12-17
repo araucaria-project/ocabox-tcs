@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import BasePermanentService, BaseServiceConfig, config, service
 
 
-@config
+@config('examples.nonblocking')
 @dataclass
 class NonBlockingConfig(BaseServiceConfig):
     """Configuration for non-blocking service."""
@@ -30,7 +30,7 @@ class NonBlockingConfig(BaseServiceConfig):
     interval: float = 2.0
 
 
-@service
+@service('examples.nonblocking')
 class NonBlockingService(BasePermanentService):
     """Service demonstrating non-blocking permanent service pattern.
 

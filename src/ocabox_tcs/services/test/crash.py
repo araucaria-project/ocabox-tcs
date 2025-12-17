@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import service, config, BaseBlockingPermanentService, BaseServiceConfig
 
 
-@config
+@config('test.crash')
 @dataclass
 class TestCrashConfig(BaseServiceConfig):
     """Configuration for crash test service."""
@@ -20,7 +20,7 @@ class TestCrashConfig(BaseServiceConfig):
     crash_message: str = "Service crashing as configured"
 
 
-@service
+@service('test.crash')
 class TestCrashService(BaseBlockingPermanentService):
     """Service that crashes after a configured duration for testing restart policies."""
 

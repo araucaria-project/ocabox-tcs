@@ -14,6 +14,7 @@ from typing import Any
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.management.process_context import ProcessContext
 from ocabox_tcs.management.service_controller import ServiceController
+from ocabox_tcs.management.service_registry import ServiceRegistry
 
 
 class AsyncioRunner(BaseRunner):
@@ -22,10 +23,12 @@ class AsyncioRunner(BaseRunner):
     def __init__(
         self,
         config: ServiceRunnerConfig,
+        registry: ServiceRegistry,
         launcher_id: str | None = None,
         subject_prefix: str = "svc"
     ):
         super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
+        self.registry = registry
         self.controller: ServiceController | None = None
         self.start_time: datetime | None = None
         self._crash_monitor_task: asyncio.Task | None = None
@@ -40,17 +43,13 @@ class AsyncioRunner(BaseRunner):
             return False
 
         try:
-            # Resolve module name: use explicit module if provided, else default to internal
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-            instance_id = self.config.instance_context or self.config.service_type
-
+            # Create ServiceController with service_type and variant
             self.controller = ServiceController(
-                module_name=module_name,
-                instance_id=instance_id,
-                runner_id=self.config.runner_id
+                service_type=self.config.service_type,
+                variant=self.config.variant,
+                registry=self.registry,
+                runner_id=self.config.runner_id,
+                parent_name=self.config.parent_name
             )
 
             # ProcessContext already initialized - just initialize controller
@@ -271,6 +270,20 @@ class AsyncioRunner(BaseRunner):
             restart_count=len(self._restart_history)
         )
 
+    async def publish_declared(self):
+        """Publish DECLARED event to NATS registry.
+
+        Called by launcher after runner creation. Only publishes if runner_id
+        is present (skips for ad-hoc standalone/test runs).
+
+        This marks the service as part of the launcher's formal configuration,
+        distinguishing it from ephemeral services.
+        """
+        await self._publish_registry_event(
+            "declared",
+            restart_policy=self.config.restart,
+        )
+
 
 class AsyncioLauncher(BaseLauncher):
     """Launcher that manages services within the same process using asyncio."""
@@ -300,10 +313,18 @@ class AsyncioLauncher(BaseLauncher):
             self.process_ctx = process_ctx
             self.logger.debug("Using ProcessContext for asyncio launcher")
 
-            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
-            await self.initialize_monitoring(subject_prefix="svc")
+            # Get subject_prefix from NATS config
+            subject_prefix = 'svc'  # Default
+            if process_ctx.config_manager:
+                global_config = process_ctx.config_manager.resolve_config()
+                nats_config = global_config.get("nats", {})
+                subject_prefix = nats_config.get("subject_prefix", "svc")
+                self.logger.debug(f"Using NATS subject prefix: {subject_prefix}")
 
-            # Get services list from config_manager (use raw config to include 'services' key)
+            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
+            await self.initialize_monitoring(subject_prefix=subject_prefix)
+
+            # Get raw config for services list and registry
             raw_config = process_ctx.config_manager.get_raw_config()
             services_list = raw_config.get('services', [])
 
@@ -311,24 +332,32 @@ class AsyncioLauncher(BaseLauncher):
                 self.logger.warning("No services found in configuration")
                 return True
 
+            # Create ServiceRegistry from config
+            registry = ServiceRegistry(raw_config)
+
             # Register runners for each service
             for service_cfg in services_list:
+                service_type = service_cfg['type']
+                # Support both old 'instance_context' and new 'variant' field names
+                variant = service_cfg.get('variant') or service_cfg.get('instance_context', 'dev')
+
                 runner_config = ServiceRunnerConfig(
-                    service_type=service_cfg['type'],
-                    instance_context=service_cfg.get('instance_context'),
-                    config_file=process_ctx.config_file,  # Not used by AsyncioRunner, but keep for consistency
-                    runner_id=f"{self.launcher_id}.{service_cfg['type']}",
-                    module=service_cfg.get('module'),  # External service package (optional)
-                    restart=service_cfg.get('restart', 'no'),  # Restart policy
-                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),  # Restart delay (seconds)
-                    restart_max=int(service_cfg.get('restart_max', 0)),  # Max restarts (0=unlimited)
-                    restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
+                    service_type=service_type,
+                    variant=variant,
+                    config_file=process_ctx.config_file,
+                    runner_id=f"{self.launcher_id}.{service_type}",
+                    parent_name=f"launcher.{self.launcher_id}",
+                    restart=service_cfg.get('restart', 'no'),
+                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),
+                    restart_max=int(service_cfg.get('restart_max', 0)),
+                    restart_window=float(service_cfg.get('restart_window', 60.0))
                 )
 
                 runner = AsyncioRunner(
                     runner_config,
+                    registry=registry,
                     launcher_id=self.launcher_id,
-                    subject_prefix="svc"  # TODO: get from config like ProcessLauncher does
+                    subject_prefix=subject_prefix
                 )
                 self.runners[runner.service_id] = runner
                 self.logger.debug(f"Registered runner for {runner.service_id}")
@@ -338,7 +367,7 @@ class AsyncioLauncher(BaseLauncher):
                 )
 
             # Declare services to registry (marks them as part of configuration)
-            await self.declare_services(subject_prefix="svc")
+            await self.declare_services(subject_prefix=subject_prefix)
 
             return True
 

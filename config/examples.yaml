@@ -6,15 +6,24 @@ nats:
   port: 4222
   required: false  # Optional for examples - won't block if NATS unavailable
 
+# Registry: maps service_type to Python module path
+# Explicit paths needed because file names differ from service types
+registry:
+  examples.minimal: ocabox_tcs.services.examples.01_minimal
+  examples.basic: ocabox_tcs.services.examples.02_basic
+  examples.logging: ocabox_tcs.services.examples.03_logging
+  examples.monitoring: ocabox_tcs.services.examples.04_monitoring
+  examples.nonblocking: ocabox_tcs.services.examples.05_nonblocking
+
 services:
   # 01_minimal - Simplest possible service (no restart)
-  - type: examples.01_minimal
-    instance_context: minimal
+  - type: examples.minimal
+    variant: tutorial
     restart: "no"
 
   # 02_basic - Service with custom configuration (restart on failure)
-  - type: examples.02_basic
-    instance_context: basic
+  - type: examples.basic
+    variant: tutorial
     interval: 2.0
     message: "Basic service running"
     restart: "on-failure"
@@ -23,8 +32,8 @@ services:
     restart_window: 60
 
   # 03_logging - Demonstrates logging best practices (restart on failure)
-  - type: examples.03_logging
-    instance_context: logging
+  - type: examples.logging
+    variant: tutorial
     interval: 3.0
     simulate_errors: true
     restart: "on-failure"
@@ -33,8 +42,8 @@ services:
     restart_window: 120
 
   # 04_monitoring - Shows monitoring and health checks (always restart)
-  - type: examples.04_monitoring
-    instance_context: monitoring
+  - type: examples.monitoring
+    variant: tutorial
     interval: 2.0
     max_errors: 5
     restart: "always"
@@ -42,8 +51,8 @@ services:
     restart_max: 0  # unlimited
 
   # 05_nonblocking - Non-blocking permanent service with background workers (no restart)
-  - type: examples.05_nonblocking
-    instance_context: nonblocking
+  - type: examples.nonblocking
+    variant: tutorial
     worker_count: 3
     interval: 2.0
     restart: "no"

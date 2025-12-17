@@ -24,8 +24,8 @@ from ocabox_tcs.monitoring import Status
 logger = logging.getLogger(__name__)
 
 
+@config('mock_permanent')
 @dataclass
-@config
 class MockPermanentConfig:
     """Configuration for mock permanent service."""
     work_interval: float = 0.5  # Sleep interval in main loop
@@ -36,7 +36,7 @@ class MockPermanentConfig:
     work_count: int = 0  # Number of iterations (0 = infinite)
 
 
-@service
+@service('mock_permanent')
 class MockPermanentService(BaseBlockingPermanentService):
     """Mock permanent service for testing.
 

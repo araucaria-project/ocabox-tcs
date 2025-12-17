@@ -15,6 +15,7 @@ from typing import Any
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.management.process_context import ProcessContext
+from ocabox_tcs.management.service_registry import ServiceRegistry
 
 
 @dataclass
@@ -31,11 +32,13 @@ class ProcessRunner(BaseRunner):
     def __init__(
         self,
         config: ServiceRunnerConfig,
+        registry: ServiceRegistry,
         launcher_id: str | None = None,
         subject_prefix: str = "svc",
         terminate_delay: float = 1.0
     ):
         super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
+        self.registry = registry
         self.process_info: ProcessInfo | None = None
         self.terminate_delay = terminate_delay
         self._log_monitor_task: asyncio.Task | None = None
@@ -48,26 +51,28 @@ class ProcessRunner(BaseRunner):
             return False
 
         try:
-            # Resolve module name: use explicit module if provided, else default to internal
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+            # Resolve module path via ServiceRegistry
+            module_path = self.registry.resolve_module(self.config.service_type)
 
             args = [
                 "python", "-m",
-                module_name,
+                module_path,
             ]
 
             if self.config.config_file:
                 config_path = os.path.abspath(self.config.config_file)
                 args.append(config_path)
 
-            args.append(self.config.instance_context or "main")
+            # Pass variant (was instance_context)
+            args.append(self.config.variant)
 
             # Add runner_id if available
             if self.config.runner_id:
                 args.extend(["--runner-id", self.config.runner_id])
+
+            # Add parent_name for hierarchical display
+            if self.config.parent_name:
+                args.extend(["--parent-name", self.config.parent_name])
 
             # Suppress banner in subprocesses (launcher already showed one)
             args.append("--no-banner")
@@ -425,7 +430,7 @@ class ProcessLauncher(BaseLauncher):
             # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
             await self.initialize_monitoring(subject_prefix=subject_prefix)
 
-            # Get services list from config_manager (use raw config to include 'services' key)
+            # Get raw config for services list and registry
             raw_config = process_ctx.config_manager.get_raw_config()
             services_list = raw_config.get('services', [])
 
@@ -433,22 +438,30 @@ class ProcessLauncher(BaseLauncher):
                 self.logger.warning("No services found in configuration")
                 return True
 
+            # Create ServiceRegistry from config
+            registry = ServiceRegistry(raw_config)
+
             # Register runners for each service
             for service_cfg in services_list:
+                service_type = service_cfg['type']
+                # Support both old 'instance_context' and new 'variant' field names
+                variant = service_cfg.get('variant') or service_cfg.get('instance_context', 'dev')
+
                 runner_config = ServiceRunnerConfig(
-                    service_type=service_cfg['type'],
-                    instance_context=service_cfg.get('instance_context'),
-                    config_file=process_ctx.config_file,  # Use stored config file path
-                    runner_id=f"{self.launcher_id}.{service_cfg['type']}",
-                    module=service_cfg.get('module'),  # External service package (optional)
-                    restart=service_cfg.get('restart', 'no'),  # Restart policy
-                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),  # Restart delay (seconds)
-                    restart_max=int(service_cfg.get('restart_max', 0)),  # Max restarts (0=unlimited)
-                    restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
+                    service_type=service_type,
+                    variant=variant,
+                    config_file=process_ctx.config_file,
+                    runner_id=f"{self.launcher_id}.{service_type}",
+                    parent_name=f"launcher.{self.launcher_id}",
+                    restart=service_cfg.get('restart', 'no'),
+                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),
+                    restart_max=int(service_cfg.get('restart_max', 0)),
+                    restart_window=float(service_cfg.get('restart_window', 60.0))
                 )
 
                 runner = ProcessRunner(
                     runner_config,
+                    registry=registry,
                     launcher_id=self.launcher_id,
                     subject_prefix=subject_prefix,
                     terminate_delay=self.terminate_delay
