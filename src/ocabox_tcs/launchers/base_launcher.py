@@ -12,6 +12,8 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ocabox_tcs.monitoring.monitored_object import MonitoredObject
+    from ocabox_tcs.management.process_context import ProcessContext
+    from ocabox_tcs.management.service_registry import ServiceRegistry
 
 
 @dataclass
@@ -382,15 +384,265 @@ class BaseLauncher(ABC):
         self._shutdown_event = None  # Will be initialized as asyncio.Event() when needed
         self.process_ctx: Any | None = None
 
-    @abstractmethod
-    async def initialize(self, config: Any) -> bool:
-        """Initialize launcher with configuration.
+    @classmethod
+    def create_argument_parser(cls, description: str | None = None) -> "argparse.ArgumentParser":
+        """Create argument parser with common options.
+
+        Subclasses can override to add launcher-specific options.
 
         Args:
-            config: Launcher configuration (format depends on launcher type)
+            description: Parser description (default: "Start TCS launcher")
+
+        Returns:
+            Configured ArgumentParser instance
+        """
+        import argparse
+
+        if description is None:
+            description = "Start TCS launcher"
+
+        parser = argparse.ArgumentParser(description=description)
+        parser.add_argument(
+            "--config",
+            default=None,
+            help="Path to services config file (default: config/services.yaml)"
+        )
+        parser.add_argument(
+            "--no-banner",
+            action="store_true",
+            help="Suppress startup banner"
+        )
+        parser.add_argument(
+            "--no-color",
+            action="store_true",
+            help="Disable colored logging (use plain text)"
+        )
+
+        return parser
+
+    def _get_launcher_type_display(self) -> str:
+        """Get display name for banner.
+
+        Override in subclasses to customize banner text.
+
+        Returns:
+            Human-readable launcher type description
+        """
+        return self.__class__.__name__
+
+    @classmethod
+    async def common_main(cls, launcher_factory):
+        """Template method for launcher entry point.
+
+        Consolidates common startup logic: environment loading, argument parsing,
+        logging setup (with Rich colored output), config validation, and launcher
+        lifecycle orchestration.
+
+        Args:
+            launcher_factory: Callable(launcher_id, args) -> BaseLauncher
+                Function that creates launcher instance from ID and parsed args
+        """
+        import logging
+        import os
+        import socket
+        import sys
+        from pathlib import Path
+
+        from ocabox_tcs.management.environment import load_dotenv_if_available
+        from ocabox_tcs.management.process_context import ProcessContext
+
+        # Load .env file if it exists (before everything else)
+        env_loaded, env_file_path = load_dotenv_if_available()
+
+        # Parse arguments BEFORE logging setup (need --no-color flag)
+        parser = cls.create_argument_parser()
+        args = parser.parse_args()
+
+        # Setup logging (Rich colored or plain text)
+        if args.no_color:
+            # Plain text logging
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+        else:
+            # Try Rich colored logging, fall back to plain if not available
+            try:
+                from rich.logging import RichHandler
+                logging.basicConfig(
+                    level=logging.INFO,
+                    format='%(message)s',
+                    handlers=[RichHandler(
+                        show_time=True,
+                        show_level=True,
+                        show_path=False,
+                        rich_tracebacks=True,
+                        tracebacks_show_locals=False,
+                        log_time_format='%Y-%m-%d %H:%M:%S'
+                    )]
+                )
+            except ImportError:
+                # Rich not available, fall back to plain text
+                logging.basicConfig(
+                    level=logging.INFO,
+                    format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S'
+                )
+
+        logger = logging.getLogger("launch")
+
+        # Log if .env was loaded
+        if env_loaded and env_file_path:
+            logger.info(f"Loaded environment from {env_file_path}")
+
+        # Determine config file and validate
+        if args.config is not None:
+            # User explicitly provided --config, file MUST exist
+            config_file = args.config
+            if not Path(config_file).exists():
+                logger.error(f"Configuration file not found: {config_file}")
+                logger.error("Explicitly provided config file must exist. Exiting.")
+                sys.exit(1)
+        else:
+            # Use default, missing file is OK (will use defaults)
+            config_file = "config/services.yaml"
+            if not Path(config_file).exists():
+                logger.info(f"Default config file not found: {config_file}")
+                logger.info("Continuing with empty configuration")
+
+        # Initialize ProcessContext (handles config loading)
+        process_ctx = await ProcessContext.initialize(config_file=config_file)
+
+        # Generate deterministic launcher ID
+        launcher_type = cls.__name__.replace("Launcher", "").lower() + "-launcher"
+        launcher_id = cls.gen_launcher_name(
+            launcher_type,
+            config_file,
+            os.getcwd(),
+            socket.gethostname()
+        )
+
+        # Create launcher via factory
+        launcher = launcher_factory(launcher_id, args)
+
+        # Print startup banner (unless suppressed)
+        if not args.no_banner:
+            logger.info("=" * 60)
+            logger.info("TCS - Telescope Control Services")
+            logger.info(f"Launcher: {launcher._get_launcher_type_display()}")
+            logger.info("=" * 60)
+
+        # Initialize, start, run
+        if not await launcher.initialize(process_ctx):
+            logger.error("Failed to initialize launcher")
+            await process_ctx.shutdown()
+            return
+
+        if not await launcher.start_all():
+            logger.error("Failed to start services")
+            await launcher.stop_all()
+            await process_ctx.shutdown()
+            return
+
+        await launcher.run()
+
+    async def initialize(self, process_ctx: "ProcessContext") -> bool:
+        """Template method for launcher initialization.
+
+        Orchestrates common initialization flow, delegates runner creation to subclass.
+
+        Args:
+            process_ctx: Already-initialized ProcessContext
 
         Returns:
             True if initialization successful, False otherwise
+        """
+        from ocabox_tcs.management.service_registry import ServiceRegistry
+
+        try:
+            # Store ProcessContext reference
+            self.process_ctx = process_ctx
+            self.logger.debug(f"Using ProcessContext for {self.__class__.__name__}")
+
+            # Extract subject prefix from NATS config
+            subject_prefix = 'svc'  # Default
+            if process_ctx.config_manager:
+                global_config = process_ctx.config_manager.resolve_config()
+                nats_config = global_config.get("nats", {})
+                subject_prefix = nats_config.get("subject_prefix", "svc")
+                self.logger.debug(f"Using NATS subject prefix: {subject_prefix}")
+
+            # Store subject_prefix for runners to use
+            self.subject_prefix = subject_prefix
+
+            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
+            await self.initialize_monitoring(subject_prefix=subject_prefix)
+
+            # Get raw config for services list and registry
+            raw_config = process_ctx.config_manager.get_raw_config()
+            services_list = raw_config.get('services', [])
+
+            if not services_list:
+                self.logger.warning("No services found in configuration")
+                return True
+
+            # Create ServiceRegistry from config
+            registry = ServiceRegistry(raw_config)
+
+            # Register runners for each service
+            for service_cfg in services_list:
+                service_type = service_cfg['type']
+                # Support both old 'instance_context' and new 'variant' field names
+                variant = service_cfg.get('variant') or service_cfg.get('instance_context', 'dev')
+
+                runner_config = ServiceRunnerConfig(
+                    service_type=service_type,
+                    variant=variant,
+                    config_file=process_ctx.config_file,
+                    runner_id=f"{self.launcher_id}.{service_type}",
+                    parent_name=f"launcher.{self.launcher_id}",
+                    restart=service_cfg.get('restart', 'no'),
+                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),
+                    restart_max=int(service_cfg.get('restart_max', 0)),
+                    restart_window=float(service_cfg.get('restart_window', 60.0))
+                )
+
+                # HOOK: Subclass creates appropriate runner type
+                runner = self._create_runner(runner_config, registry, subject_prefix)
+
+                self.runners[runner.service_id] = runner
+                self.logger.debug(f"Registered runner for {runner.service_id}")
+                self.logger.debug(
+                    f"Restart policy for {runner.service_id}: {runner_config.restart} "
+                    f"(max={runner_config.restart_max}, delay={runner_config.restart_sec}s)"
+                )
+
+            # Declare services to registry (marks them as part of configuration)
+            await self.declare_services(subject_prefix=subject_prefix)
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize launcher: {e}", exc_info=True)
+            return False
+
+    @abstractmethod
+    def _create_runner(
+        self,
+        config: ServiceRunnerConfig,
+        registry: "ServiceRegistry",
+        subject_prefix: str
+    ) -> BaseRunner:
+        """Hook for subclasses to create launcher-specific runner type.
+
+        Args:
+            config: Runner configuration
+            registry: ServiceRegistry for module resolution
+            subject_prefix: NATS subject prefix
+
+        Returns:
+            Appropriate runner instance (ProcessRunner, AsyncioRunner, etc.)
         """
         pass
 
