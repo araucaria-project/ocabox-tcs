@@ -77,11 +77,11 @@ class MockCrashingService(BaseBlockingPermanentService):
                     f"Crashing now (type={self.svc_config.crash_type}, "
                     f"exit_code={self.svc_config.exit_code})"
                 )
-                await asyncio.sleep(self.svc_config.crash_delay)
+                await self.sleep(self.svc_config.crash_delay)
                 self._trigger_crash()
                 break
 
-            await asyncio.sleep(0.1)
+            await self.sleep(0.1)
 
         self.svc_logger.info("run_service() loop exited")
 

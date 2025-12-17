@@ -18,7 +18,6 @@ Run with launchers:
     poetry run tcs_asyncio --config config/examples.yaml
     poetry run tcs_process --config config/examples.yaml
 """
-import asyncio
 from dataclasses import dataclass
 
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
@@ -77,11 +76,8 @@ class MonitoringService(BaseBlockingPermanentService):
                 self.monitor.set_status(Status.OK, f"Cycle {self.cycle_count}")
                 self.svc_logger.info(f"Cycle {self.cycle_count} completed")
 
-                await asyncio.sleep(self.svc_config.interval)
+                await self.sleep(self.svc_config.interval)
 
-            except asyncio.CancelledError:
-                # Normal shutdown
-                break
             except Exception as e:
                 self.error_count += 1
                 self.svc_logger.error(f"Error in cycle {self.cycle_count}: {e}")
@@ -96,7 +92,7 @@ class MonitoringService(BaseBlockingPermanentService):
                 else:
                     self.monitor.set_status(Status.ERROR, f"Error count: {self.error_count}")
 
-                await asyncio.sleep(self.svc_config.interval)
+                await self.sleep(self.svc_config.interval)
 
     def healthcheck(self) -> Status:
         """Health check callback - return current health status.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +83,7 @@ class ServiceController:
         # State
         self._initialized = False
         self._running = False
+        self._stop_event = asyncio.Event()
 
         # Register with process
         self.process.register_controller(self)
@@ -193,6 +195,9 @@ class ServiceController:
             return True
 
         try:
+            # Signal that we're stopping (wake any sleeping tasks)
+            self._stop_event.set()
+
             self.monitor.set_status(Status.SHUTDOWN, "Stopping service")
 
             if self._service:
@@ -392,6 +397,50 @@ class ServiceController:
     def is_running(self) -> bool:
         """Check if service is running."""
         return self._running
+
+    def is_stopping(self) -> bool:
+        """Check if service is being stopped.
+
+        Returns:
+            True if stop has been signaled, False otherwise
+        """
+        return self._stop_event.is_set()
+
+    async def sleep(self, seconds: float | None = None) -> bool:
+        """Exit-aware sleep that wakes immediately when service stops.
+
+        This is the recommended way to sleep in services, as it allows
+        immediate wakeup when the service is being stopped.
+
+        Args:
+            seconds: Time to sleep in seconds, or None to wait indefinitely for stop
+
+        Returns:
+            True if sleep completed normally, False if interrupted by stop signal
+
+        Example:
+            # Sleep for 5 seconds (or until stop)
+            if await self.sleep(5.0):
+                # Sleep completed
+                pass
+            else:
+                # Service stopping
+                return
+
+            # Wait indefinitely for stop signal
+            await self.sleep(None)  # Blocks until service stops
+        """
+        try:
+            if seconds is None:
+                # Wait indefinitely for stop signal
+                await self._stop_event.wait()
+                return False  # Stop was signaled
+            else:
+                # Wait for stop signal with timeout
+                await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+                return False  # Stop was signaled
+        except asyncio.TimeoutError:
+            return True  # Sleep completed normally
 
     @property
     def config(self) -> BaseServiceConfig | None:

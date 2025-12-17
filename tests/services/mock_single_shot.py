@@ -58,7 +58,7 @@ class MockSingleShotService(BaseSingleShotService):
         # Simulate work with multiple iterations
         for i in range(1, self.svc_config.work_iterations + 1):
             self.svc_logger.info(f"Work iteration {i}/{self.svc_config.work_iterations}")
-            await asyncio.sleep(self.svc_config.execution_delay / self.svc_config.work_iterations)
+            await self.sleep(self.svc_config.execution_delay / self.svc_config.work_iterations)
 
             # Check for failure condition mid-execution
             if self.svc_config.should_fail and i == self.svc_config.work_iterations // 2:

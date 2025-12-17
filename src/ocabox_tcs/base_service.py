@@ -172,12 +172,64 @@ class BaseService(ABC):
         self.controller: ServiceController | None = None
         self.svc_config: Any = None  # Service config - renamed to avoid collision with user code
         self.svc_logger: logging.Logger | None = None  # Service logger - renamed to avoid collision with user code
-        self._is_running = False
 
     @property
     def is_running(self) -> bool:
-        """Check if service is running."""
-        return self._is_running
+        """Check if service is running.
+
+        Delegates to controller which owns the running state.
+        """
+        if not self.controller:
+            return False
+        return self.controller.is_running
+
+    def is_stopping(self) -> bool:
+        """Check if service is being stopped.
+
+        Delegates to controller which owns the stop signal.
+
+        Returns:
+            True if stop has been signaled, False otherwise
+        """
+        if not self.controller:
+            return False
+        return self.controller.is_stopping()
+
+    async def sleep(self, seconds: float | None = None) -> bool:
+        """Exit-aware sleep that wakes immediately when service stops.
+
+        This is the recommended way to sleep in services, as it allows
+        immediate wakeup when the service is being stopped.
+
+        Delegates to controller which owns the stop event.
+
+        Args:
+            seconds: Time to sleep in seconds, or None to wait indefinitely for stop
+
+        Returns:
+            True if sleep completed normally, False if interrupted by stop signal
+
+        Example:
+            # Sleep for 5 seconds (or until stop)
+            if await self.sleep(5.0):
+                # Sleep completed normally
+                self.svc_logger.info("Work cycle completed")
+            else:
+                # Service stopping - exit loop
+                self.svc_logger.info("Service stopping, exiting loop")
+                return
+
+            # Wait indefinitely for stop signal
+            await self.sleep(None)  # Blocks until service stops
+        """
+        if not self.controller:
+            # Fallback if no controller (shouldn't happen in normal operation)
+            if seconds is None:
+                await asyncio.Event().wait()  # Wait forever
+            else:
+                await asyncio.sleep(seconds)
+            return True
+        return await self.controller.sleep(seconds)
 
     @property
     def monitor(self):
@@ -185,14 +237,18 @@ class BaseService(ABC):
         return self.controller.monitor if self.controller else None
 
     async def _internal_start(self):
-        """Internal start method called by ServiceController."""
-        self._is_running = True
+        """Internal start method called by ServiceController.
+
+        Controller owns the running state, so we just call start_service().
+        """
         await self.start_service()
 
     async def _internal_stop(self):
-        """Internal stop method called by ServiceController."""
+        """Internal stop method called by ServiceController.
+
+        Controller owns the running state, so we just call stop_service().
+        """
         await self.stop_service()
-        self._is_running = False
 
     @abstractmethod
     async def start_service(self):

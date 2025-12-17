@@ -31,7 +31,7 @@ class TicConn:
         # self.access_grantor = self.telescope.get_access_grantor()
 
     async def get_obs_cfg(self):
-        self.manager.logger.info(f'Loading client config...')
+        self.manager.svc_logger.info(f'Loading client config...')
         try:
             await self.obs.load_client_cfg(timeout=5.0)
         except TimeoutError:

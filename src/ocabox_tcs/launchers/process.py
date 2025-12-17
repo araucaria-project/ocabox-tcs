@@ -34,7 +34,7 @@ class ProcessRunner(BaseRunner):
         registry: ServiceRegistry,
         launcher_id: str | None = None,
         subject_prefix: str = "svc",
-        terminate_delay: float = 1.0
+        terminate_delay: float = 5.0
     ):
         super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
         self.registry = registry
@@ -42,6 +42,7 @@ class ProcessRunner(BaseRunner):
         self.terminate_delay = terminate_delay
         self._log_monitor_task: asyncio.Task | None = None
         self._crash_monitor_task: asyncio.Task | None = None
+        self._stopping_gracefully: bool = False  # Track if we initiated stop
 
     async def start(self) -> bool:
         """Start service in subprocess."""
@@ -116,6 +117,9 @@ class ProcessRunner(BaseRunner):
             self.logger.info(f"Stopping {self.service_id}")
             proc = self.process_info.process
 
+            # Mark that we're stopping gracefully so _monitor_crash doesn't treat SIGTERM as crash
+            self._stopping_gracefully = True
+
             proc.terminate()
 
             # Poll every 100ms for up to terminate_delay seconds
@@ -152,10 +156,11 @@ class ProcessRunner(BaseRunner):
                 except asyncio.CancelledError:
                     pass
 
-            # If we force-killed the service, publish STOP event to NATS
-            # (subprocess didn't get a chance to send it)
-            if force_killed:
-                await self._publish_stop_event(reason="force_killed")
+            # Publish STOP event - subprocess was terminated by us
+            # The crash monitor was cancelled, so we publish the event here
+            reason = "force_killed" if force_killed else "terminated"
+            exit_code = -9 if force_killed else 0
+            await self._publish_stop_event(reason=reason, exit_code=exit_code)
 
             self._is_running = False
             self.process_info = None
@@ -206,11 +211,22 @@ class ProcessRunner(BaseRunner):
                 process_info = self.process_info
                 self.process_info = None
 
-                # Check if it's a clean exit (exit code 0)
-                if returncode == 0:
-                    self.logger.info(f"Service {self.service_id} exited cleanly (exit code: 0)")
+                # Check if it's a clean exit
+                # Exit code 0 = clean
+                # Exit code -15 (SIGTERM) or -2 (SIGINT) = clean if we initiated stop
+                is_clean_exit = (
+                    returncode == 0 or
+                    (self._stopping_gracefully and returncode in (-15, -2))
+                )
+
+                if is_clean_exit:
+                    reason = "completed" if returncode == 0 else "terminated"
+                    self.logger.info(
+                        f"Service {self.service_id} exited cleanly "
+                        f"(exit code: {returncode}, reason: {reason})"
+                    )
                     # Publish STOP event for clean exit
-                    await self._publish_stop_event(reason="completed", exit_code=returncode)
+                    await self._publish_stop_event(reason=reason, exit_code=returncode)
                     self._is_running = False
                     return
 
@@ -281,8 +297,37 @@ class ProcessRunner(BaseRunner):
         except Exception as e:
             self.logger.error(f"Crash monitor error for {self.service_id}: {e}")
 
+    def _parse_log_level(self, line: str) -> tuple[int, str]:
+        """Parse log level from subprocess log line.
+
+        Args:
+            line: Log line from subprocess (e.g., "[INFO ] svc|...: message")
+
+        Returns:
+            Tuple of (log_level_int, line) where log_level_int is logging.INFO, etc.
+        """
+        import logging
+        import re
+
+        # Try to extract log level from format: [LEVEL ] or [LEVEL]
+        match = re.match(r'\[(\w+)\s*\]', line)
+        if match:
+            level_str = match.group(1).upper()
+            level_map = {
+                'DEBUG': logging.DEBUG,
+                'INFO': logging.INFO,
+                'WARNING': logging.WARNING,
+                'WARN': logging.WARNING,
+                'ERROR': logging.ERROR,
+                'CRITICAL': logging.CRITICAL,
+            }
+            return level_map.get(level_str, logging.INFO), line
+
+        # No recognizable log level, default to INFO
+        return logging.INFO, line
+
     async def _monitor_logs(self):
-        """Monitor and relay service logs."""
+        """Monitor and relay service logs, preserving log levels."""
         if not self.process_info:
             return
 
@@ -291,8 +336,11 @@ class ProcessRunner(BaseRunner):
                 line = await asyncio.to_thread(self.process_info.process.stderr.readline)
                 if not line:
                     break
-                # Logger name already includes service_id (run|{service_id}), no need to repeat
-                self.logger.info(line.strip())
+
+                # Parse log level from subprocess output and use same level
+                level, message = self._parse_log_level(line.strip())
+                self.logger.log(level, message)
+
         except Exception as e:
             self.logger.error(f"Log monitoring error for {self.service_id}: {e}")
 
@@ -300,7 +348,7 @@ class ProcessRunner(BaseRunner):
 class ProcessLauncher(BaseLauncher):
     """Launcher that manages services as separate processes."""
 
-    def __init__(self, launcher_id: str | None = None, terminate_delay: float = 1.0):
+    def __init__(self, launcher_id: str | None = None, terminate_delay: float = 5.0):
         # Use provided launcher_id or default to simple name
         if launcher_id is None:
             launcher_id = "process-launcher"
@@ -343,8 +391,8 @@ async def amain():
         parser.add_argument(
             "--terminate-delay",
             type=float,
-            default=1.0,
-            help="Time to wait for graceful shutdown before force-kill (default: 1.0s)"
+            default=5.0,
+            help="Time to wait for graceful shutdown before force-kill (default: 5.0s)"
         )
         return parser
 

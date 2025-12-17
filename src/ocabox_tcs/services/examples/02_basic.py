@@ -10,7 +10,6 @@ Run with launchers:
     poetry run tcs_asyncio --config config/examples.yaml
     poetry run tcs_process --config config/examples.yaml
 """
-import asyncio
 from dataclasses import dataclass
 
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
@@ -32,7 +31,7 @@ class BasicService(BaseBlockingPermanentService):
         """Main service loop using configuration."""
         while self.is_running:
             self.svc_logger.info(f"{self.svc_config.message} (every {self.svc_config.interval}s)")
-            await asyncio.sleep(self.svc_config.interval)
+            await self.sleep(self.svc_config.interval)
 
 
 if __name__ == '__main__':

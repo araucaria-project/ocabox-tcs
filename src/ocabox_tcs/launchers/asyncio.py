@@ -31,6 +31,7 @@ class AsyncioRunner(BaseRunner):
         self.controller: ServiceController | None = None
         self.start_time: datetime | None = None
         self._crash_monitor_task: asyncio.Task | None = None
+        self._stopping_gracefully: bool = False  # Track if we initiated stop
 
     async def start(self) -> bool:
         """Start service in current process.
@@ -82,6 +83,9 @@ class AsyncioRunner(BaseRunner):
             return False
 
         try:
+            # Mark that we're stopping gracefully so _monitor_crash doesn't warn
+            self._stopping_gracefully = True
+
             self.logger.info(f"Stopping {self.service_id}")
             await self.controller.stop_service()
             await self.controller.shutdown()
@@ -140,11 +144,19 @@ class AsyncioRunner(BaseRunner):
             while self._is_running and self.controller is not None:
                 # Check if service is still running
                 if not self.controller.is_running and self.controller is not None:
-                    # Service crashed or stopped unexpectedly
+                    # Service stopped - check if we initiated it
                     # Clear controller immediately to prevent duplicate handling
                     controller = self.controller
                     self.controller = None
 
+                    # If we initiated stop gracefully, just publish STOP and return
+                    if self._stopping_gracefully:
+                        self.logger.info(f"Service {self.service_id} stopped gracefully")
+                        await self._publish_stop_event(reason="completed", exit_code=0)
+                        self._is_running = False
+                        return
+
+                    # Service stopped unexpectedly - warn and check if we should restart
                     self.logger.warning(
                         f"Service {self.service_id} stopped unexpectedly"
                     )
