@@ -228,6 +228,101 @@ class BaseRunner(ABC):
         ]
         self._restart_count = len(self._restart_history)
 
+    async def _publish_start_event(self, pid: int | None = None):
+        """Publish START event to NATS registry.
+
+        Called when service starts successfully. Runner owns lifecycle events.
+
+        Args:
+            pid: Process ID (for subprocess launchers, None for asyncio)
+        """
+        import socket
+        import os
+
+        data = {
+            "status": "startup",
+            "hostname": socket.gethostname()
+        }
+
+        if pid is not None:
+            data["pid"] = pid
+        else:
+            data["pid"] = os.getpid()
+
+        await self._publish_registry_event("start", **data)
+
+    async def _publish_stop_event(self, reason: str = "completed", exit_code: int = 0):
+        """Publish STOP event to NATS registry.
+
+        Called when service stops cleanly or is force-killed by launcher.
+
+        Args:
+            reason: Reason for stop (e.g., "completed", "force_killed")
+            exit_code: Process exit code
+        """
+        await self._publish_registry_event(
+            "stop",
+            status="shutdown",
+            reason=reason,
+            exit_code=exit_code
+        )
+
+    async def _publish_crash_event(self, exit_code: int):
+        """Publish CRASH event to NATS registry.
+
+        Args:
+            exit_code: Process exit code
+        """
+        will_restart = self._should_restart(exit_code)
+        await self._publish_registry_event(
+            "crashed",
+            status="error" if will_restart else "failed",
+            exit_code=exit_code,
+            restart_policy=self.config.restart,
+            will_restart=will_restart
+        )
+
+    async def _publish_restarting_event(self, attempt: int):
+        """Publish RESTARTING event to NATS registry.
+
+        Args:
+            attempt: Restart attempt number (1-based)
+        """
+        await self._publish_registry_event(
+            "restarting",
+            status="startup",
+            restart_attempt=attempt,
+            max_restarts=self.config.restart_max if self.config.restart_max > 0 else None
+        )
+
+    async def _publish_failed_event(self, reason: str):
+        """Publish FAILED event to NATS registry.
+
+        Args:
+            reason: Reason for failure (e.g., 'restart_failed', 'restart_limit_reached')
+        """
+        await self._publish_registry_event(
+            "failed",
+            status="failed",
+            reason=reason,
+            restart_count=len(self._restart_history)
+        )
+
+    async def publish_declared(self):
+        """Publish DECLARED event to NATS registry.
+
+        Called by launcher after runner creation. Only publishes if runner_id
+        is present (skips for ad-hoc standalone/test runs).
+
+        This marks the service as part of the launcher's formal configuration,
+        distinguishing it from ephemeral services.
+        """
+        await self._publish_registry_event(
+            "declared",
+            restart_policy=self.config.restart,
+            # Note: parent and runner_id are added automatically by _publish_registry_event
+        )
+
 
 class BaseLauncher(ABC):
     """Base class for service launchers.
@@ -284,6 +379,8 @@ class BaseLauncher(ABC):
         self.logger = logging.getLogger(f"lch|{launcher_id}")
         self.runners: dict[str, BaseRunner] = {}
         self.monitor: "MonitoredObject | None" = None
+        self._shutdown_event = None  # Will be initialized as asyncio.Event() when needed
+        self.process_ctx: Any | None = None
 
     @abstractmethod
     async def initialize(self, config: Any) -> bool:
@@ -297,23 +394,52 @@ class BaseLauncher(ABC):
         """
         pass
 
-    @abstractmethod
     async def start_all(self) -> bool:
         """Start all configured services.
 
         Returns:
             True if all services started successfully, False otherwise
         """
-        pass
+        success = True
+        for service_id, runner in self.runners.items():
+            if not await runner.start():
+                self.logger.error(f"Failed to start {service_id}")
+                success = False
 
-    @abstractmethod
+        # Start launcher monitoring after services are started
+        if success:
+            await self.start_monitoring()
+
+        return success
+
     async def stop_all(self) -> bool:
-        """Stop all running services.
+        """Stop all running services in parallel.
 
         Returns:
             True if all services stopped successfully, False otherwise
         """
-        pass
+        import asyncio
+
+        if not self.runners:
+            return True
+
+        # Stop all services in parallel for faster shutdown
+        results = await asyncio.gather(
+            *[self.stop_service(sid) for sid in self.runners.keys()],
+            return_exceptions=True
+        )
+
+        # Check if any failed
+        success = True
+        for sid, result in zip(self.runners.keys(), results):
+            if isinstance(result, Exception):
+                self.logger.error(f"Failed to stop {sid}: {result}")
+                success = False
+            elif not result:
+                self.logger.error(f"Failed to stop {sid}")
+                success = False
+
+        return success
 
     async def start_service(self, service_id: str) -> bool:
         """Start specific service by ID.
@@ -443,3 +569,38 @@ class BaseLauncher(ABC):
         await self.monitor.send_shutdown()
 
         self.logger.info("Launcher monitoring stopped")
+
+    async def run(self):
+        """Run launcher with signal handling."""
+        import asyncio
+        import signal
+
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+
+        loop = asyncio.get_running_loop()
+
+        def handle_signal(sig):
+            self.logger.info(f"Received signal {sig}, shutting down...")
+            asyncio.create_task(self._shutdown())
+
+        loop.add_signal_handler(signal.SIGINT, lambda: handle_signal("SIGINT"))
+        loop.add_signal_handler(signal.SIGTERM, lambda: handle_signal("SIGTERM"))
+
+        self.logger.info("Services started. Press Ctrl+C to stop.")
+        await self._shutdown_event.wait()
+        self.logger.info("Launcher shutdown complete")
+
+    async def _shutdown(self):
+        """Shutdown all services and process context."""
+        # Stop launcher monitoring first
+        await self.stop_monitoring()
+
+        self.logger.info("Stopping all services...")
+        await self.stop_all()
+
+        if self.process_ctx:
+            await self.process_ctx.shutdown()
+
+        if self._shutdown_event:
+            self._shutdown_event.set()
