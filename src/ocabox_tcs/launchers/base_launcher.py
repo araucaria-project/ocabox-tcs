@@ -484,12 +484,15 @@ class BaseLauncher(ABC):
                 logger.error(f"Configuration file not found: {config_file}")
                 logger.error("Explicitly provided config file must exist. Exiting.")
                 sys.exit(1)
+            logger.info(f"Using config file: {config_file}")
         else:
             # Use default, missing file is OK (will use defaults)
             config_file = "config/services.yaml"
             if not Path(config_file).exists():
                 logger.info(f"Default config file not found: {config_file}")
                 logger.info("Continuing with empty configuration")
+            else:
+                logger.info(f"Using default config file: {config_file}")
 
         return config_file
 
@@ -692,9 +695,12 @@ class BaseLauncher(ABC):
         """
         success = True
         for service_id, runner in self.runners.items():
+            self.logger.info(f"Starting service: {service_id}")
             if not await runner.start():
                 self.logger.error(f"Failed to start {service_id}")
                 success = False
+            else:
+                self.logger.info(f"Service started: {service_id}")
 
         # Start launcher monitoring after services are started
         if success:

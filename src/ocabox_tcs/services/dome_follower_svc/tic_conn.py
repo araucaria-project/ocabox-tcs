@@ -35,9 +35,9 @@ class TicConn:
         try:
             await self.obs.load_client_cfg(timeout=5.0)
         except TimeoutError:
-            self.manager.logger.error(f"Can not load client config from nats - timeout.")
+            self.manager.svc_logger.error(f"Can not load client config from nats - timeout.")
             raise
-        self.manager.logger.info(f'Client config loaded.')
+        self.manager.svc_logger.info(f'Client config loaded.')
         self.obs.connect()
         self.manager.obs_cfg = ConfigGeneral(
             telescope=self.telescope,

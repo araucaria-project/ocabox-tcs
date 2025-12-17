@@ -11,7 +11,7 @@ from ocabox_tcs.base_service import BaseServiceConfig, BaseBlockingPermanentServ
 from ocabox_tcs.services.dome_follower_svc.manager import Manager
 
 
-@config('dome_follower')
+@config('dome_follower_svc.dome_follower')
 @dataclass
 class DomeFollowerServiceConfig(BaseServiceConfig):
     """Configuration for DumbPermanent service."""
@@ -22,7 +22,7 @@ class DomeFollowerServiceConfig(BaseServiceConfig):
     settle_time: float = 3.0 # sec
 
 
-@service('dome_follower')
+@service('dome_follower_svc.dome_follower')
 class DomeFollowerService(BaseBlockingPermanentService):
     """Simple service that logs a message periodically."""
     def __init__(self):
