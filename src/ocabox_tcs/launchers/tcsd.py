@@ -6,59 +6,98 @@ Provides single entry point with ability to choose execution method:
 
 Usage:
     # Default (asyncio launcher)
-    poetry run tcsd --config config/services.yaml
+    tcsd --config config/services.yaml
 
     # Process launcher
-    poetry run tcsd --launcher process --config config/services.yaml
+    tcsd --launcher process --config config/services.yaml
 
     # Disable colored logging
-    poetry run tcsd --no-color
+    tcsd --no-color
 
     # Process with custom terminate delay
-    poetry run tcsd --launcher process --terminate-delay 2.0
+    tcsd --launcher process --terminate-delay 2.0
 
 Future: Launcher choice will be configurable via config file.
 """
 
 import asyncio
-import argparse
 
 
 async def amain():
     """Unified launcher entry point."""
+    import argparse
+    import os
+    import socket
+    from ocabox_tcs.launchers.base_launcher import BaseLauncher
     from ocabox_tcs.launchers.process import ProcessLauncher
     from ocabox_tcs.launchers.asyncio import AsyncioLauncher
 
-    # Pre-parse to detect launcher choice (before full argument parsing)
-    pre_parser = argparse.ArgumentParser(add_help=False)
-    pre_parser.add_argument(
-        "--launcher",
-        choices=["asyncio", "process"],
-        default="asyncio",
-        help="Launcher type: asyncio (default) or process"
-    )
-    pre_args, remaining = pre_parser.parse_known_args()
+    def customize_parser(base_parser):
+        """Customize parser for unified launcher."""
+        parser = argparse.ArgumentParser(
+            description="Start TCS unified launcher (tcsd)",
+            parents=[base_parser],
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+Launcher Types:
+  asyncio  All services run in the same process (default)
+           - Lower resource usage, simpler debugging
+           - Services share memory space
 
-    # Choose launcher class based on --launcher flag
-    if pre_args.launcher == "process":
-        launcher_cls = ProcessLauncher
-    else:
-        launcher_cls = AsyncioLauncher
+  process  Each service runs in a separate subprocess
+           - Better isolation, services can't interfere
+           - Higher resource usage
+           - Additional option: --terminate-delay
 
-    # Restore sys.argv for full parsing by chosen launcher
-    import sys
-    sys.argv = [sys.argv[0]] + remaining
+Examples:
+  tcsd --config config/services.yaml                    # Default asyncio mode
+  tcsd --launcher process --config config/services.yaml # Process mode
+  tcsd --no-color                                       # Plain text logging
+        """
+        )
 
-    # Create factory function for chosen launcher type
+        # Add launcher choice
+        parser.add_argument(
+            "-l",
+            "--launcher",
+            choices=["asyncio", "process"],
+            default="asyncio",
+            help="Launcher type (default: asyncio)"
+        )
+
+        # Add process-specific option
+        parser.add_argument(
+            "--terminate-delay",
+            type=float,
+            default=1.0,
+            help="[process only] Time to wait for graceful shutdown (default: 1.0s)"
+        )
+
+        return parser
+
     def factory(launcher_id, args):
-        if pre_args.launcher == "process":
-            terminate_delay = getattr(args, 'terminate_delay', 1.0)
-            return ProcessLauncher(launcher_id=launcher_id, terminate_delay=terminate_delay)
+        """Create launcher based on --launcher choice."""
+        # Generate proper launcher ID
+        config_file = BaseLauncher.determine_config_file(args.config)
+
+        if args.launcher == "process":
+            launcher_id = BaseLauncher.gen_launcher_name(
+                "process-launcher",
+                config_file,
+                os.getcwd(),
+                socket.gethostname()
+            )
+            return ProcessLauncher(launcher_id=launcher_id, terminate_delay=args.terminate_delay)
         else:
+            launcher_id = BaseLauncher.gen_launcher_name(
+                "asyncio-launcher",
+                config_file,
+                os.getcwd(),
+                socket.gethostname()
+            )
             return AsyncioLauncher(launcher_id=launcher_id)
 
-    # Run via common_main template method
-    await launcher_cls.common_main(factory)
+    await BaseLauncher.launch(factory, customize_parser)
 
 
 def main():

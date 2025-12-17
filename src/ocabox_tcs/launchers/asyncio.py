@@ -234,10 +234,31 @@ class AsyncioLauncher(BaseLauncher):
 
 async def amain():
     """Asyncio launcher entry point."""
+    import argparse
+    import os
+    import socket
+
+    def customize_parser(base_parser):
+        """Customize parser for asyncio launcher."""
+        parser = argparse.ArgumentParser(
+            description="Start TCS asyncio launcher (all services in same process)",
+            parents=[base_parser]
+        )
+        return parser
+
     def factory(launcher_id, args):
+        """Create AsyncioLauncher."""
+        # Generate proper launcher ID
+        config_file = BaseLauncher.determine_config_file(args.config)
+        launcher_id = BaseLauncher.gen_launcher_name(
+            "asyncio-launcher",
+            config_file,
+            os.getcwd(),
+            socket.gethostname()
+        )
         return AsyncioLauncher(launcher_id=launcher_id)
 
-    await AsyncioLauncher.common_main(factory)
+    await BaseLauncher.launch(factory, customize_parser)
 
 
 def main():

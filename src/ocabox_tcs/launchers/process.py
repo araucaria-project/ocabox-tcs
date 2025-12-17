@@ -308,20 +308,6 @@ class ProcessLauncher(BaseLauncher):
         super().__init__(launcher_id)
         self.terminate_delay = terminate_delay
 
-    @classmethod
-    def create_argument_parser(cls, description: str | None = None):
-        """Create parser with process-specific options."""
-        if description is None:
-            description = "Start TCS process launcher"
-        parser = super().create_argument_parser(description)
-        parser.add_argument(
-            "--terminate-delay",
-            type=float,
-            default=1.0,
-            help="Time to wait for graceful shutdown before force-kill (default: 1.0s)"
-        )
-        return parser
-
     def _get_launcher_type_display(self) -> str:
         """Get display name for banner."""
         return "Process (each service in separate subprocess)"
@@ -344,10 +330,37 @@ class ProcessLauncher(BaseLauncher):
 
 async def amain():
     """Process launcher entry point."""
+    import argparse
+    import os
+    import socket
+
+    def customize_parser(base_parser):
+        """Customize parser for process launcher."""
+        parser = argparse.ArgumentParser(
+            description="Start TCS process launcher (each service in separate subprocess)",
+            parents=[base_parser]
+        )
+        parser.add_argument(
+            "--terminate-delay",
+            type=float,
+            default=1.0,
+            help="Time to wait for graceful shutdown before force-kill (default: 1.0s)"
+        )
+        return parser
+
     def factory(launcher_id, args):
+        """Create ProcessLauncher with terminate_delay from args."""
+        # Generate proper launcher ID
+        config_file = BaseLauncher.determine_config_file(args.config)
+        launcher_id = BaseLauncher.gen_launcher_name(
+            "process-launcher",
+            config_file,
+            os.getcwd(),
+            socket.gethostname()
+        )
         return ProcessLauncher(launcher_id=launcher_id, terminate_delay=args.terminate_delay)
 
-    await ProcessLauncher.common_main(factory)
+    await BaseLauncher.launch(factory, customize_parser)
 
 
 def main():

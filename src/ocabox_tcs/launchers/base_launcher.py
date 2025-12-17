@@ -383,25 +383,23 @@ class BaseLauncher(ABC):
         self.monitor: "MonitoredObject | None" = None
         self._shutdown_event = None  # Will be initialized as asyncio.Event() when needed
         self.process_ctx: Any | None = None
+        self.cli_args: Any | None = None  # Parsed CLI arguments namespace
 
-    @classmethod
-    def create_argument_parser(cls, description: str | None = None) -> "argparse.ArgumentParser":
-        """Create argument parser with common options.
+    @staticmethod
+    def prepare_cli_argument_parser() -> "argparse.ArgumentParser":
+        """Create and return ArgumentParser with common launcher options.
 
-        Subclasses can override to add launcher-specific options.
-
-        Args:
-            description: Parser description (default: "Start TCS launcher")
+        This static method creates a parser with arguments common to all launchers.
+        Subclasses should call this, then customize the parser before parsing.
 
         Returns:
-            Configured ArgumentParser instance
+            ArgumentParser with common options configured
         """
         import argparse
 
-        if description is None:
-            description = "Start TCS launcher"
+        parser = argparse.ArgumentParser(add_help=False)  # Don't add help yet (subclass will)
 
-        parser = argparse.ArgumentParser(description=description)
+        # Common arguments for all launchers
         parser.add_argument(
             "--config",
             default=None,
@@ -420,46 +418,16 @@ class BaseLauncher(ABC):
 
         return parser
 
-    def _get_launcher_type_display(self) -> str:
-        """Get display name for banner.
-
-        Override in subclasses to customize banner text.
-
-        Returns:
-            Human-readable launcher type description
-        """
-        return self.__class__.__name__
-
-    @classmethod
-    async def common_main(cls, launcher_factory):
-        """Template method for launcher entry point.
-
-        Consolidates common startup logic: environment loading, argument parsing,
-        logging setup (with Rich colored output), config validation, and launcher
-        lifecycle orchestration.
+    @staticmethod
+    def setup_logging(use_color: bool):
+        """Setup logging based on color preference.
 
         Args:
-            launcher_factory: Callable(launcher_id, args) -> BaseLauncher
-                Function that creates launcher instance from ID and parsed args
+            use_color: If True, use Rich colored logging; if False, use plain text
         """
         import logging
-        import os
-        import socket
-        import sys
-        from pathlib import Path
 
-        from ocabox_tcs.management.environment import load_dotenv_if_available
-        from ocabox_tcs.management.process_context import ProcessContext
-
-        # Load .env file if it exists (before everything else)
-        env_loaded, env_file_path = load_dotenv_if_available()
-
-        # Parse arguments BEFORE logging setup (need --no-color flag)
-        parser = cls.create_argument_parser()
-        args = parser.parse_args()
-
-        # Setup logging (Rich colored or plain text)
-        if args.no_color:
+        if not use_color:
             # Plain text logging
             logging.basicConfig(
                 level=logging.INFO,
@@ -490,16 +458,28 @@ class BaseLauncher(ABC):
                     datefmt='%Y-%m-%d %H:%M:%S'
                 )
 
+    @staticmethod
+    def determine_config_file(config_arg: str | None) -> str:
+        """Determine and validate config file from argument.
+
+        Args:
+            config_arg: Config file path from CLI argument (or None for default)
+
+        Returns:
+            Path to config file
+
+        Raises:
+            SystemExit: If explicitly provided config file doesn't exist
+        """
+        import sys
+        import logging
+        from pathlib import Path
+
         logger = logging.getLogger("launch")
 
-        # Log if .env was loaded
-        if env_loaded and env_file_path:
-            logger.info(f"Loaded environment from {env_file_path}")
-
-        # Determine config file and validate
-        if args.config is not None:
+        if config_arg is not None:
             # User explicitly provided --config, file MUST exist
-            config_file = args.config
+            config_file = config_arg
             if not Path(config_file).exists():
                 logger.error(f"Configuration file not found: {config_file}")
                 logger.error("Explicitly provided config file must exist. Exiting.")
@@ -511,13 +491,58 @@ class BaseLauncher(ABC):
                 logger.info(f"Default config file not found: {config_file}")
                 logger.info("Continuing with empty configuration")
 
-        # Initialize ProcessContext (handles config loading)
+        return config_file
+
+    @classmethod
+    async def launch(cls, launcher_factory, parser_customizer=None):
+        """Common launcher orchestration for all entry points.
+
+        This method handles all common startup logic: environment loading, argument
+        parsing, logging setup, config validation, and launcher lifecycle orchestration.
+
+        Args:
+            launcher_factory: Callable(launcher_id, args) -> BaseLauncher
+                Factory function that creates the launcher instance
+            parser_customizer: Optional Callable(parser) -> parser
+                Function to customize the parser (add launcher-specific args, set description, etc.)
+        """
+        import logging
+        import os
+        import socket
+        from ocabox_tcs.management.environment import load_dotenv_if_available
+        from ocabox_tcs.management.process_context import ProcessContext
+
+        # Load .env file if it exists
+        env_loaded, env_file_path = load_dotenv_if_available()
+
+        # Prepare parser with common arguments
+        parser = cls.prepare_cli_argument_parser()
+
+        # Allow customization (description, launcher-specific args, epilog, etc.)
+        if parser_customizer:
+            parser = parser_customizer(parser)
+
+        # Parse arguments
+        args = parser.parse_args()
+
+        # Setup logging based on --no-color flag
+        cls.setup_logging(use_color=not args.no_color)
+
+        logger = logging.getLogger("launch")
+
+        # Log if .env was loaded
+        if env_loaded and env_file_path:
+            logger.info(f"Loaded environment from {env_file_path}")
+
+        # Determine and validate config file from --config argument
+        config_file = cls.determine_config_file(args.config)
+
+        # Initialize ProcessContext
         process_ctx = await ProcessContext.initialize(config_file=config_file)
 
-        # Generate deterministic launcher ID
-        launcher_type = cls.__name__.replace("Launcher", "").lower() + "-launcher"
+        # Generate launcher ID (will be overridden by factory with correct launcher type)
         launcher_id = cls.gen_launcher_name(
-            launcher_type,
+            "launcher",  # Generic, will be set correctly by factory
             config_file,
             os.getcwd(),
             socket.gethostname()
@@ -526,7 +551,10 @@ class BaseLauncher(ABC):
         # Create launcher via factory
         launcher = launcher_factory(launcher_id, args)
 
-        # Print startup banner (unless suppressed)
+        # Store CLI arguments in launcher
+        launcher.cli_args = args
+
+        # Print startup banner (unless suppressed by --no-banner)
         if not args.no_banner:
             logger.info("=" * 60)
             logger.info("TCS - Telescope Control Services")
@@ -546,6 +574,16 @@ class BaseLauncher(ABC):
             return
 
         await launcher.run()
+
+    def _get_launcher_type_display(self) -> str:
+        """Get display name for banner.
+
+        Override in subclasses to customize banner text.
+
+        Returns:
+            Human-readable launcher type description
+        """
+        return self.__class__.__name__
 
     async def initialize(self, process_ctx: "ProcessContext") -> bool:
         """Template method for launcher initialization.
