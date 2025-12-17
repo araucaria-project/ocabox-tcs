@@ -11,7 +11,7 @@ from ocabox_tcs.base_service import BaseServiceConfig, BaseBlockingPermanentServ
 from ocabox_tcs.services.dome_follower_svc.manager import Manager
 
 
-@config
+@config('dome_follower')
 @dataclass
 class DomeFollowerServiceConfig(BaseServiceConfig):
     """Configuration for DumbPermanent service."""
@@ -22,7 +22,7 @@ class DomeFollowerServiceConfig(BaseServiceConfig):
     settle_time: float = 3.0 # sec
 
 
-@service
+@service('dome_follower')
 class DomeFollowerService(BaseBlockingPermanentService):
     """Simple service that logs a message periodically."""
     def __init__(self):
@@ -33,7 +33,7 @@ class DomeFollowerService(BaseBlockingPermanentService):
     async def on_start(self):
         """Setup before main loop starts."""
         self.svc_logger.info(f"Starting dome follower service, with interval: {self.svc_config.interval}")
-        self.manager = Manager(service=self, config=self.config)
+        self.manager = Manager(service=self, config=self.svc_config)
         await self.manager.start_comm()
         await self.manager.set_follow_parameters()
         if self.svc_config.turn_on_automatically:
