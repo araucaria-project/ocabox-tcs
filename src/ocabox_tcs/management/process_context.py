@@ -130,7 +130,7 @@ class ProcessContext:
         self._config_cache.clear()
         self.logger.debug("Cleared config cache")
 
-    @classmethodx
+    @classmethod
     async def initialize(cls, config_file: str | None = None, args_config: dict[str, Any] | None = None) -> ProcessContext:
         """Initialize process-wide resources. Call once per OS process.
 
