@@ -6,7 +6,6 @@ import importlib
 import logging
 from typing import TYPE_CHECKING, Any
 
-
 if TYPE_CHECKING:
     pass
 
@@ -15,7 +14,7 @@ from ocabox_tcs.management.process_context import ProcessContext
 
 from ocabox_tcs.base_service import BaseService, BaseServiceConfig
 from ocabox_tcs.monitoring import create_monitor, Status
-from ocabox_tcs.monitoring.monitored_object import  MonitoredObject
+from ocabox_tcs.monitoring.monitored_object import MonitoredObject
 
 
 class ServiceController:
@@ -237,7 +236,11 @@ class ServiceController:
                 service_type_with_path = '.'.join(module_parts[services_idx + 1:])
             else:
                 service_type_with_path = service_type_full
-
+        except Exception as e:
+            self.logger.error(
+                f"Class discovery failed (0), Error in import module {self.module_name}: {e}")
+            return False
+        try:
             # 1. Try decorator registry first (try path-aware type first, then fallback)
             from ..base_service import get_config_class, get_service_class
 
@@ -246,14 +249,21 @@ class ServiceController:
                 self._service_class = get_service_class(service_type_full)
 
             if self._service_class is not None:
-                self.logger.debug(f"Service class discovered via @service decorator: {self._service_class.__name__}")
+                self.logger.debug(
+                    f"Service class discovered via @service decorator: {self._service_class.__name__}")
 
             self._config_class = get_config_class(service_type_with_path)
             if self._config_class is None:
                 self._config_class = get_config_class(service_type_full)
 
             if self._config_class is not None:
-                self.logger.debug(f"Config class discovered via @config decorator: {self._config_class.__name__}")
+                self.logger.debug(
+                    f"Config class discovered via @config decorator: {self._config_class.__name__}")
+        except Exception as e:
+            self.logger.error(
+                f"Class discovery failed (1), Error in registr lookup {service_type_with_path}: {e}")
+            return False
+        try:
 
             # 2. Fall back to module variable approach (deprecated)
             if self._service_class is None and hasattr(module, 'service_class'):
@@ -271,10 +281,16 @@ class ServiceController:
                     f"Please migrate to decorator-based discovery by adding '@config' decorator to your config class. "
                     f"Example: @config\\n@dataclass\\nclass {self._config_class.__name__}(BaseServiceConfig): ..."
                 )
+        except Exception as e:
+            self.logger.error(
+                f"Class discovery failed (2), Error in module variable lookup: {e}")
+            return False
+        try:
 
             # 3. Try convention-based discovery for service (undocumented heuristic)
             if self._service_class is None:
-                class_name = ''.join(word.capitalize() for word in service_type_full.split('_')) + 'Service'
+                class_name = ''.join(
+                    word.capitalize() for word in service_type_full.split('_')) + 'Service'
                 if hasattr(module, class_name):
                     self._service_class = getattr(module, class_name)
                     self.logger.warning(
@@ -284,6 +300,11 @@ class ServiceController:
                         f"Example: @service\\nclass {class_name}(BaseService): ..."
                     )
 
+        except Exception as e:
+            self.logger.error(
+                f"Class discovery failed (3), Error in convention-based discovery: {e}")
+            return False
+        try:
             # 4. Service class is required
             if self._service_class is None:
                 self.logger.error(f"Could not find service class in {self.module_name}")
@@ -295,33 +316,48 @@ class ServiceController:
                 self._config_class = BaseServiceConfig
                 self.logger.debug("No config class found, using BaseServiceConfig")
 
-            self.logger.debug(f"Discovered classes: {self._service_class.__name__}, {self._config_class.__name__}")
+            self.logger.debug(
+                f"Discovered classes: {self._service_class.__name__}, {self._config_class.__name__}")
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to discover classes: {e}")
+            self.logger.error(f"Class discovery failed (5) : {e}")
             return False
 
     async def _setup_configuration(self) -> None:
         """Setup configuration management.
 
         Uses ProcessContext's config_manager which is already initialized.
+        Then applies env var overrides using SERVICE_TYPE_FIELD convention.
         """
+        from ocabox_tcs.management.configuration import EnvConfigSource
+
         try:
             # Use ProcessContext's config manager
             if not self.process.config_manager:
-                raise RuntimeError("ProcessContext.config_manager not initialized. Call ProcessContext.initialize() first.")
+                raise RuntimeError(
+                    "ProcessContext.config_manager not initialized. Call ProcessContext.initialize() first.")
 
             self._config_manager = self.process.config_manager
-
-            # Resolve configuration for this service
-            config_dict = self._config_manager.resolve_config(
-                self.module_name, self.instance_id
-            )
 
             # Extract service type for config
             module_parts = self.module_name.split('.')
             service_type = module_parts[-1]
+
+            # Resolve configuration for this service from file/args sources
+            config_dict = self._config_manager.resolve_config(
+                self.module_name, self.instance_id
+            )
+
+            # Apply env var overrides (SERVICE_TYPE_FIELD convention)
+            # Priority: @config defaults < env vars < YAML < YAML ${VAR}
+            env_source = EnvConfigSource(service_type)
+            if env_source.is_available():
+                env_config = env_source.load()
+                # Env vars have lower priority than YAML, so merge env first, then config_dict
+                config_dict = {**env_config, **config_dict}
+                self.logger.debug(
+                    f"Applied env config for {service_type}: {list(env_config.keys())}")
 
             # Create config instance
             if issubclass(self._config_class, BaseServiceConfig):
@@ -375,7 +411,8 @@ class ServiceController:
         """Get service configuration."""
         return self._config
 
-    def _filter_config_for_class(self, config_dict: dict[str, Any], config_class: type) -> dict[str, Any]:
+    def _filter_config_for_class(self, config_dict: dict[str, Any], config_class: type) -> dict[
+        str, Any]:
         """Filter configuration dictionary to only include fields the config class accepts."""
         import inspect
         from dataclasses import fields, is_dataclass
@@ -395,7 +432,8 @@ class ServiceController:
         # Log what was filtered out for debugging
         filtered_out = set(config_dict.keys()) - set(filtered_config.keys())
         if filtered_out:
-            self.logger.debug(f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}")
+            self.logger.debug(
+                f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}")
 
         return filtered_config
 

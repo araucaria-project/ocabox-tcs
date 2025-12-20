@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from serverish.messenger import Messenger
@@ -210,8 +211,20 @@ class ProcessContext:
         Otherwise uses a short timeout to avoid blocking startup.
         """
         host = nats_config.get("host", "localhost")
-        port = nats_config.get("port", 4222)
+        port_raw = nats_config.get("port", 4222)
         required = nats_config.get("required", True)  # Default: block until NATS available
+
+        # Defensive type conversion for port (in case config expansion didn't handle it)
+        try:
+            port = int(port_raw)
+        except (ValueError, TypeError) as e:
+            self.logger.error(
+                f"Invalid NATS port value '{port_raw}' (type: {type(port_raw).__name__}). "
+                f"Port must be an integer. Check your configuration file and environment variables."
+            )
+            raise ValueError(
+                f"Invalid NATS port configuration: '{port_raw}' cannot be converted to integer"
+            ) from e
 
         # If NATS is required, block until connected (useful for server restart scenarios)
         # Otherwise use short timeout to avoid blocking startup if NATS is unavailable
@@ -246,8 +259,9 @@ class ProcessContext:
 
         Called when no NATS config is provided. This method:
         1. First tries to discover an existing Messenger singleton (for external projects)
-        2. If not found, attempts connection to default localhost:4222
-        3. If both fail, continues without NATS (monitoring disabled)
+        2. If not found, uses NATS_HOST/NATS_PORT env vars (from .env or system)
+        3. Falls back to localhost:4222 if env vars not set
+        4. If connection fails, continues without NATS (monitoring disabled)
 
         Note: Discovered messengers are NOT owned by ProcessContext - they won't
         be closed on shutdown since they're managed elsewhere.
@@ -266,18 +280,24 @@ class ProcessContext:
         except Exception as e:
             self.logger.debug(f"No existing Messenger found: {e}")
 
-        # No existing messenger - try default connection to localhost:4222
-        self.logger.info("Attempting default NATS connection to localhost:4222")
+        # No existing messenger - use env vars or defaults
+        host = os.getenv("NATS_HOST", "localhost")
+        port_str = os.getenv("NATS_PORT", "4222")
         try:
-            await self.initialize_messenger(host="localhost", port=4222, timeout=2.0)
+            port = int(port_str)
+        except ValueError:
+            self.logger.warning(f"Invalid NATS_PORT '{port_str}', using 4222")
+            port = 4222
+
+        self.logger.info(f"Attempting NATS connection to {host}:{port}")
+        try:
+            await self.initialize_messenger(host=host, port=port, timeout=2.0)
             self._owns_messenger = True
-            self.logger.info("Connected to default NATS server (localhost:4222)")
+            self.logger.info(f"Connected to NATS server ({host}:{port})")
         except Exception as e:
-            # Failed to connect - continue without NATS
             self.logger.warning(
-                f"Could not connect to default NATS server: {e}. "
-                "Continuing without NATS (monitoring disabled). "
-                "To enable NATS, provide a config file or start a NATS server on localhost:4222."
+                f"Could not connect to NATS ({host}:{port}): {e}. "
+                "Continuing without NATS. Set NATS_HOST/NATS_PORT or provide config file."
             )
 
     async def shutdown(self):

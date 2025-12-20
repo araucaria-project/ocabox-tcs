@@ -55,7 +55,7 @@ class ProcessRunner(BaseRunner):
                 module_name = f"ocabox_tcs.services.{self.config.service_type}"
 
             args = [
-                "poetry", "run", "python", "-m",
+                "python", "-m",
                 module_name,
             ]
 
@@ -543,6 +543,11 @@ async def amain():
     import sys
     from pathlib import Path
 
+    from ocabox_tcs.management.environment import load_dotenv_if_available
+
+    # Load .env file if it exists (before everything else)
+    env_loaded, env_file_path = load_dotenv_if_available()
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
@@ -550,6 +555,10 @@ async def amain():
     )
 
     logger = logging.getLogger("launch")
+
+    # Log if .env was loaded
+    if env_loaded and env_file_path:
+        logger.info(f"Loaded environment from {env_file_path}")
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Start TCS process launcher")

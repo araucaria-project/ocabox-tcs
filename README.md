@@ -594,52 +594,83 @@ Services are defined in `config/services.yaml` and can be launched via multiple 
 
 ## Configuration
 
-### Configuration System Overview
+### Quick Reference
 
-The universal service framework supports multiple configuration sources with clear precedence:
+| Source | Priority | Use Case |
+|--------|----------|----------|
+| YAML file | highest | Production, multi-service |
+| Env vars `SERVICE_FIELD` | medium | Service config without YAML |
+| `@config` class defaults | lowest | Code defaults |
 
-1. **Command-line arguments** (highest priority)
-2. **NATS configuration** (planned, not implemented yet)
-3. **YAML config file** (specified via CLI)
-4. **Default values** (lowest priority)
+**NATS connection**: `nats:` section in YAML, or `NATS_HOST`/`NATS_PORT` env vars
 
-### Configuration File Structure
-
-**Location**: `config/services.yaml` (created by copying `config/services.sample.yaml`)
+### With YAML (Recommended for Production)
 
 ```yaml
-# Global configuration (applies to all services)
+# config/services.yaml
 nats:
-  host: nats.oca.lan
+  host: "${NATS_HOST}"   # env var expansion supported
   port: 4222
 
-# Service-specific configuration
 services:
-  - type: hello_world         # Must match service filename (hello_world.py)
-    instance_context: main    # Instance identifier
-    interval: 5              # Service-specific config options
-    message: "Hello World!"  # Service-specific config options
-    log_level: INFO          # Optional log level override
-
-  - type: hello_world         # Same service, different instance
-    instance_context: fast   # Different instance identifier
-    interval: 1              # Different configuration values
-    message: "Fast hello!"
-    log_level: DEBUG
+  - type: my_service     # ⚠️ YAML list (dash required!)
+    instance_context: prod
+    api_key: "${API_KEY}"
+    timeout: 30
+  - type: another_service  # Multiple services as list items
+    instance_context: prod
 ```
 
-### Configuration Resolution
+**Important:** `services:` must be a **YAML list** (each item starts with `-`), not a dictionary.
 
-1. **Service Type**: Automatically derived from filename (`hello_world.py` → `hello_world`)
-2. **Instance Matching**: Finds service entry with matching `type` and `instance_context`
-3. **Config Merging**: Global config is merged with service-specific config
-4. **Precedence**: Service-specific values override global values
+```bash
+cp config/services.sample.yaml config/services.yaml
+poetry run tcs_asyncio --config config/services.yaml
+```
 
-### Available Configuration Files
+### Without YAML (External Projects)
 
-- `config/services.sample.yaml` - Template for main configuration (copy to `services.yaml`)
-- `config/services.yaml` - Your customized configuration (gitignored, create from sample)
-- `config/examples.yaml` - Tutorial examples configuration
+```bash
+# .env
+NATS_HOST=nats.oca.lan
+NATS_PORT=4222
+MY_SERVICE_API_KEY=secret123
+MY_SERVICE_TIMEOUT=30
+```
+
+```python
+# my_service.py
+@config
+@dataclass
+class MyServiceConfig(BaseServiceConfig):
+    api_key: str = ""
+    timeout: int = 60
+
+@service
+class MyService(BaseBlockingPermanentService):
+    async def run_service(self):
+        print(self.svc_config.api_key)  # "secret123" from env
+```
+
+```bash
+python my_service.py  # No config file needed
+```
+
+### Env Var Convention
+
+Service config: `{SERVICE_TYPE}_{FIELD}` (uppercase)
+- `my_service.py` + `api_key` → `MY_SERVICE_API_KEY`
+- Auto-converts: `"30"` → `30`, `"true"` → `True`
+
+NATS connection (global):
+- `NATS_HOST` (default: localhost)
+- `NATS_PORT` (default: 4222)
+
+### Files
+
+- `config/services.sample.yaml` - Template (copy to `services.yaml`)
+- `config/services.yaml` - Your config (gitignored)
+- `.env` - Local secrets (gitignored, auto-loaded)
 
 ## Documentation
 

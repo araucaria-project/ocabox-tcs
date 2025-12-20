@@ -89,26 +89,33 @@ def service(cls: type["BaseService"]) -> type["BaseService"]:
             # Look for common package markers (src/, tests/, etc.)
             parts = file_path.parts
 
-            # Find a package root marker (src/, tests/)
-            for i, part in enumerate(parts):
-                if part in ('src', 'tests'):
-                    # Build module path from this marker (inclusive) onward
-                    # For src/, skip it (src/ocabox_tcs/... → ocabox_tcs....)
-                    # For tests/, include it (tests/services/... → tests.services....)
-                    if part == 'src':
-                        module_parts = list(parts[i+1:])
-                    else:  # tests or other markers
-                        module_parts = list(parts[i:])
-                    # Remove .py extension
-                    module_parts[-1] = Path(module_parts[-1]).stem
-                    module_name = '.'.join(module_parts)
-                    break
-
-            # If no marker found and cls.__module__ is not __main__, use it
-            if module_name is None and cls.__module__ != '__main__':
+            # ALWAYS prefer cls.__module__ unless it's __main__
+            if cls.__module__ != '__main__':
                 module_name = cls.__module__
+                _log.debug(f"Using module name from cls.__module__: {module_name}")
+            else:
+                # Only use file path parsing for __main__ case (direct script execution)
+                file_path = Path(inspect.getfile(cls))
+                parts = file_path.parts
+
+                # Look for 'src' or 'tests' markers
+                for i, part in enumerate(parts):
+                    if part in ('src', 'tests'):
+                        module_path = parts[i + 1:]
+                        module_name = '.'.join(
+                            p.replace('.py', '') for p in module_path
+                        )
+                        _log.debug(
+                            f"Using module name from file path (src/tests marker): {module_name}")
+                        break
+
+                if module_name is None:
+                    _log.warning(
+                        f"Could not determine module name for {cls.__name__}. "
+                        f"File: {file_path}, __module__: {cls.__module__}"
+                    )
         except Exception:
-            pass
+                pass
 
     except Exception as e:
         # Fallback to class name conversion
@@ -339,6 +346,10 @@ class BaseService(ABC):
 
         service_type = cls._service_type
 
+        # Load .env file if it exists (before logging setup)
+        from ocabox_tcs.management.environment import load_dotenv_if_available
+        env_loaded, env_file_path = load_dotenv_if_available()
+
         # Setup logging first - basic format for subprocess output
         logging.basicConfig(
             level=logging.INFO,
@@ -348,6 +359,9 @@ class BaseService(ABC):
         # Print startup banner (unless suppressed)
         if not args.no_banner:
             logger = logging.getLogger("launch")
+            # Log if .env was loaded
+            if env_loaded and env_file_path:
+                logger.info(f"Loaded environment from {env_file_path}")
             logger.info("=" * 60)
             logger.info("TCS - Telescope Control Services")
             logger.info(f"Standalone Service: {service_type}:{args.instance_context}")

@@ -5,6 +5,7 @@ from .configuration import (
     ConfigSource,
     ConfigurationManager,
     DefaultConfigSource,
+    EnvConfigSource,
     FileConfigSource,
     NATSConfigSource,
     create_configuration_manager,
@@ -16,7 +17,8 @@ __all__ = [
     "ConfigSource",
     "FileConfigSource",
     "ArgsConfigSource",
-    "NATSConfigSource", 
+    "NATSConfigSource",
     "DefaultConfigSource",
+    "EnvConfigSource",
     "create_configuration_manager"
 ]
