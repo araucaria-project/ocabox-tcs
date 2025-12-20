@@ -15,10 +15,12 @@ class Manager:
 
     def __init__(
             self, service = None, config = None, client_name: str = 'CliClient',
-            software_id: str = 'dome_follower', obs_config_stream: str ="tic.config.observatory") -> None:
+            software_id: str = 'dome_follower',
+            obs_config_stream: str ="tic.config.observatory") -> None:
+
         self.service: 'DomeFollowerService' = service
-        self.config = config
-        self.logger = self.service.logger
+        self.svc_config = config
+        self.svc_logger = self.service.logger
         self.nats_conn: Optional[NatsConn] = None
         self.tic_conn: Optional[TicConn] = None
         self.follow_on: bool = False
@@ -27,6 +29,10 @@ class Manager:
         self.software_id = software_id
         self.obs_config_stream = obs_config_stream
         self.mount_type: Optional[str] = None
+        self.dome_radius: Optional[float] = None
+        self.spx: Optional[float] = None
+        self.spy: Optional[float] = None
+        self.gem: Optional[float] = None
         # self.slew_timeout: Optional[float] = None
         self.follow_tolerance: Optional[float] = None
         # self.slew_tolerance: Optional[float] = None
@@ -50,7 +56,7 @@ class Manager:
         self.svc_logger.info(f'Stopping communication.')
         await self.nats_conn.close()
 
-    async def set_follow_parameters(self):
+    async def set_follow_params(self):
         self.follow_tolerance = self.svc_config.follow_tolerance
         self.settle_time = self.svc_config.settle_time
         self.dome_speed_deg =  self.svc_config.dome_speed
@@ -60,6 +66,41 @@ class Manager:
             f"settle_time: {self.settle_time}s "
             f"dome_speed_deg: {self.dome_speed_deg}deg/s"
         )
+
+    async def set_mount_type_params(self):
+        self.mount_type = None # TODO
+        self.svc_logger.info(
+            f"Mount type: {self.mount_type}"
+        )
+        if self.mount_type == 'eq':
+            self.dome_radius = None  # TODO
+            self.spx = None # TODO
+            self.spy = None # TODO
+            self.gem = None # TODO
+            self.svc_logger.info(
+                f"Dome radius: {self.dome_radius}mm "
+                f"spx: {self.spx}mm "
+                f"spy: {self.spy}mm "
+                f"gem: {self.gem}mm"
+            )
+
+    async def dome_target_az(self, mount_az: float) -> Optional[float]:
+        # self.mount_type = None # TODO
+        # self.dome_radius = None  # TODO
+        # self.spx = None # TODO
+        # self.spy = None # TODO
+        # self.gem = None # TODO
+        return mount_az
+
+    async def calc_dome_speed(self, dome_az: float):
+        if dome_az is not None and self.dome_az_last is not None:
+            diff = abs(dome_az - self.dome_az_last) % 360
+            if self.turn_time != 0:
+                self.dome_current_speed = min(diff, 360 - diff) / self.turn_time
+                if self.dome_current_speed != 0.0:
+                    self.svc_logger.info(
+                        f"Dome speed: {self.dome_current_speed:.1f} deg/s"
+                    )
 
     async def dome_slew_settle(self, angle_to_go: Optional[float]) -> None:
         if self.dome_speed_deg and angle_to_go and self.dome_speed_deg:
@@ -79,14 +120,7 @@ class Manager:
                     dome_az = await self.tic_conn.dome.aget_az()
                     mount_az = await self.tic_conn.mount.aget_az()
                     mount_slewing = await self.tic_conn.mount.aget_slewing()
-                    if dome_az is not None and self.dome_az_last is not None:
-                        diff = abs(dome_az - self.dome_az_last) % 360
-                        if self.turn_time != 0:
-                            self.dome_current_speed = min(diff, 360 - diff) / self.turn_time
-                            if self.dome_current_speed != 0.0:
-                                self.svc_logger.info(
-                                    f"Dome speed: {self.dome_current_speed:.1f} deg/s"
-                                )
+                    await self.calc_dome_speed(dome_az=dome_az)
                     self.dome_az_last = dome_az
                 except OcaboxServerError as e:
                     self.svc_logger.error(f'Tic OcaboxServerError, {e}')
@@ -106,24 +140,33 @@ class Manager:
                     return
 
             if dome_slewing is False and mount_slewing is False:
-                diff = abs(dome_az - mount_az) % 360
+                dome_target_az = await self.dome_target_az(mount_az=mount_az)
+                diff = abs(dome_az - dome_target_az) % 360
                 min_diff = min(diff, 360 - diff)
                 if min_diff > self.follow_tolerance and self.dome_current_speed == 0.0:
-                    self.svc_logger.info(f"Dome is following: {dome_az:.3f} -> {mount_az:.3f}")
+                    self.svc_logger.info(
+                        f"Dome is following: {dome_az:.3f} -> {dome_target_az:.3f}"
+                    )
                     async with self.service.monitor.track_task('slewing'):
                         try:
-                            await self.tic_conn.dome.aput_slewtoazimuth(mount_az)
+                            await self.tic_conn.dome.aput_slewtoazimuth(dome_target_az)
                         except OcaboxServerError as e:
                             self.svc_logger.error(f'Tic OcaboxServerError, {e}')
-                            self.service.monitor.set_status(Status.ERROR, f"Tic slewtoazimuth Server Error {e}")
+                            self.service.monitor.set_status(
+                                Status.ERROR, f"Tic slewtoazimuth Server Error {e}"
+                            )
                             return
                         except CommunicationTimeoutError:
                             self.svc_logger.error(f'Tic CommunicationTimeoutError')
-                            self.service.monitor.set_status(Status.DEGRADED, f"Tic slewtoazimuth Time out")
+                            self.service.monitor.set_status(
+                                Status.DEGRADED, f"Tic slewtoazimuth Time out"
+                            )
                             return
                         except OcaboxAccessDenied:
                             self.svc_logger.error(f'Tic OcaboxAccessDenied')
-                            self.service.monitor.set_status(Status.ERROR, f"Tic slewtoazimuth Access Denied")
+                            self.service.monitor.set_status(
+                                Status.ERROR, f"Tic slewtoazimuth Access Denied"
+                            )
                             return
                         self.service.monitor.cancel_error_status()
                         await self.dome_slew_settle(min_diff)

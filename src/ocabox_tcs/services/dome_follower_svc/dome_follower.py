@@ -32,10 +32,13 @@ class DomeFollowerService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Setup before main loop starts."""
-        self.svc_logger.info(f"Starting dome follower service, with interval: {self.svc_config.interval}")
+        self.svc_logger.info(
+            f"Starting dome follower service, with interval: {self.svc_config.interval}"
+        )
         self.manager = Manager(service=self, config=self.config)
         await self.manager.start_comm()
-        await self.manager.set_follow_parameters()
+        await self.manager.set_follow_params()
+        await self.manager.set_mount_type_params()
         if self.svc_config.turn_on_automatically:
             self.manager.follow_on = True
             self.svc_logger.warning(

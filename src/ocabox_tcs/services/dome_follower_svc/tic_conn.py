@@ -6,11 +6,12 @@ from ocaboxapi import Telescope, Observatory, Dome, Mount, AccessGrantor
 
 class TicConn:
     """
-    Class is responsible for nats server connections
+    Class is responsible for tic server connections
     """
 
     def __init__(self, manager = None):
         self.manager = manager
+        self.svc_logger = self.manager.svc_logger
         self.obs: Optional[Observatory] = None
         self.telescope: Optional[Telescope] = None
         self.dome: Optional[Dome] = None
@@ -31,13 +32,13 @@ class TicConn:
         # self.access_grantor = self.telescope.get_access_grantor()
 
     async def get_obs_cfg(self):
-        self.manager.logger.info(f'Loading client config...')
+        self.svc_logger.info(f'Loading client config...')
         try:
             await self.obs.load_client_cfg(timeout=5.0)
         except TimeoutError:
-            self.manager.logger.error(f"Can not load client config from nats - timeout.")
+            self.svc_logger.error(f"Can not load client config from nats - timeout.")
             raise
-        self.manager.logger.info(f'Client config loaded.')
+        self.svc_logger.info(f'Client config loaded.')
         self.obs.connect()
         self.manager.obs_cfg = ConfigGeneral(
             telescope=self.telescope,
