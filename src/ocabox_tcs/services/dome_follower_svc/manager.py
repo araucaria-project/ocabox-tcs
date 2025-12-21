@@ -66,9 +66,9 @@ class Manager:
         self.dome_speed_deg =  self.svc_config.dome_speed
         self.svc_logger.info(
             f"Follow parameters: "
-            f"follow_tolerance: {self.follow_tolerance}deg "
-            f"settle_time: {self.settle_time}s "
-            f"dome_speed_deg: {self.dome_speed_deg}deg/s"
+            f"follow_tolerance: {self.follow_tolerance} deg, "
+            f"settle_time: {self.settle_time} s, "
+            f"dome_speed_deg: {self.dome_speed_deg} deg/s"
         )
 
     async def set_mount_type_params(self):
@@ -110,13 +110,13 @@ class Manager:
                 'site', 'global', 'geo_location', 'elev',
             ])
             self.svc_logger.info(
-                f"Dome radius: {self.dome_radius}mm, "
-                f"spx: {self.spx}mm, "
-                f"spy: {self.spy}mm, "
-                f"gem: {self.gem}mm, "
-                f"lon: {self.lon}deg, "
-                f"lat: {self.lat}deg, "
-                f"elev: {self.elev}m"
+                f"Dome radius: {self.dome_radius} mm, "
+                f"spx: {self.spx} mm, "
+                f"spy: {self.spy} mm, "
+                f"gem: {self.gem} mm, "
+                f"lon: {self.lon} deg, "
+                f"lat: {self.lat} deg, "
+                f"elev: {self.elev} m"
             )
             if self.dome_radius is None or self.spx is None or self.spy is None or \
                 self.gem is None or self.lon is None or self.lat is None or self.elev is None:
@@ -128,20 +128,16 @@ class Manager:
 
     async def dome_target_az(self, mount_az: float) -> Optional[float]:
         if self.mount_type == 'eq':
-            # self.svc_logger.info(f"Dome az for eq started")
             ra = await self.tic_conn.mount.aget_ra()
             dec = await self.tic_conn.mount.aget_dec()
             side_of_pier = await self.tic_conn.mount.aget_sideofpier()
             if ra is None or dec is None or side_of_pier is None:
                 return None
-            # self.svc_logger.info(f'Dome_eq_azimuth for ra:{ra} dec:{dec}')
             eq_mount_az, info_dict = dome_eq_azimuth(
                 ra=ra, dec=dec, r_dome=self.dome_radius, spx=self.spx, spy=self.spy,
                 gem=self.gem, side_of_pier=side_of_pier, latitude=self.lat,
                 longitude=self.lon, elevation=self.elev
             )
-            # self.svc_logger.info(f'Calculated eq dome az: {eq_mount_az}')
-            # self.svc_logger.info(f'Calculated info dict eq dome az: {info_dict}')
             return eq_mount_az
         else:
             return mount_az
