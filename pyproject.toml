@@ -13,12 +13,13 @@ repository = "https://github.com/araucaria-project/ocabox-tcs"
 [tool.poetry.dependencies]
 python = "^3.12"
 serverish = {version = "^1.4.3", extras = ["messenger"]}  # for NATS
-ocabox = {git = "https://github.com/araucaria-project/ocabox.git", optional = true}
+ocabox = {git = "https://github.com/araucaria-project/ocabox.git"} #, optional = true}
 python-dotenv = "^1.0.0"  # For .env file support
 # CLI dependencies are optional (install with: pip install ocabox-tcs[cli])
 typer = {version = "^0.19.2", optional = true}  # CLI framework
 rich = {version = "^13.0.0", optional = true}  # For colorful terminal output
 textual = {version = "^0.40.0", optional = true}  # For future monitor mode
+pyyaml = "^6.0.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
