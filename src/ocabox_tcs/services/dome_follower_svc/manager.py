@@ -18,7 +18,7 @@ class Manager:
             software_id: str = 'dome_follower', obs_config_stream: str ="tic.config.observatory") -> None:
         self.service: 'DomeFollowerService' = service
         self.config = config
-        self.logger = self.service.logger
+        self.svc_logger = self.service.svc_logger
         self.nats_conn: Optional[NatsConn] = None
         self.tic_conn: Optional[TicConn] = None
         self.follow_on: bool = False
@@ -41,7 +41,7 @@ class Manager:
         self.svc_logger.info(f'Starting communication.')
         self.nats_conn = NatsConn(manager=self)
         self.tic_conn = TicConn(manager=self)
-        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.instance_context)
+        await self.tic_conn.init_peripherals(telescope_id=self.config.variant)
         await self.nats_conn.connect()
         await self.tic_conn.get_obs_cfg()
         await self.nats_conn.start_responders()
@@ -51,9 +51,9 @@ class Manager:
         await self.nats_conn.close()
 
     async def set_follow_parameters(self):
-        self.follow_tolerance = self.svc_config.follow_tolerance
-        self.settle_time = self.svc_config.settle_time
-        self.dome_speed_deg =  self.svc_config.dome_speed
+        self.follow_tolerance = self.config.follow_tolerance
+        self.settle_time = self.config.settle_time
+        self.dome_speed_deg =  self.config.dome_speed
         self.svc_logger.info(
             f"Follow parameters: "
             f"follow_tolerance: {self.follow_tolerance}deg "

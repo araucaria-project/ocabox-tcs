@@ -24,7 +24,7 @@ class ServiceScenario:
 
     Args:
         service_type: Service type name (e.g., "mock_permanent", "mock_crashing")
-        instance_context: Instance context identifier
+        variant: Instance variant identifier (was instance_context)
         config: Service-specific configuration dict
         restart: Restart policy ("no", "always", "on-failure", "on-abnormal")
         restart_sec: Delay before restart (seconds)
@@ -35,7 +35,7 @@ class ServiceScenario:
         timeout: Max time to wait for expected state (seconds)
     """
     service_type: str
-    instance_context: str
+    variant: str  # Was instance_context
     config: dict[str, Any] | None = None
     restart: str = "no"
     restart_sec: float = 1.0
@@ -44,6 +44,11 @@ class ServiceScenario:
     expected_status: str | None = None
     expected_lifecycle: list[str] | None = None
     timeout: float = 10.0
+
+    # Backward compatibility property
+    @property
+    def instance_context(self) -> str:
+        return self.variant
 
 
 class LauncherHarness(ABC):

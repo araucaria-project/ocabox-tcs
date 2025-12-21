@@ -21,8 +21,8 @@ from ocabox_tcs.monitoring import Status
 logger = logging.getLogger(__name__)
 
 
+@config('mock_cyclic')
 @dataclass
-@config
 class MockCyclicConfig:
     """Configuration for mock cyclic service."""
     cycle_interval: float = 2.0  # Interval between cycles (seconds)
@@ -31,7 +31,7 @@ class MockCyclicConfig:
     fail_on_cycle: int = 0  # Cycle number to fail on (0 = never)
 
 
-@service
+@service('mock_cyclic')
 class MockCyclicService(BasePermanentService):
     """Mock cyclic/periodic service for testing.
 
@@ -72,8 +72,10 @@ class MockCyclicService(BasePermanentService):
         """Main cycle loop - runs tasks periodically."""
         try:
             while self.is_running:
-                # Wait for next cycle
-                await asyncio.sleep(self.svc_config.cycle_interval)
+                # Wait for next cycle - exit-aware sleep
+                if not await self.sleep(self.svc_config.cycle_interval):
+                    self.svc_logger.info("Stop signal received during sleep")
+                    break
 
                 # Execute cycle
                 try:
@@ -112,8 +114,8 @@ class MockCyclicService(BasePermanentService):
             self.svc_logger.error(f"Simulated failure on cycle {self.cycle_count}")
             raise RuntimeError(f"Simulated failure on cycle {self.cycle_count}")
 
-        # Simulate work
-        await asyncio.sleep(self.svc_config.execution_duration)
+        # Simulate work - exit-aware sleep
+        await self.sleep(self.svc_config.execution_duration)
 
         cycle_duration = time.time() - cycle_start
         self.last_cycle_time = cycle_start

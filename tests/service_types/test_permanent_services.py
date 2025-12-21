@@ -30,7 +30,7 @@ async def test_permanent_service_stays_running(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="long_run",
+        variant="long_run",
         nats_host=nats_server.host,
         nats_port=nats_server.port,
         config={"work_interval": 0.5}
@@ -55,7 +55,7 @@ async def test_permanent_service_stays_running(nats_server, nats_client):
             await assert_no_crashes(collector, duration=1.0)
 
     # Verify lifecycle
-    service_id = "tests.services.mock_permanent:long_run"
+    service_id = "mock_permanent.long_run"
     await assert_service_started(collector, service_id)
     await assert_service_stopped(collector, service_id, clean_shutdown=True)
 
@@ -71,7 +71,7 @@ async def test_permanent_service_work_count_limit(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="work_limit",
+        variant="work_limit",
         nats_host=nats_server.host,
         nats_port=nats_server.port,
         config={
@@ -100,7 +100,7 @@ async def test_permanent_service_work_count_limit(nats_server, nats_client):
             await wait_for_event(collector, event_type="stop", timeout=10.0)
 
     # Verify clean shutdown
-    service_id = "tests.services.mock_permanent:work_limit"
+    service_id = "mock_permanent.work_limit"
     await assert_service_stopped(collector, service_id, clean_shutdown=True)
 
 
@@ -115,7 +115,7 @@ async def test_permanent_service_with_delays(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="with_delays",
+        variant="with_delays",
         nats_host=nats_server.host,
         nats_port=nats_server.port,
         config={
@@ -143,7 +143,7 @@ async def test_permanent_service_with_delays(nats_server, nats_client):
             await asyncio.sleep(1.0)
 
     # Verify lifecycle completed
-    service_id = "tests.services.mock_permanent:with_delays"
+    service_id = "mock_permanent.with_delays"
     await assert_service_started(collector, service_id)
     await assert_service_stopped(collector, service_id, clean_shutdown=True)
 
@@ -160,17 +160,17 @@ async def test_multiple_permanent_services(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="multi_1",
+            variant="multi_1",
             config={"work_interval": 0.3}
         ),
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="multi_2",
+            variant="multi_2",
             config={"work_interval": 0.5}
         ),
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="multi_3",
+            variant="multi_3",
             config={"work_interval": 0.4}
         )
     ]
@@ -196,7 +196,7 @@ async def test_multiple_permanent_services(nats_server, nats_client):
             ) as harness:
                 # Wait for all services to start
                 for scenario in scenarios:
-                    service_id = f"tests.services.mock_permanent:{scenario.instance_context}"
+                    service_id = f"mock_permanent.{scenario.instance_context}"
                     await wait_for_event(
                         collector,
                         event_type="start",
@@ -211,7 +211,7 @@ async def test_multiple_permanent_services(nats_server, nats_client):
 
         # Verify all services
         for scenario in scenarios:
-            service_id = f"tests.services.mock_permanent:{scenario.instance_context}"
+            service_id = f"mock_permanent.{scenario.instance_context}"
             await assert_service_started(collector, service_id)
             await assert_service_stopped(collector, service_id, clean_shutdown=True)
 
@@ -230,7 +230,7 @@ async def test_permanent_service_healthcheck_status(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="custom_health",
+        variant="custom_health",
         nats_host=nats_server.host,
         nats_port=nats_server.port,
         config={
@@ -261,7 +261,7 @@ async def test_permanent_service_healthcheck_status(nats_server, nats_client):
         await asyncio.sleep(0.5)
 
     # Verify service started
-    service_id = "tests.services.mock_permanent:custom_health"
+    service_id = "mock_permanent.custom_health"
     await assert_service_started(collector, service_id)
 
 

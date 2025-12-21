@@ -2,34 +2,73 @@
 
 from __future__ import annotations
 
-import importlib
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
 
-from ocabox_tcs.management.configuration import ConfigurationManager
+from ocabox_tcs.management.configuration import ConfigurationManager, EnvConfigSource
 from ocabox_tcs.management.process_context import ProcessContext
+from ocabox_tcs.management.service_registry import (
+    ServiceRegistry,
+    build_service_id,
+    parse_service_id,
+    validate_variant,
+)
 
-from ocabox_tcs.base_service import BaseService, BaseServiceConfig
+from ocabox_tcs.base_service import BaseService, BaseServiceConfig, get_config_class
 from ocabox_tcs.monitoring import create_monitor, Status
 from ocabox_tcs.monitoring.monitored_object import MonitoredObject
 
 
 class ServiceController:
-    """Controls single service in same process as service."""
+    """Controls single service in same process as service.
 
-    def __init__(self, module_name: str, instance_id: str,
-                 config_sources: dict[str, Any] | None = None,
-                 runner_id: str | None = None):
-        self.module_name = module_name
-        self.instance_id = instance_id
+    The ServiceController manages a single service instance, handling:
+    - Service class discovery via ServiceRegistry
+    - Configuration loading and merging
+    - Service lifecycle (start, stop, restart)
+    - Monitoring (status, heartbeats)
+
+    Attributes:
+        service_type: Service type identifier (e.g., 'hello_world', 'halina.server')
+        variant: Instance variant identifier (e.g., 'dev', 'prod')
+        service_id: Full identifier in format '{type}.{variant}'
+    """
+
+    def __init__(
+        self,
+        service_type: str,
+        variant: str,
+        registry: ServiceRegistry | None = None,
+        runner_id: str | None = None,
+        parent_name: str | None = None,
+    ):
+        """Initialize the ServiceController.
+
+        Args:
+            service_type: Service type identifier (from @service decorator)
+            variant: Instance variant (cannot contain dots)
+            registry: Optional ServiceRegistry for class discovery
+            runner_id: Optional runner ID for tracking (from launcher)
+            parent_name: Optional parent entity name for hierarchical display
+        """
+        # Validate variant has no dots
+        validate_variant(variant)
+
+        self.service_type = service_type
+        self.variant = variant
         self.runner_id = runner_id
-        self.service_id = f"{module_name}:{instance_id}"
+        self.parent_name = parent_name
+        self.service_id = build_service_id(service_type, variant)
 
-        self.logger = logging.getLogger(f"ctl|{self._short_service_id()}")
+        self.logger = logging.getLogger(f"ctl|{self.service_id}")
         self.process = ProcessContext()
+
+        # Service registry for class discovery
+        self._registry = registry
 
         # Initialize monitoring
         self.monitor: MonitoredObject | None = None
@@ -44,11 +83,40 @@ class ServiceController:
         # State
         self._initialized = False
         self._running = False
+        self._stop_event = asyncio.Event()
 
         # Register with process
         self.process.register_controller(self)
 
         self.logger.debug(f"Created controller for {self.service_id}")
+
+    @classmethod
+    def from_service_id(
+        cls,
+        service_id: str,
+        registry: ServiceRegistry | None = None,
+        runner_id: str | None = None,
+        parent_name: str | None = None,
+    ) -> "ServiceController":
+        """Create a ServiceController from a service_id string.
+
+        Args:
+            service_id: Full identifier in format '{type}.{variant}'
+            registry: Optional ServiceRegistry for class discovery
+            runner_id: Optional runner ID for tracking
+            parent_name: Optional parent entity name
+
+        Returns:
+            New ServiceController instance
+        """
+        service_type, variant = parse_service_id(service_id)
+        return cls(
+            service_type=service_type,
+            variant=variant,
+            registry=registry,
+            runner_id=runner_id,
+            parent_name=parent_name,
+        )
 
     async def initialize(self) -> bool:
         """Initialize the controller and discover service classes.
@@ -59,6 +127,11 @@ class ServiceController:
             return True
 
         try:
+            # Create registry from config if not provided
+            if self._registry is None and self.process.config_manager:
+                registry_config = self.process.config_manager.get_registry()
+                self._registry = ServiceRegistry({"registry": registry_config})
+
             # Discover service and config classes
             if not await self._discover_classes():
                 return False
@@ -89,8 +162,6 @@ class ServiceController:
         if not self._initialized:
             self.logger.error("Controller not initialized, cannot start service")
             return False
-            # if not await self.initialize():
-            #     return False
 
         if self._running:
             self.logger.warning("Service already running")
@@ -124,6 +195,9 @@ class ServiceController:
             return True
 
         try:
+            # Signal that we're stopping (wake any sleeping tasks)
+            self._stop_event.set()
+
             self.monitor.set_status(Status.SHUTDOWN, "Stopping service")
 
             if self._service:
@@ -170,27 +244,6 @@ class ServiceController:
         Creates monitor for status updates and heartbeats.
         Registry/lifecycle events are handled by runners (if launcher-managed).
         """
-        # Determine parent name from runner_id (for hierarchical display)
-        # runner_id format: "{launcher-id}.{service-type}" → parent: "launcher.{launcher-id}"
-        # Note: Both launcher-id and service-type may contain dots
-        # (e.g., "asyncio-launcher.majkmacc0h2L4D6Qc.examples.01_minimal")
-        # So we need to extract service-type from module_name and strip it from runner_id
-        parent_name = None
-        if self.runner_id and '.' in self.runner_id:
-            # Extract service type from module_name (same logic as _discover_classes)
-            module_parts = self.module_name.split('.')
-            if 'services' in module_parts:
-                services_idx = module_parts.index('services')
-                service_type_with_path = '.'.join(module_parts[services_idx + 1:])
-            else:
-                service_type_with_path = module_parts[-1]
-
-            # Strip service type from end of runner_id to get launcher_id
-            if self.runner_id.endswith(f".{service_type_with_path}"):
-                launcher_id = self.runner_id[:-len(f".{service_type_with_path}")]
-                parent_name = f"launcher.{launcher_id}"
-                self.logger.debug(f"Setting parent to {parent_name} for hierarchical display")
-
         # Get subject_prefix from NATS config
         subject_prefix = 'svc'  # Default
         if self.process.config_manager:
@@ -205,7 +258,7 @@ class ServiceController:
             name=self.service_id,
             heartbeat_interval=10.0,
             healthcheck_interval=30.0,
-            parent_name=parent_name,  # For hierarchical grouping in displays
+            parent_name=self.parent_name,  # For hierarchical grouping in displays
             subject_prefix=subject_prefix  # Use configured prefix
         )
 
@@ -218,110 +271,51 @@ class ServiceController:
         self.logger.debug("Monitoring initialized")
 
     async def _discover_classes(self) -> bool:
-        """Discover service and config classes."""
+        """Discover service and config classes.
+
+        Discovery order:
+        1. Check decorator registry first (for already-imported classes)
+        2. Use ServiceRegistry to import and find class (for launcher-managed services)
+        """
         try:
-            # Import the module to trigger decorator registration
-            module = importlib.import_module(self.module_name)
+            from ocabox_tcs.base_service import get_service_class
 
-            # Extract service type from module name
-            # For ocabox_tcs.services.examples.01_minimal → try both:
-            #   1. examples.01_minimal (subdirectory path)
-            #   2. 01_minimal (just filename)
-            module_parts = self.module_name.split('.')
-            service_type_full = module_parts[-1]  # Just filename
-
-            # Try to get relative path from 'services'
-            if 'services' in module_parts:
-                services_idx = module_parts.index('services')
-                service_type_with_path = '.'.join(module_parts[services_idx + 1:])
-            else:
-                service_type_with_path = service_type_full
-        except Exception as e:
-            self.logger.error(
-                f"Class discovery failed (0), Error in import module {self.module_name}: {e}")
-            return False
-        try:
-            # 1. Try decorator registry first (try path-aware type first, then fallback)
-            from ..base_service import get_config_class, get_service_class
-
-            self._service_class = get_service_class(service_type_with_path)
-            if self._service_class is None:
-                self._service_class = get_service_class(service_type_full)
+            # First, check if class is already registered via decorator
+            # This handles standalone services that were imported before controller creation
+            self._service_class = get_service_class(self.service_type)
 
             if self._service_class is not None:
                 self.logger.debug(
-                    f"Service class discovered via @service decorator: {self._service_class.__name__}")
-
-            self._config_class = get_config_class(service_type_with_path)
-            if self._config_class is None:
-                self._config_class = get_config_class(service_type_full)
-
-            if self._config_class is not None:
+                    f"Service class found in decorator registry: {self._service_class.__name__}"
+                )
+            elif self._registry:
+                # Class not in decorator registry, try to import via ServiceRegistry
+                self._service_class = self._registry.get_service_class(self.service_type)
                 self.logger.debug(
-                    f"Config class discovered via @config decorator: {self._config_class.__name__}")
-        except Exception as e:
-            self.logger.error(
-                f"Class discovery failed (1), Error in registr lookup {service_type_with_path}: {e}")
-            return False
-        try:
-
-            # 2. Fall back to module variable approach (deprecated)
-            if self._service_class is None and hasattr(module, 'service_class'):
-                self._service_class = module.service_class
-                self.logger.warning(
-                    f"Service class discovered via deprecated 'service_class' module variable in {self.module_name}. "
-                    f"Please migrate to decorator-based discovery by adding '@service' decorator to your service class. "
-                    f"Example: @service\\nclass {self._service_class.__name__}(BaseService): ..."
+                    f"Service class discovered via ServiceRegistry: {self._service_class.__name__}"
                 )
-
-            if self._config_class is None and hasattr(module, 'config_class'):
-                self._config_class = module.config_class
-                self.logger.warning(
-                    f"Config class discovered via deprecated 'config_class' module variable in {self.module_name}. "
-                    f"Please migrate to decorator-based discovery by adding '@config' decorator to your config class. "
-                    f"Example: @config\\n@dataclass\\nclass {self._config_class.__name__}(BaseServiceConfig): ..."
+            else:
+                self.logger.error(
+                    f"Service type '{self.service_type}' not found. "
+                    f"Ensure the service module is imported and has @service('{self.service_type}') decorator."
                 )
-        except Exception as e:
-            self.logger.error(
-                f"Class discovery failed (2), Error in module variable lookup: {e}")
-            return False
-        try:
-
-            # 3. Try convention-based discovery for service (undocumented heuristic)
-            if self._service_class is None:
-                class_name = ''.join(
-                    word.capitalize() for word in service_type_full.split('_')) + 'Service'
-                if hasattr(module, class_name):
-                    self._service_class = getattr(module, class_name)
-                    self.logger.warning(
-                        f"Service class discovered via naming convention heuristic in {self.module_name}. "
-                        f"This is an undocumented fallback and may fail in future versions. "
-                        f"Please add '@service' decorator to your service class for reliable discovery. "
-                        f"Example: @service\\nclass {class_name}(BaseService): ..."
-                    )
-
-        except Exception as e:
-            self.logger.error(
-                f"Class discovery failed (3), Error in convention-based discovery: {e}")
-            return False
-        try:
-            # 4. Service class is required
-            if self._service_class is None:
-                self.logger.error(f"Could not find service class in {self.module_name}")
                 return False
 
-            # 5. Config class is optional - use base class if not found
-            if self._config_class is None:
-                from ..base_service import BaseServiceConfig
+            # Get config class from decorator registry
+            self._config_class = get_config_class(self.service_type)
+            if self._config_class is not None:
+                self.logger.debug(
+                    f"Config class discovered: {self._config_class.__name__}"
+                )
+            else:
+                # Use base config class if no custom config
                 self._config_class = BaseServiceConfig
                 self.logger.debug("No config class found, using BaseServiceConfig")
 
-            self.logger.debug(
-                f"Discovered classes: {self._service_class.__name__}, {self._config_class.__name__}")
             return True
 
         except Exception as e:
-            self.logger.error(f"Class discovery failed (5) : {e}")
+            self.logger.error(f"Class discovery failed: {e}")
             return False
 
     async def _setup_configuration(self) -> None:
@@ -330,42 +324,40 @@ class ServiceController:
         Uses ProcessContext's config_manager which is already initialized.
         Then applies env var overrides using SERVICE_TYPE_FIELD convention.
         """
-        from ocabox_tcs.management.configuration import EnvConfigSource
-
         try:
             # Use ProcessContext's config manager
             if not self.process.config_manager:
                 raise RuntimeError(
-                    "ProcessContext.config_manager not initialized. Call ProcessContext.initialize() first.")
+                    "ProcessContext.config_manager not initialized. "
+                    "Call ProcessContext.initialize() first."
+                )
 
             self._config_manager = self.process.config_manager
 
-            # Extract service type for config
-            module_parts = self.module_name.split('.')
-            service_type = module_parts[-1]
-
             # Resolve configuration for this service from file/args sources
             config_dict = self._config_manager.resolve_config(
-                self.module_name, self.instance_id
+                self.service_type, self.variant
             )
 
             # Apply env var overrides (SERVICE_TYPE_FIELD convention)
-            # Priority: @config defaults < env vars < YAML < YAML ${VAR}
-            env_source = EnvConfigSource(service_type)
+            # Note: For namespaced types like 'halina.server', use underscore: HALINA_SERVER_FIELD
+            env_prefix = self.service_type.replace(".", "_")
+            env_source = EnvConfigSource(env_prefix)
             if env_source.is_available():
                 env_config = env_source.load()
                 # Env vars have lower priority than YAML, so merge env first, then config_dict
                 config_dict = {**env_config, **config_dict}
                 self.logger.debug(
-                    f"Applied env config for {service_type}: {list(env_config.keys())}")
+                    f"Applied env config for {env_prefix}: {list(env_config.keys())}"
+                )
 
             # Create config instance
             if issubclass(self._config_class, BaseServiceConfig):
-                # Ensure type and instance_context are set
+                # Ensure type and variant are set
                 if 'type' not in config_dict:
-                    config_dict['type'] = service_type
-                if 'instance_context' not in config_dict:
-                    config_dict['instance_context'] = self.instance_id
+                    config_dict['type'] = self.service_type
+                if 'variant' not in config_dict:
+                    config_dict['variant'] = self.variant
 
                 # Filter config_dict to only include fields the config class accepts
                 filtered_config = self._filter_config_for_class(config_dict, self._config_class)
@@ -392,7 +384,7 @@ class ServiceController:
             # Set up service properties
             self._service.controller = self
             self._service.svc_config = self._config
-            self._service.svc_logger = logging.getLogger(f"svc|{self._short_service_id()}")
+            self._service.svc_logger = logging.getLogger(f"svc|{self.service_id}")
 
             self.logger.debug("Service instance created")
             return True
@@ -406,13 +398,58 @@ class ServiceController:
         """Check if service is running."""
         return self._running
 
+    def is_stopping(self) -> bool:
+        """Check if service is being stopped.
+
+        Returns:
+            True if stop has been signaled, False otherwise
+        """
+        return self._stop_event.is_set()
+
+    async def sleep(self, seconds: float | None = None) -> bool:
+        """Exit-aware sleep that wakes immediately when service stops.
+
+        This is the recommended way to sleep in services, as it allows
+        immediate wakeup when the service is being stopped.
+
+        Args:
+            seconds: Time to sleep in seconds, or None to wait indefinitely for stop
+
+        Returns:
+            True if sleep completed normally, False if interrupted by stop signal
+
+        Example:
+            # Sleep for 5 seconds (or until stop)
+            if await self.sleep(5.0):
+                # Sleep completed
+                pass
+            else:
+                # Service stopping
+                return
+
+            # Wait indefinitely for stop signal
+            await self.sleep(None)  # Blocks until service stops
+        """
+        try:
+            if seconds is None:
+                # Wait indefinitely for stop signal
+                await self._stop_event.wait()
+                return False  # Stop was signaled
+            else:
+                # Wait for stop signal with timeout
+                await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+                return False  # Stop was signaled
+        except asyncio.TimeoutError:
+            return True  # Sleep completed normally
+
     @property
     def config(self) -> BaseServiceConfig | None:
         """Get service configuration."""
         return self._config
 
-    def _filter_config_for_class(self, config_dict: dict[str, Any], config_class: type) -> dict[
-        str, Any]:
+    def _filter_config_for_class(
+        self, config_dict: dict[str, Any], config_class: type
+    ) -> dict[str, Any]:
         """Filter configuration dictionary to only include fields the config class accepts."""
         import inspect
         from dataclasses import fields, is_dataclass
@@ -433,14 +470,7 @@ class ServiceController:
         filtered_out = set(config_dict.keys()) - set(filtered_config.keys())
         if filtered_out:
             self.logger.debug(
-                f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}")
+                f"Filtered out config fields not supported by {config_class.__name__}: {filtered_out}"
+            )
 
         return filtered_config
-
-    def _short_service_id(self) -> str:
-        """Get short service ID for compact logging.
-
-        Converts: ocabox_tcs.services.hello_world:dev → hello_world:dev
-        """
-        service_type = self.module_name.split('.')[-1]
-        return f"{service_type}:{self.instance_id}"

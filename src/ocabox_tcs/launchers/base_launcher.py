@@ -12,16 +12,32 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ocabox_tcs.monitoring.monitored_object import MonitoredObject
+    from ocabox_tcs.management.process_context import ProcessContext
+    from ocabox_tcs.management.service_registry import ServiceRegistry
 
 
 @dataclass
 class ServiceRunnerConfig:
-    """Configuration for a service runner."""
+    """Configuration for a service runner.
+
+    Attributes:
+        service_type: Service type identifier (from @service decorator)
+        variant: Instance variant identifier (cannot contain dots)
+        config_file: Optional path to config file
+        runner_id: Optional runner ID for tracking
+        parent_name: Optional parent entity name for hierarchical display
+
+        Restart policy fields (systemd-inspired):
+        restart: Policy - 'no', 'always', 'on-failure', 'on-abnormal'
+        restart_sec: Delay before restart (seconds)
+        restart_max: Max restarts in window (0 = unlimited)
+        restart_window: Time window for restart counting (seconds)
+    """
     service_type: str
-    instance_context: str | None = None
+    variant: str = "dev"  # Default variant
     config_file: str | None = None
     runner_id: str | None = None
-    module: str | None = None  # Optional: full module path for external packages
+    parent_name: str | None = None  # For hierarchical display
 
     # Restart policy fields
     restart: str = "no"  # Options: no, always, on-failure, on-abnormal
@@ -31,10 +47,8 @@ class ServiceRunnerConfig:
 
     @property
     def service_id(self) -> str:
-        """Get service identifier."""
-        if self.instance_context:
-            return f"{self.service_type}-{self.instance_context}"
-        return self.service_type
+        """Get full service identifier in format '{type}.{variant}'."""
+        return f"{self.service_type}.{self.variant}"
 
 
 class BaseRunner(ABC):
@@ -107,18 +121,12 @@ class BaseRunner(ABC):
         pass
 
     def _get_full_service_id(self) -> str:
-        """Get full service ID in format 'module:instance'.
+        """Get full service ID in format '{type}.{variant}'.
 
         Returns:
-            Service ID string (e.g., 'ocabox_tcs.services.guider:jk15')
+            Service ID string (e.g., 'hello_world.dev', 'halina.server.prod')
         """
-        if self.config.module:
-            module_name = self.config.module
-        else:
-            module_name = f"ocabox_tcs.services.{self.config.service_type}"
-
-        instance_id = self.config.instance_context or self.config.service_type
-        return f"{module_name}:{instance_id}"
+        return self.config.service_id
 
     async def _publish_registry_event(self, event: str, **extra_data):
         """Universal method to publish registry events to NATS.
@@ -222,6 +230,101 @@ class BaseRunner(ABC):
         ]
         self._restart_count = len(self._restart_history)
 
+    async def _publish_start_event(self, pid: int | None = None):
+        """Publish START event to NATS registry.
+
+        Called when service starts successfully. Runner owns lifecycle events.
+
+        Args:
+            pid: Process ID (for subprocess launchers, None for asyncio)
+        """
+        import socket
+        import os
+
+        data = {
+            "status": "startup",
+            "hostname": socket.gethostname()
+        }
+
+        if pid is not None:
+            data["pid"] = pid
+        else:
+            data["pid"] = os.getpid()
+
+        await self._publish_registry_event("start", **data)
+
+    async def _publish_stop_event(self, reason: str = "completed", exit_code: int = 0):
+        """Publish STOP event to NATS registry.
+
+        Called when service stops cleanly or is force-killed by launcher.
+
+        Args:
+            reason: Reason for stop (e.g., "completed", "force_killed")
+            exit_code: Process exit code
+        """
+        await self._publish_registry_event(
+            "stop",
+            status="shutdown",
+            reason=reason,
+            exit_code=exit_code
+        )
+
+    async def _publish_crash_event(self, exit_code: int):
+        """Publish CRASH event to NATS registry.
+
+        Args:
+            exit_code: Process exit code
+        """
+        will_restart = self._should_restart(exit_code)
+        await self._publish_registry_event(
+            "crashed",
+            status="error" if will_restart else "failed",
+            exit_code=exit_code,
+            restart_policy=self.config.restart,
+            will_restart=will_restart
+        )
+
+    async def _publish_restarting_event(self, attempt: int):
+        """Publish RESTARTING event to NATS registry.
+
+        Args:
+            attempt: Restart attempt number (1-based)
+        """
+        await self._publish_registry_event(
+            "restarting",
+            status="startup",
+            restart_attempt=attempt,
+            max_restarts=self.config.restart_max if self.config.restart_max > 0 else None
+        )
+
+    async def _publish_failed_event(self, reason: str):
+        """Publish FAILED event to NATS registry.
+
+        Args:
+            reason: Reason for failure (e.g., 'restart_failed', 'restart_limit_reached')
+        """
+        await self._publish_registry_event(
+            "failed",
+            status="failed",
+            reason=reason,
+            restart_count=len(self._restart_history)
+        )
+
+    async def publish_declared(self):
+        """Publish DECLARED event to NATS registry.
+
+        Called by launcher after runner creation. Only publishes if runner_id
+        is present (skips for ad-hoc standalone/test runs).
+
+        This marks the service as part of the launcher's formal configuration,
+        distinguishing it from ephemeral services.
+        """
+        await self._publish_registry_event(
+            "declared",
+            restart_policy=self.config.restart,
+            # Note: parent and runner_id are added automatically by _publish_registry_event
+        )
+
 
 class BaseLauncher(ABC):
     """Base class for service launchers.
@@ -278,36 +381,361 @@ class BaseLauncher(ABC):
         self.logger = logging.getLogger(f"lch|{launcher_id}")
         self.runners: dict[str, BaseRunner] = {}
         self.monitor: "MonitoredObject | None" = None
+        self._shutdown_event = None  # Will be initialized as asyncio.Event() when needed
+        self.process_ctx: Any | None = None
+        self.cli_args: Any | None = None  # Parsed CLI arguments namespace
 
-    @abstractmethod
-    async def initialize(self, config: Any) -> bool:
-        """Initialize launcher with configuration.
+    @staticmethod
+    def prepare_cli_argument_parser() -> "argparse.ArgumentParser":
+        """Create and return ArgumentParser with common launcher options.
+
+        This static method creates a parser with arguments common to all launchers.
+        Subclasses should call this, then customize the parser before parsing.
+
+        Returns:
+            ArgumentParser with common options configured
+        """
+        import argparse
+
+        parser = argparse.ArgumentParser(add_help=False)  # Don't add help yet (subclass will)
+
+        # Common arguments for all launchers
+        parser.add_argument(
+            "--config",
+            default=None,
+            help="Path to services config file (default: config/services.yaml)"
+        )
+        parser.add_argument(
+            "--no-banner",
+            action="store_true",
+            help="Suppress startup banner"
+        )
+        parser.add_argument(
+            "--no-color",
+            action="store_true",
+            help="Disable colored logging (use plain text)"
+        )
+
+        return parser
+
+    @staticmethod
+    def setup_logging(use_color: bool):
+        """Setup logging based on color preference.
 
         Args:
-            config: Launcher configuration (format depends on launcher type)
+            use_color: If True, use Rich colored logging; if False, use plain text
+        """
+        import logging
+
+        if not use_color:
+            # Plain text logging
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+        else:
+            # Try Rich colored logging, fall back to plain if not available
+            try:
+                from rich.logging import RichHandler
+                logging.basicConfig(
+                    level=logging.INFO,
+                    format='%(message)s',
+                    handlers=[RichHandler(
+                        show_time=True,
+                        show_level=True,
+                        show_path=False,
+                        rich_tracebacks=True,
+                        tracebacks_show_locals=False,
+                        log_time_format='%Y-%m-%d %H:%M:%S'
+                    )]
+                )
+            except ImportError:
+                # Rich not available, fall back to plain text
+                logging.basicConfig(
+                    level=logging.INFO,
+                    format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S'
+                )
+
+    @staticmethod
+    def determine_config_file(config_arg: str | None) -> str:
+        """Determine and validate config file from argument.
+
+        Args:
+            config_arg: Config file path from CLI argument (or None for default)
+
+        Returns:
+            Path to config file
+
+        Raises:
+            SystemExit: If explicitly provided config file doesn't exist
+        """
+        import sys
+        import logging
+        from pathlib import Path
+
+        logger = logging.getLogger("launch")
+
+        if config_arg is not None:
+            # User explicitly provided --config, file MUST exist
+            config_file = config_arg
+            if not Path(config_file).exists():
+                logger.error(f"Configuration file not found: {config_file}")
+                logger.error("Explicitly provided config file must exist. Exiting.")
+                sys.exit(1)
+            logger.info(f"Using config file: {config_file}")
+        else:
+            # Use default, missing file is OK (will use defaults)
+            config_file = "config/services.yaml"
+            if not Path(config_file).exists():
+                logger.info(f"Default config file not found: {config_file}")
+                logger.info("Continuing with empty configuration")
+            else:
+                logger.info(f"Using default config file: {config_file}")
+
+        return config_file
+
+    @classmethod
+    async def launch(cls, launcher_factory, parser_customizer=None):
+        """Common launcher orchestration for all entry points.
+
+        This method handles all common startup logic: environment loading, argument
+        parsing, logging setup, config validation, and launcher lifecycle orchestration.
+
+        Args:
+            launcher_factory: Callable(launcher_id, args) -> BaseLauncher
+                Factory function that creates the launcher instance
+            parser_customizer: Optional Callable(parser) -> parser
+                Function to customize the parser (add launcher-specific args, set description, etc.)
+        """
+        import logging
+        import os
+        import socket
+        from ocabox_tcs.management.environment import load_dotenv_if_available
+        from ocabox_tcs.management.process_context import ProcessContext
+
+        # Load .env file if it exists
+        env_loaded, env_file_path = load_dotenv_if_available()
+
+        # Prepare parser with common arguments
+        parser = cls.prepare_cli_argument_parser()
+
+        # Allow customization (description, launcher-specific args, epilog, etc.)
+        if parser_customizer:
+            parser = parser_customizer(parser)
+
+        # Parse arguments
+        args = parser.parse_args()
+
+        # Setup logging based on --no-color flag
+        cls.setup_logging(use_color=not args.no_color)
+
+        logger = logging.getLogger("launch")
+
+        # Log if .env was loaded
+        if env_loaded and env_file_path:
+            logger.info(f"Loaded environment from {env_file_path}")
+
+        # Determine and validate config file from --config argument
+        config_file = cls.determine_config_file(args.config)
+
+        # Initialize ProcessContext
+        process_ctx = await ProcessContext.initialize(config_file=config_file)
+
+        # Generate launcher ID (will be overridden by factory with correct launcher type)
+        launcher_id = cls.gen_launcher_name(
+            "launcher",  # Generic, will be set correctly by factory
+            config_file,
+            os.getcwd(),
+            socket.gethostname()
+        )
+
+        # Create launcher via factory
+        launcher = launcher_factory(launcher_id, args)
+
+        # Store CLI arguments in launcher
+        launcher.cli_args = args
+
+        # Print startup banner (unless suppressed by --no-banner)
+        if not args.no_banner:
+            logger.info("=" * 60)
+            logger.info("TCS - Telescope Control Services")
+            logger.info(f"Launcher: {launcher._get_launcher_type_display()}")
+            logger.info("=" * 60)
+
+        # Initialize, start, run
+        if not await launcher.initialize(process_ctx):
+            logger.error("Failed to initialize launcher")
+            await process_ctx.shutdown()
+            return
+
+        if not await launcher.start_all():
+            logger.error("Failed to start services")
+            await launcher.stop_all()
+            await process_ctx.shutdown()
+            return
+
+        await launcher.run()
+
+    def _get_launcher_type_display(self) -> str:
+        """Get display name for banner.
+
+        Override in subclasses to customize banner text.
+
+        Returns:
+            Human-readable launcher type description
+        """
+        return self.__class__.__name__
+
+    async def initialize(self, process_ctx: "ProcessContext") -> bool:
+        """Template method for launcher initialization.
+
+        Orchestrates common initialization flow, delegates runner creation to subclass.
+
+        Args:
+            process_ctx: Already-initialized ProcessContext
 
         Returns:
             True if initialization successful, False otherwise
         """
-        pass
+        from ocabox_tcs.management.service_registry import ServiceRegistry
+
+        try:
+            # Store ProcessContext reference
+            self.process_ctx = process_ctx
+            self.logger.debug(f"Using ProcessContext for {self.__class__.__name__}")
+
+            # Extract subject prefix from NATS config
+            subject_prefix = 'svc'  # Default
+            if process_ctx.config_manager:
+                global_config = process_ctx.config_manager.resolve_config()
+                nats_config = global_config.get("nats", {})
+                subject_prefix = nats_config.get("subject_prefix", "svc")
+                self.logger.debug(f"Using NATS subject prefix: {subject_prefix}")
+
+            # Store subject_prefix for runners to use
+            self.subject_prefix = subject_prefix
+
+            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
+            await self.initialize_monitoring(subject_prefix=subject_prefix)
+
+            # Get raw config for services list and registry
+            raw_config = process_ctx.config_manager.get_raw_config()
+            services_list = raw_config.get('services', [])
+
+            if not services_list:
+                self.logger.warning("No services found in configuration")
+                return True
+
+            # Create ServiceRegistry from config
+            registry = ServiceRegistry(raw_config)
+
+            # Register runners for each service
+            for service_cfg in services_list:
+                service_type = service_cfg['type']
+                # Support both old 'instance_context' and new 'variant' field names
+                variant = service_cfg.get('variant') or service_cfg.get('instance_context', 'dev')
+
+                runner_config = ServiceRunnerConfig(
+                    service_type=service_type,
+                    variant=variant,
+                    config_file=process_ctx.config_file,
+                    runner_id=f"{self.launcher_id}.{service_type}",
+                    parent_name=f"launcher.{self.launcher_id}",
+                    restart=service_cfg.get('restart', 'no'),
+                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),
+                    restart_max=int(service_cfg.get('restart_max', 0)),
+                    restart_window=float(service_cfg.get('restart_window', 60.0))
+                )
+
+                # HOOK: Subclass creates appropriate runner type
+                runner = self._create_runner(runner_config, registry, subject_prefix)
+
+                self.runners[runner.service_id] = runner
+                self.logger.debug(f"Registered runner for {runner.service_id}")
+                self.logger.debug(
+                    f"Restart policy for {runner.service_id}: {runner_config.restart} "
+                    f"(max={runner_config.restart_max}, delay={runner_config.restart_sec}s)"
+                )
+
+            # Declare services to registry (marks them as part of configuration)
+            await self.declare_services(subject_prefix=subject_prefix)
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize launcher: {e}", exc_info=True)
+            return False
 
     @abstractmethod
+    def _create_runner(
+        self,
+        config: ServiceRunnerConfig,
+        registry: "ServiceRegistry",
+        subject_prefix: str
+    ) -> BaseRunner:
+        """Hook for subclasses to create launcher-specific runner type.
+
+        Args:
+            config: Runner configuration
+            registry: ServiceRegistry for module resolution
+            subject_prefix: NATS subject prefix
+
+        Returns:
+            Appropriate runner instance (ProcessRunner, AsyncioRunner, etc.)
+        """
+        pass
+
     async def start_all(self) -> bool:
         """Start all configured services.
 
         Returns:
             True if all services started successfully, False otherwise
         """
-        pass
+        success = True
+        for service_id, runner in self.runners.items():
+            self.logger.info(f"Starting service: {service_id}")
+            if not await runner.start():
+                self.logger.error(f"Failed to start {service_id}")
+                success = False
+            else:
+                self.logger.info(f"Service started: {service_id}")
 
-    @abstractmethod
+        # Start launcher monitoring after services are started
+        if success:
+            await self.start_monitoring()
+
+        return success
+
     async def stop_all(self) -> bool:
-        """Stop all running services.
+        """Stop all running services in parallel.
 
         Returns:
             True if all services stopped successfully, False otherwise
         """
-        pass
+        import asyncio
+
+        if not self.runners:
+            return True
+
+        # Stop all services in parallel for faster shutdown
+        results = await asyncio.gather(
+            *[self.stop_service(sid) for sid in self.runners.keys()],
+            return_exceptions=True
+        )
+
+        # Check if any failed
+        success = True
+        for sid, result in zip(self.runners.keys(), results):
+            if isinstance(result, Exception):
+                self.logger.error(f"Failed to stop {sid}: {result}")
+                success = False
+            elif not result:
+                self.logger.error(f"Failed to stop {sid}")
+                success = False
+
+        return success
 
     async def start_service(self, service_id: str) -> bool:
         """Start specific service by ID.
@@ -437,3 +865,38 @@ class BaseLauncher(ABC):
         await self.monitor.send_shutdown()
 
         self.logger.info("Launcher monitoring stopped")
+
+    async def run(self):
+        """Run launcher with signal handling."""
+        import asyncio
+        import signal
+
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+
+        loop = asyncio.get_running_loop()
+
+        def handle_signal(sig):
+            self.logger.info(f"Received signal {sig}, shutting down...")
+            asyncio.create_task(self._shutdown())
+
+        loop.add_signal_handler(signal.SIGINT, lambda: handle_signal("SIGINT"))
+        loop.add_signal_handler(signal.SIGTERM, lambda: handle_signal("SIGTERM"))
+
+        self.logger.info("Services started. Press Ctrl+C to stop.")
+        await self._shutdown_event.wait()
+        self.logger.info("Launcher shutdown complete")
+
+    async def _shutdown(self):
+        """Shutdown all services and process context."""
+        # Stop launcher monitoring first
+        await self.stop_monitoring()
+
+        self.logger.info("Stopping all services...")
+        await self.stop_all()
+
+        if self.process_ctx:
+            await self.process_ctx.shutdown()
+
+        if self._shutdown_event:
+            self._shutdown_event.set()

@@ -81,7 +81,7 @@ async def test_crash_always_restart(nats_server):
     scenarios = [
         ServiceScenario(
             service_type="mock_crashing",
-            instance_context="always_restart",
+            variant="always_restart",
             config={"crash_delay": 0.3, "exit_code": 1},
             restart="always",
             restart_sec=0.5,
@@ -235,13 +235,13 @@ async def test_mixed_services_some_crashing(nats_server):
         # Stable service
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="stable",
+            variant="stable",
             config={"work_interval": 0.5}
         ),
         # Crashing service with restart
         ServiceScenario(
             service_type="mock_crashing",
-            instance_context="crasher",
+            variant="crasher",
             config={"crash_delay": 0.3, "exit_code": 1},
             restart="always",
             restart_sec=0.5,
@@ -250,7 +250,7 @@ async def test_mixed_services_some_crashing(nats_server):
         # Another stable service
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="stable2",
+            variant="stable2",
             config={"work_interval": 0.7}
         ),
     ]

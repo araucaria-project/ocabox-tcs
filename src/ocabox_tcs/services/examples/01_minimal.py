@@ -12,12 +12,10 @@ Run with asyncio launcher:
 Run with process launcher:
     poetry run tcs_process --config config/examples.yaml
 """
-import asyncio
-
 from ocabox_tcs.base_service import BaseBlockingPermanentService, service
 
 
-@service
+@service('examples.minimal')
 class MinimalService(BaseBlockingPermanentService):
     """Simplest service - just prints a message every 5 seconds."""
 
@@ -25,7 +23,7 @@ class MinimalService(BaseBlockingPermanentService):
         """Main service loop."""
         while self.is_running:
             self.svc_logger.info("Service running...")
-            await asyncio.sleep(5)
+            await self.sleep(5)
 
 
 if __name__ == '__main__':

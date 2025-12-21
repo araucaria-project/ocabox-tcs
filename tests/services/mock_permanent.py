@@ -24,8 +24,8 @@ from ocabox_tcs.monitoring import Status
 logger = logging.getLogger(__name__)
 
 
+@config('mock_permanent')
 @dataclass
-@config
 class MockPermanentConfig:
     """Configuration for mock permanent service."""
     work_interval: float = 0.5  # Sleep interval in main loop
@@ -36,7 +36,7 @@ class MockPermanentConfig:
     work_count: int = 0  # Number of iterations (0 = infinite)
 
 
-@service
+@service('mock_permanent')
 class MockPermanentService(BaseBlockingPermanentService):
     """Mock permanent service for testing.
 
@@ -54,13 +54,13 @@ class MockPermanentService(BaseBlockingPermanentService):
         """Called before run_service starts - handle startup delay."""
         if self.svc_config.startup_delay > 0:
             self.svc_logger.info(f"Startup delay: {self.svc_config.startup_delay}s")
-            await asyncio.sleep(self.svc_config.startup_delay)
+            await self.sleep(self.svc_config.startup_delay)
 
     async def on_stop(self):
         """Called after run_service stops - handle shutdown delay."""
         if self.svc_config.shutdown_delay > 0:
             self.svc_logger.info(f"Shutdown delay: {self.svc_config.shutdown_delay}s")
-            await asyncio.sleep(self.svc_config.shutdown_delay)
+            await self.sleep(self.svc_config.shutdown_delay)
 
     async def run_service(self):
         """Main service loop."""
@@ -73,7 +73,7 @@ class MockPermanentService(BaseBlockingPermanentService):
                 self.svc_logger.info(f"Reached work_count limit ({self.svc_config.work_count}), stopping")
                 break
 
-            await asyncio.sleep(self.svc_config.work_interval)
+            await self.sleep(self.svc_config.work_interval)
 
     def healthcheck(self) -> Status:
         """Custom healthcheck with configurable status."""

@@ -6,7 +6,6 @@ development and testing environments.
 
 import asyncio
 import os
-import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +14,7 @@ from typing import Any
 
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.management.process_context import ProcessContext
+from ocabox_tcs.management.service_registry import ServiceRegistry
 
 
 @dataclass
@@ -31,15 +31,18 @@ class ProcessRunner(BaseRunner):
     def __init__(
         self,
         config: ServiceRunnerConfig,
+        registry: ServiceRegistry,
         launcher_id: str | None = None,
         subject_prefix: str = "svc",
-        terminate_delay: float = 1.0
+        terminate_delay: float = 5.0
     ):
         super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
+        self.registry = registry
         self.process_info: ProcessInfo | None = None
         self.terminate_delay = terminate_delay
         self._log_monitor_task: asyncio.Task | None = None
         self._crash_monitor_task: asyncio.Task | None = None
+        self._stopping_gracefully: bool = False  # Track if we initiated stop
 
     async def start(self) -> bool:
         """Start service in subprocess."""
@@ -48,26 +51,28 @@ class ProcessRunner(BaseRunner):
             return False
 
         try:
-            # Resolve module name: use explicit module if provided, else default to internal
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
+            # Resolve module path via ServiceRegistry
+            module_path = self.registry.resolve_module(self.config.service_type)
 
             args = [
                 "python", "-m",
-                module_name,
+                module_path,
             ]
 
             if self.config.config_file:
                 config_path = os.path.abspath(self.config.config_file)
                 args.append(config_path)
 
-            args.append(self.config.instance_context or "main")
+            # Pass variant (was instance_context)
+            args.append(self.config.variant)
 
             # Add runner_id if available
             if self.config.runner_id:
                 args.extend(["--runner-id", self.config.runner_id])
+
+            # Add parent_name for hierarchical display
+            if self.config.parent_name:
+                args.extend(["--parent-name", self.config.parent_name])
 
             # Suppress banner in subprocesses (launcher already showed one)
             args.append("--no-banner")
@@ -112,6 +117,9 @@ class ProcessRunner(BaseRunner):
             self.logger.info(f"Stopping {self.service_id}")
             proc = self.process_info.process
 
+            # Mark that we're stopping gracefully so _monitor_crash doesn't treat SIGTERM as crash
+            self._stopping_gracefully = True
+
             proc.terminate()
 
             # Poll every 100ms for up to terminate_delay seconds
@@ -148,10 +156,11 @@ class ProcessRunner(BaseRunner):
                 except asyncio.CancelledError:
                     pass
 
-            # If we force-killed the service, publish STOP event to NATS
-            # (subprocess didn't get a chance to send it)
-            if force_killed:
-                await self._publish_stop_event(reason="force_killed")
+            # Publish STOP event - subprocess was terminated by us
+            # The crash monitor was cancelled, so we publish the event here
+            reason = "force_killed" if force_killed else "terminated"
+            exit_code = -9 if force_killed else 0
+            await self._publish_stop_event(reason=reason, exit_code=exit_code)
 
             self._is_running = False
             self.process_info = None
@@ -187,38 +196,6 @@ class ProcessRunner(BaseRunner):
             "uptime_seconds": (datetime.now() - self.process_info.start_time).total_seconds()
         }
 
-    async def _publish_start_event(self, pid: int):
-        """Publish START event to NATS registry.
-
-        Called when subprocess starts successfully. Runner owns lifecycle events.
-
-        Args:
-            pid: Process ID of started subprocess
-        """
-        import socket
-        await self._publish_registry_event(
-            "start",
-            status="startup",
-            pid=pid,
-            hostname=socket.gethostname()
-        )
-
-    async def _publish_stop_event(self, reason: str = "force_killed", exit_code: int = 0):
-        """Publish STOP event to NATS registry.
-
-        Called when service stops cleanly or is force-killed by launcher.
-
-        Args:
-            reason: Reason for stop (e.g., "completed", "force_killed")
-            exit_code: Process exit code
-        """
-        await self._publish_registry_event(
-            "stop",
-            status="shutdown",
-            reason=reason,
-            exit_code=exit_code
-        )
-
     async def _monitor_crash(self):
         """Monitor subprocess for unexpected exits and handle restarts."""
         if not self.process_info:
@@ -234,11 +211,22 @@ class ProcessRunner(BaseRunner):
                 process_info = self.process_info
                 self.process_info = None
 
-                # Check if it's a clean exit (exit code 0)
-                if returncode == 0:
-                    self.logger.info(f"Service {self.service_id} exited cleanly (exit code: 0)")
+                # Check if it's a clean exit
+                # Exit code 0 = clean
+                # Exit code -15 (SIGTERM) or -2 (SIGINT) = clean if we initiated stop
+                is_clean_exit = (
+                    returncode == 0 or
+                    (self._stopping_gracefully and returncode in (-15, -2))
+                )
+
+                if is_clean_exit:
+                    reason = "completed" if returncode == 0 else "terminated"
+                    self.logger.info(
+                        f"Service {self.service_id} exited cleanly "
+                        f"(exit code: {returncode}, reason: {reason})"
+                    )
                     # Publish STOP event for clean exit
-                    await self._publish_stop_event(reason="completed", exit_code=returncode)
+                    await self._publish_stop_event(reason=reason, exit_code=returncode)
                     self._is_running = False
                     return
 
@@ -309,64 +297,37 @@ class ProcessRunner(BaseRunner):
         except Exception as e:
             self.logger.error(f"Crash monitor error for {self.service_id}: {e}")
 
-    async def _publish_crash_event(self, exit_code: int):
-        """Publish CRASH event to NATS registry.
+    def _parse_log_level(self, line: str) -> tuple[int, str]:
+        """Parse log level from subprocess log line.
 
         Args:
-            exit_code: Process exit code
+            line: Log line from subprocess (e.g., "[INFO ] svc|...: message")
+
+        Returns:
+            Tuple of (log_level_int, line) where log_level_int is logging.INFO, etc.
         """
-        will_restart = self._should_restart(exit_code)
-        await self._publish_registry_event(
-            "crashed",
-            status="error" if will_restart else "failed",
-            exit_code=exit_code,
-            restart_policy=self.config.restart,
-            will_restart=will_restart
-        )
+        import logging
+        import re
 
-    async def _publish_restarting_event(self, attempt: int):
-        """Publish RESTARTING event to NATS registry.
+        # Try to extract log level from format: [LEVEL ] or [LEVEL]
+        match = re.match(r'\[(\w+)\s*\]', line)
+        if match:
+            level_str = match.group(1).upper()
+            level_map = {
+                'DEBUG': logging.DEBUG,
+                'INFO': logging.INFO,
+                'WARNING': logging.WARNING,
+                'WARN': logging.WARNING,
+                'ERROR': logging.ERROR,
+                'CRITICAL': logging.CRITICAL,
+            }
+            return level_map.get(level_str, logging.INFO), line
 
-        Args:
-            attempt: Restart attempt number (1-based)
-        """
-        await self._publish_registry_event(
-            "restarting",
-            status="startup",
-            restart_attempt=attempt,
-            max_restarts=self.config.restart_max if self.config.restart_max > 0 else None
-        )
-
-    async def _publish_failed_event(self, reason: str):
-        """Publish FAILED event to NATS registry.
-
-        Args:
-            reason: Reason for failure (e.g., 'restart_failed', 'restart_limit_reached')
-        """
-        await self._publish_registry_event(
-            "failed",
-            status="failed",
-            reason=reason,
-            restart_count=len(self._restart_history)
-        )
-
-    async def publish_declared(self):
-        """Publish DECLARED event to NATS registry.
-
-        Called by launcher after runner creation. Only publishes if runner_id
-        is present (skips for ad-hoc standalone/test runs).
-
-        This marks the service as part of the launcher's formal configuration,
-        distinguishing it from ephemeral services.
-        """
-        await self._publish_registry_event(
-            "declared",
-            restart_policy=self.config.restart,
-            # Note: parent and runner_id are added automatically by _publish_registry_event
-        )
+        # No recognizable log level, default to INFO
+        return logging.INFO, line
 
     async def _monitor_logs(self):
-        """Monitor and relay service logs."""
+        """Monitor and relay service logs, preserving log levels."""
         if not self.process_info:
             return
 
@@ -375,8 +336,11 @@ class ProcessRunner(BaseRunner):
                 line = await asyncio.to_thread(self.process_info.process.stderr.readline)
                 if not line:
                     break
-                # Logger name already includes service_id (run|{service_id}), no need to repeat
-                self.logger.info(line.strip())
+
+                # Parse log level from subprocess output and use same level
+                level, message = self._parse_log_level(line.strip())
+                self.logger.log(level, message)
+
         except Exception as e:
             self.logger.error(f"Log monitoring error for {self.service_id}: {e}")
 
@@ -384,246 +348,67 @@ class ProcessRunner(BaseRunner):
 class ProcessLauncher(BaseLauncher):
     """Launcher that manages services as separate processes."""
 
-    def __init__(self, launcher_id: str | None = None, terminate_delay: float = 1.0):
+    def __init__(self, launcher_id: str | None = None, terminate_delay: float = 5.0):
         # Use provided launcher_id or default to simple name
         if launcher_id is None:
             launcher_id = "process-launcher"
 
         super().__init__(launcher_id)
         self.terminate_delay = terminate_delay
-        self._shutdown_event = asyncio.Event()
-        self.process_ctx: ProcessContext | None = None
 
-    async def initialize(self, process_ctx: ProcessContext) -> bool:
-        """Initialize launcher from ProcessContext.
+    def _get_launcher_type_display(self) -> str:
+        """Get display name for banner."""
+        return "Process (each service in separate subprocess)"
 
-        Uses already-initialized ProcessContext to get services configuration
-        and registers runners for spawning services.
-
-        Args:
-            process_ctx: Already-initialized ProcessContext
-
-        Returns:
-            True if initialization successful
-        """
-        try:
-            # Store ProcessContext reference
-            self.process_ctx = process_ctx
-            self.logger.debug("Using ProcessContext for process launcher")
-
-            # Get subject_prefix from NATS config
-            subject_prefix = 'svc'  # Default
-            if process_ctx.config_manager:
-                global_config = process_ctx.config_manager.resolve_config()
-                nats_config = global_config.get("nats", {})
-                subject_prefix = nats_config.get("subject_prefix", "svc")
-                self.logger.debug(f"Using NATS subject prefix: {subject_prefix}")
-
-            # Store subject_prefix for runners to use
-            self.subject_prefix = subject_prefix
-
-            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
-            await self.initialize_monitoring(subject_prefix=subject_prefix)
-
-            # Get services list from config_manager (use raw config to include 'services' key)
-            raw_config = process_ctx.config_manager.get_raw_config()
-            services_list = raw_config.get('services', [])
-
-            if not services_list:
-                self.logger.warning("No services found in configuration")
-                return True
-
-            # Register runners for each service
-            for service_cfg in services_list:
-                runner_config = ServiceRunnerConfig(
-                    service_type=service_cfg['type'],
-                    instance_context=service_cfg.get('instance_context'),
-                    config_file=process_ctx.config_file,  # Use stored config file path
-                    runner_id=f"{self.launcher_id}.{service_cfg['type']}",
-                    module=service_cfg.get('module'),  # External service package (optional)
-                    restart=service_cfg.get('restart', 'no'),  # Restart policy
-                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),  # Restart delay (seconds)
-                    restart_max=int(service_cfg.get('restart_max', 0)),  # Max restarts (0=unlimited)
-                    restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
-                )
-
-                runner = ProcessRunner(
-                    runner_config,
-                    launcher_id=self.launcher_id,
-                    subject_prefix=subject_prefix,
-                    terminate_delay=self.terminate_delay
-                )
-                self.runners[runner.service_id] = runner
-                self.logger.debug(f"Registered runner for {runner.service_id}")
-                self.logger.debug(
-                    f"Restart policy for {runner.service_id}: {runner_config.restart} "
-                    f"(max={runner_config.restart_max}, delay={runner_config.restart_sec}s)"
-                )
-
-            # Declare services to registry (marks them as part of configuration)
-            await self.declare_services(subject_prefix=subject_prefix)
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize launcher: {e}", exc_info=True)
-            return False
-
-    async def start_all(self) -> bool:
-        """Start all configured services."""
-        success = True
-        for service_id, runner in self.runners.items():
-            if not await runner.start():
-                self.logger.error(f"Failed to start {service_id}")
-                success = False
-
-        # Start launcher monitoring after services are started
-        if success:
-            await self.start_monitoring()
-
-        return success
-
-    async def stop_all(self) -> bool:
-        """Stop all running services in parallel."""
-        if not self.runners:
-            return True
-
-        # Stop all services in parallel for faster shutdown
-        results = await asyncio.gather(
-            *[self.stop_service(sid) for sid in self.runners.keys()],
-            return_exceptions=True
+    def _create_runner(
+        self,
+        config: ServiceRunnerConfig,
+        registry: ServiceRegistry,
+        subject_prefix: str
+    ) -> ProcessRunner:
+        """Create ProcessRunner for subprocess execution."""
+        return ProcessRunner(
+            config,
+            registry=registry,
+            launcher_id=self.launcher_id,
+            subject_prefix=subject_prefix,
+            terminate_delay=self.terminate_delay
         )
-
-        # Check if any failed
-        success = True
-        for sid, result in zip(self.runners.keys(), results):
-            if isinstance(result, Exception):
-                self.logger.error(f"Failed to stop {sid}: {result}")
-                success = False
-            elif not result:
-                self.logger.error(f"Failed to stop {sid}")
-                success = False
-
-        return success
-
-    async def run(self):
-        """Run launcher with signal handling."""
-        loop = asyncio.get_running_loop()
-
-        def handle_signal(sig):
-            self.logger.info(f"Received signal {sig}, shutting down...")
-            asyncio.create_task(self._shutdown())
-
-        loop.add_signal_handler(signal.SIGINT, lambda: handle_signal("SIGINT"))
-        loop.add_signal_handler(signal.SIGTERM, lambda: handle_signal("SIGTERM"))
-
-        self.logger.info("Services started. Press Ctrl+C to stop.")
-        await self._shutdown_event.wait()
-        self.logger.info("Launcher shutdown complete")
-
-    async def _shutdown(self):
-        """Shutdown all services and process context."""
-        # Stop launcher monitoring first
-        await self.stop_monitoring()
-
-        self.logger.info("Stopping all services...")
-        await self.stop_all()
-
-        if self.process_ctx:
-            await self.process_ctx.shutdown()
-
-        self._shutdown_event.set()
 
 
 async def amain():
     """Process launcher entry point."""
     import argparse
-    import logging
+    import os
     import socket
-    import sys
-    from pathlib import Path
 
-    from ocabox_tcs.management.environment import load_dotenv_if_available
+    def customize_parser(base_parser):
+        """Customize parser for process launcher."""
+        parser = argparse.ArgumentParser(
+            description="Start TCS process launcher (each service in separate subprocess)",
+            parents=[base_parser]
+        )
+        parser.add_argument(
+            "--terminate-delay",
+            type=float,
+            default=5.0,
+            help="Time to wait for graceful shutdown before force-kill (default: 5.0s)"
+        )
+        return parser
 
-    # Load .env file if it exists (before everything else)
-    env_loaded, env_file_path = load_dotenv_if_available()
+    def factory(launcher_id, args):
+        """Create ProcessLauncher with terminate_delay from args."""
+        # Generate proper launcher ID
+        config_file = BaseLauncher.determine_config_file(args.config)
+        launcher_id = BaseLauncher.gen_launcher_name(
+            "process-launcher",
+            config_file,
+            os.getcwd(),
+            socket.gethostname()
+        )
+        return ProcessLauncher(launcher_id=launcher_id, terminate_delay=args.terminate_delay)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-    logger = logging.getLogger("launch")
-
-    # Log if .env was loaded
-    if env_loaded and env_file_path:
-        logger.info(f"Loaded environment from {env_file_path}")
-
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Start TCS process launcher")
-    parser.add_argument(
-        "--config",
-        default=None,
-        help="Path to services config file (default: config/services.yaml)"
-    )
-    parser.add_argument(
-        "--terminate-delay",
-        type=float,
-        default=1.0,
-        help="Time to wait for graceful shutdown before force-kill (default: 1.0s)"
-    )
-    parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
-    args = parser.parse_args()
-
-    # Determine config file and validate
-    if args.config is not None:
-        # User explicitly provided --config, file MUST exist
-        config_file = args.config
-        if not Path(config_file).exists():
-            logger.error(f"Configuration file not found: {config_file}")
-            logger.error("Explicitly provided config file must exist. Exiting.")
-            sys.exit(1)
-    else:
-        # Use default, missing file is OK (will use defaults)
-        config_file = "config/services.yaml"
-        if not Path(config_file).exists():
-            logger.info(f"Default config file not found: {config_file}")
-            logger.info("Continuing with empty configuration")
-
-    # Print startup banner (unless suppressed)
-    if not args.no_banner:
-        logger.info("=" * 60)
-        logger.info("TCS - Telescope Control Services")
-        logger.info("Launcher: Process (each service in separate subprocess)")
-        logger.info("=" * 60)
-
-    # Initialize ProcessContext (handles config loading)
-    process_ctx = await ProcessContext.initialize(config_file=config_file)
-
-    # Generate deterministic launcher ID from config file path, pwd, and hostname
-    launcher_id = BaseLauncher.gen_launcher_name(
-        "process-launcher",
-        config_file,
-        os.getcwd(),
-        socket.gethostname()
-    )
-
-    # Create and initialize launcher
-    launcher = ProcessLauncher(launcher_id=launcher_id, terminate_delay=args.terminate_delay)
-    if not await launcher.initialize(process_ctx):
-        logging.error("Failed to initialize launcher")
-        await process_ctx.shutdown()
-        return
-
-    # Start services and run
-    if not await launcher.start_all():
-        logging.error("Failed to start services")
-        await launcher.stop_all()
-        await process_ctx.shutdown()
-        return
-
-    await launcher.run()
+    await BaseLauncher.launch(factory, customize_parser)
 
 
 def main():

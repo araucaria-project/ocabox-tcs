@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import BasePermanentService, BaseServiceConfig, config, service
 
 
-@config
+@config('examples.nonblocking')
 @dataclass
 class NonBlockingConfig(BaseServiceConfig):
     """Configuration for non-blocking service."""
@@ -30,7 +30,7 @@ class NonBlockingConfig(BaseServiceConfig):
     interval: float = 2.0
 
 
-@service
+@service('examples.nonblocking')
 class NonBlockingService(BasePermanentService):
     """Service demonstrating non-blocking permanent service pattern.
 
@@ -44,9 +44,8 @@ class NonBlockingService(BasePermanentService):
         """Start the service by spawning background workers."""
         self.svc_logger.info(f"Starting {self.svc_config.worker_count} background workers")
 
-        # Initialize state
+        # Initialize worker list
         self.workers: list[asyncio.Task] = []
-        self.stop_event = asyncio.Event()
 
         # Spawn worker tasks
         for i in range(self.svc_config.worker_count):
@@ -56,11 +55,12 @@ class NonBlockingService(BasePermanentService):
         self.svc_logger.info(f"Service started with {self.svc_config.worker_count} background workers")
 
     async def stop_service(self):
-        """Stop the service and clean up all workers."""
-        self.svc_logger.info("Stopping service, cleaning up workers...")
+        """Stop the service and clean up all workers.
 
-        # Signal all workers to stop
-        self.stop_event.set()
+        Note: Controller has already signaled stop via _stop_event before calling this.
+        Workers will wake from sleep immediately and exit.
+        """
+        self.svc_logger.info("Stopping service, cleaning up workers...")
 
         # Wait for all workers to finish (with timeout)
         if self.workers:
@@ -83,6 +83,8 @@ class NonBlockingService(BasePermanentService):
     async def _worker(self, worker_id: int):
         """Background worker task.
 
+        Demonstrates exit-aware sleep pattern - worker wakes immediately on service stop.
+
         Args:
             worker_id: Unique identifier for this worker
         """
@@ -90,12 +92,15 @@ class NonBlockingService(BasePermanentService):
 
         try:
             cycle = 0
-            while not self.stop_event.is_set():
+            while self.is_running:
                 cycle += 1
                 self.svc_logger.debug(f"Worker {worker_id} cycle {cycle}")
 
-                # Simulate work
-                await asyncio.sleep(self.svc_config.interval)
+                # Exit-aware sleep - wakes immediately when service is stopping
+                # Returns False if stop was signaled, True if sleep completed normally
+                if not await self.sleep(self.svc_config.interval):
+                    self.svc_logger.info(f"Worker {worker_id} received stop signal")
+                    break
 
         except asyncio.CancelledError:
             self.svc_logger.info(f"Worker {worker_id} cancelled")

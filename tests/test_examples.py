@@ -33,7 +33,7 @@ def test_basic_service_class_exists():
 
 def test_basic_config_defaults():
     """Test BasicConfig default values."""
-    config = BasicConfig(type="basic", instance_context="test")
+    config = BasicConfig(type="examples.basic", variant="test")
     assert config.interval == 3.0
     assert config.message == "Hello from basic service"
 

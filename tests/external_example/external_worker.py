@@ -9,27 +9,29 @@ Usage:
    python tests/external_example/external_worker.py
 
    Uses defaults:
-   - instance_context: "dev"
+   - variant: "dev"
    - NATS: localhost:4222 (optional)
    - No config file needed
 
-2. **With custom context**:
+2. **With custom variant**:
    python tests/external_example/external_worker.py prod
 
 3. **With config file**:
    python tests/external_example/external_worker.py config/test_external.yaml demo
 
-4. **Via launcher** - Add to services configuration:
-   - type: external_worker
-     instance_context: demo
-     module: tests.external_example.external_worker
+4. **Via launcher** - Add to services configuration with registry:
+   registry:
+     external_worker: tests.external_example.external_worker
+   services:
+     - type: external_worker
+       variant: demo
 """
 
 import asyncio
 from ocabox_tcs.base_service import service, BaseBlockingPermanentService
 
 
-@service
+@service('external_worker')
 class ExternalWorkerService(BaseBlockingPermanentService):
     """Example service from external package."""
 

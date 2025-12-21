@@ -7,25 +7,33 @@ nats:
   required: true  # Block startup until NATS is available
   # required: false  # For development: continue without NATS
 
+# Registry: maps service_type to Python module path
+# - null (~) means internal service: ocabox_tcs.services.{type}
+# - explicit path for external packages
+registry:
+  hello_world: ~                              # -> ocabox_tcs.services.hello_world
+  # examples.minimal: ~                       # -> ocabox_tcs.services.examples.01_minimal
+  # halina.server: halina.server.halina_server  # External package example
+
+# Service instances to launch
 services:
   # Hello World - canonical example service
   - type: hello_world
-    instance_context: main
+    variant: main
     interval: 5
     message: "Hello World!"
     log_level: INFO
 
   # Uncomment to run multiple instances
   # - type: hello_world
-  #   instance_context: dev
+  #   variant: dev
   #   interval: 3
   #   message: "Dev instance"
 
   # External service from external Python package
   # Uncomment to test external service discovery (requires external_example package)
   # - type: external_worker
-  #   instance_context: demo
-  #   module: tests.external_example.external_worker
+  #   variant: demo
 
 # For tutorial examples, see config/examples.yaml
 # To learn the framework, see src/ocabox_tcs/services/examples/README.md

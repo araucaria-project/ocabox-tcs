@@ -62,52 +62,51 @@ def _format_service_name(service_id: str, show_full_with_dim: bool = False) -> T
     """Format service name with optional prefix handling.
 
     Args:
-        service_id: Full service ID (format: module.path.service_type:instance)
-        show_full_with_dim: If True (detailed mode), show full name with dimmed prefix up to last dot.
-                           If False (normal mode), show only part after last dot before colon.
+        service_id: Full service ID (format: service_type.variant)
+        show_full_with_dim: If True (detailed mode), show full name with dimmed namespace prefix.
+                           If False (normal mode), show full service_id.
+
+    New format (after 1.0 refactor):
+        service_id = "service_type.variant"
+        - service_type can have dots (e.g., "examples.minimal", "halina.server")
+        - variant is always the last segment (cannot have dots)
 
     Examples:
         Normal mode:
-            ocabox_tcs.services.examples.01_minimal:minimal -> 01_minimal:minimal
-            ocabox_tcs.services.test.crash_simple:policy_always -> crash_simple:policy_always
-            external_pkg.services.guider:main -> guider:main
+            examples.minimal.tutorial -> examples.minimal.tutorial
+            hello_world.dev -> hello_world.dev
+            halina.server.prod -> halina.server.prod
 
         Detailed mode:
-            ocabox_tcs.services.examples. (gray) + 01_minimal:minimal (bold)
-            ocabox_tcs.services.test. (gray) + crash_simple:policy_always (bold)
+            examples. (gray) + minimal.tutorial (bold)
+            hello_world.dev (bold) (no prefix to dim)
+            halina. (gray) + server.prod (bold)
     """
     text = Text()
 
-    # Split at colon to separate module path from instance
-    if ":" in service_id:
-        module_part, instance_part = service_id.split(":", 1)
-    else:
-        module_part = service_id
-        instance_part = ""
+    # New format: type.variant (variant is always last segment)
+    # We want to dim namespace prefixes in detailed mode
 
-    # Find last dot in module part
-    if "." in module_part:
-        last_dot_idx = module_part.rfind(".")
-        prefix = module_part[: last_dot_idx + 1]  # Include the dot
-        service_type = module_part[last_dot_idx + 1 :]
+    if "." in service_id:
+        # Find first dot to separate namespace from rest
+        first_dot_idx = service_id.find(".")
+        namespace = service_id[: first_dot_idx + 1]  # Include the dot
+        rest = service_id[first_dot_idx + 1 :]
     else:
-        prefix = ""
-        service_type = module_part
+        # No dots - simple service name
+        namespace = ""
+        rest = service_id
 
     if show_full_with_dim:
-        # Detailed mode - show full name with dimmed prefix
-        if prefix:
-            text.append(prefix, style="dim")
-        text.append(service_type, style="bold")
-        if instance_part:
-            text.append(":", style="bold")
-            text.append(instance_part, style="bold")
+        # Detailed mode - dim namespace prefix
+        if namespace:
+            text.append(namespace, style="dim")
+            text.append(rest, style="bold")
+        else:
+            text.append(rest, style="bold")
     else:
-        # Normal mode - show only part after last dot
-        text.append(service_type, style="bold")
-        if instance_part:
-            text.append(":", style="bold")
-            text.append(instance_part, style="bold")
+        # Normal mode - show full service_id
+        text.append(service_id, style="bold")
 
     return text
 
