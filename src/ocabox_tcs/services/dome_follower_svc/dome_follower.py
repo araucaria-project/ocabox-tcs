@@ -4,6 +4,7 @@ This demonstrates a continuously running service that logs periodically.
 """
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,10 +33,13 @@ class DomeFollowerService(BaseBlockingPermanentService):
 
     async def on_start(self):
         """Setup before main loop starts."""
-        self.svc_logger.info(f"Starting dome follower service, with interval: {self.svc_config.interval}")
+        self.svc_logger.info(
+            f"Starting dome follower service, with interval: {self.svc_config.interval}"
+        )
         self.manager = Manager(service=self, config=self.svc_config)
         await self.manager.start_comm()
-        await self.manager.set_follow_parameters()
+        await self.manager.set_follow_params()
+        await self.manager.set_mount_type_params()
         if self.svc_config.turn_on_automatically:
             self.manager.follow_on = True
             self.svc_logger.warning(
@@ -47,10 +51,13 @@ class DomeFollowerService(BaseBlockingPermanentService):
         """Main service loop."""
         while self.is_running:
             try:
+                ts_0 = time.time()
                 await self.manager.dome_follow()
                 await asyncio.sleep(self.svc_config.interval)
+                self.manager.turn_time = time.time() - ts_0
             except asyncio.CancelledError:
                 break
+
 
     async def on_stop(self):
         """Cleanup after main loop stops."""
