@@ -32,7 +32,7 @@ async def test_simple_service_startup_shutdown(nats_server):
     # Generate configuration for single mock service
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="test_basic",
+        variant="test_basic",
         nats_host=nats_server.host,
         nats_port=nats_server.port,
         config={"work_interval": 0.5}
@@ -83,17 +83,17 @@ async def test_multiple_services_startup(nats_server):
     scenarios = [
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="service_1",
+            variant="service_1",
             config={"work_interval": 0.5}
         ),
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="service_2",
+            variant="service_2",
             config={"work_interval": 0.7}
         ),
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="service_3",
+            variant="service_3",
             config={"work_interval": 0.3}
         )
     ]
@@ -149,7 +149,7 @@ async def test_service_with_startup_delay(nats_server):
     # Create service with startup delay
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="slow_start",
+        variant="slow_start",
         nats_host=nats_server.host,
         nats_port=nats_server.port,
         config={
@@ -192,7 +192,7 @@ async def test_context_manager_usage(nats_server):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="context_test",
+        variant="context_test",
         nats_host=nats_server.host,
         nats_port=nats_server.port
     )
@@ -228,7 +228,7 @@ async def test_launcher_restart(nats_server):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="restart_test",
+        variant="restart_test",
         nats_host=nats_server.host,
         nats_port=nats_server.port
     )

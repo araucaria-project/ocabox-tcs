@@ -41,7 +41,7 @@ async def test_service_start_events(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="event_test",
+        variant="event_test",
         nats_host=nats_server.host,
         nats_port=nats_server.port
     )
@@ -67,7 +67,7 @@ async def test_service_start_events(nats_server, nats_client):
         await asyncio.sleep(0.5)
 
     # Verify START event was published
-    service_id = "tests.services.mock_permanent:event_test"
+    service_id = "mock_permanent.event_test"
     start_events = collector.get_events(event_type="start", service_id=service_id)
     assert len(start_events) > 0, "No START event found"
 
@@ -91,7 +91,7 @@ async def test_service_stop_events(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="stop_test",
+        variant="stop_test",
         nats_host=nats_server.host,
         nats_port=nats_server.port
     )
@@ -114,7 +114,7 @@ async def test_service_stop_events(nats_server, nats_client):
         await asyncio.sleep(1.0)
 
     # Use assertion helper
-    service_id = "tests.services.mock_permanent:stop_test"
+    service_id = "mock_permanent.stop_test"
     await assert_service_stopped(collector, service_id, clean_shutdown=True)
 
 
@@ -153,7 +153,7 @@ async def test_crash_event_publishing(nats_server, nats_client):
         await asyncio.sleep(0.5)
 
     # Use assertion helper
-    service_id = "tests.services.mock_crashing:policy_no"
+    service_id = "mock_crashing.policy_no"
     await assert_service_crashed(
         collector,
         service_id=service_id,
@@ -174,7 +174,7 @@ async def test_restart_event_sequence(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_crashing",
-            instance_context="restart_seq",
+            variant="restart_seq",
             config={"crash_delay": 0.3, "exit_code": 1},
             restart="always",
             restart_max=2,
@@ -207,7 +207,7 @@ async def test_restart_event_sequence(nats_server, nats_client):
             await asyncio.sleep(0.5)
 
         # Verify event sequence
-        service_id = "tests.services.mock_crashing:restart_seq"
+        service_id = "mock_crashing.restart_seq"
 
         # Should see at least: start -> crashed -> restarting
         await assert_event_sequence(
@@ -236,17 +236,17 @@ async def test_multiple_services_events(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="multi_1",
+            variant="multi_1",
             config={"work_interval": 0.5}
         ),
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="multi_2",
+            variant="multi_2",
             config={"work_interval": 0.5}
         ),
         ServiceScenario(
             service_type="mock_permanent",
-            instance_context="multi_3",
+            variant="multi_3",
             config={"work_interval": 0.5}
         )
     ]
@@ -287,7 +287,7 @@ async def test_multiple_services_events(nats_server, nats_client):
 
         # Verify each service can be filtered
         for scenario in scenarios:
-            service_id = f"tests.services.mock_permanent:{scenario.instance_context}"
+            service_id = f"mock_permanent.{scenario.instance_context}"
             events = collector.get_events(event_type="start", service_id=service_id)
             assert len(events) > 0, f"No start event for {service_id}"
 
@@ -330,7 +330,7 @@ async def test_status_via_event_collector(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="status_test",
+        variant="status_test",
         nats_host=nats_server.host,
         nats_port=nats_server.port
     )
@@ -348,7 +348,7 @@ async def test_status_via_event_collector(nats_server, nats_client):
             capture_output=True
         ) as harness:
             # Wait for service to reach running status
-            service_id = "tests.services.mock_permanent:status_test"
+            service_id = "mock_permanent.status_test"
             found = await wait_for_status(
                 collector,
                 service_id=service_id,
@@ -363,7 +363,7 @@ async def test_status_via_event_collector(nats_server, nats_client):
         await asyncio.sleep(0.5)
 
     # Verify we collected some events
-    service_id = "tests.services.mock_permanent:status_test"
+    service_id = "mock_permanent.status_test"
     events = collector.get_events(service_id=service_id)
     assert len(events) > 0, "No events collected for service"
 
@@ -383,7 +383,7 @@ async def test_no_crashes_assertion(nats_server, nats_client):
     """
     config_path = create_simple_config(
         service_type="mock_permanent",
-        instance_context="stable_test",
+        variant="stable_test",
         nats_host=nats_server.host,
         nats_port=nats_server.port
     )

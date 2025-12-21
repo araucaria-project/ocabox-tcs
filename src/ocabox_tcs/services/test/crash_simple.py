@@ -9,14 +9,14 @@ from dataclasses import dataclass
 from ocabox_tcs.base_service import service, config, BaseSingleShotService, BaseServiceConfig
 
 
-@config
+@config('test.crash_simple')
 @dataclass
 class TestCrashSimpleConfig(BaseServiceConfig):
     """Configuration for simple crash test service."""
     exit_code: int = 1  # Exit code (0=success, 1=failure, >128=abnormal)
 
 
-@service
+@service('test.crash_simple')
 class TestCrashSimpleService(BaseSingleShotService):
     """Service that exits immediately with configured code."""
 

@@ -12,210 +12,115 @@ if TYPE_CHECKING:
     from .management.service_controller import ServiceController
 
 
+_log = logging.getLogger("svc.base")
+
 # Registry for decorated classes
 _service_registry: dict[str, type["BaseService"]] = {}
 _config_registry: dict[str, type["BaseServiceConfig"]] = {}
 
 
-def _class_name_to_type(class_name: str) -> str:
-    """Convert class name to service type (fallback only)."""
-    import re
-    type_name = class_name
-    if type_name.endswith('Service'):
-        type_name = type_name[:-7]  # Remove 'Service' suffix
-    # Convert CamelCase to snake_case
-    return re.sub('([A-Z]+)', r'_\1', type_name).lower().lstrip('_')
-
-
-def service(cls: type["BaseService"]) -> type["BaseService"]:
+def service(service_type: str):
     """Decorator to register a service class.
 
-    Service type is automatically derived from the filename where the class is defined.
-    The filename (without .py extension) must match the service type used in config files.
+    The service_type parameter is REQUIRED and must match the type used in
+    services.yaml configuration files and the registry section.
+
+    Args:
+        service_type: Explicit service type identifier. Can contain dots for
+                     namespacing (e.g., 'examples.minimal', 'halina.server').
 
     Example:
-        # File: hello_world.py
-        @service
+        @service('hello_world')
         class HelloWorldService(BasePermanentService):
             pass
-        # → Registers as service type "hello_world"
 
-        # File: guider_service.py
-        @service
-        class GuiderService(BasePermanentService):
+        @service('examples.minimal')  # Dots allowed for grouping
+        class MinimalService(BaseBlockingPermanentService):
             pass
-        # → Registers as service type "guider_service"
+
+    The service_type is used for:
+    - Registry lookup in services.yaml
+    - NATS subject construction (svc.status.{type}.{variant})
+    - tcsctl display
+    - Service identification throughout the system
     """
-    try:
-        # Get the file where the class is defined
-        import inspect
-        import os
-        from pathlib import Path
-
-        filename = inspect.getfile(cls)
-        file_path = Path(filename).resolve()
-
-        # Handle __main__ case (when run as script)
-        if os.path.splitext(os.path.basename(filename))[0] == '__main__':
-            import sys
-            script_path = sys.argv[0] if sys.argv else filename
-            file_path = Path(script_path).resolve()
-
-        # Try to detect if service is in a subdirectory under services/
-        # e.g., services/examples/01_minimal.py → examples.01_minimal
-        try:
-            # Find 'services' directory in path
-            parts = file_path.parts
-            if 'services' in parts:
-                services_idx = len(parts) - list(reversed(parts)).index('services') - 1
-                # Get relative path from services/ directory
-                rel_parts = parts[services_idx + 1:]
-                # Remove .py extension from last part
-                rel_parts = list(rel_parts[:-1]) + [Path(rel_parts[-1]).stem]
-                # Join with dots
-                type_id = '.'.join(rel_parts)
-            else:
-                # Fallback to just filename
-                type_id = file_path.stem
-        except (ValueError, IndexError):
-            # Fallback to just filename
-            type_id = file_path.stem
-
-        # Derive module name from file path (for Feature #7: external module support)
-        # This allows services outside ocabox_tcs.services to work correctly
-        module_name = None
-        try:
-            # Try to construct module path from file path
-            # Look for common package markers (src/, tests/, etc.)
-            parts = file_path.parts
-
-            # ALWAYS prefer cls.__module__ unless it's __main__
-            if cls.__module__ != '__main__':
-                module_name = cls.__module__
-                _log.debug(f"Using module name from cls.__module__: {module_name}")
-            else:
-                # Only use file path parsing for __main__ case (direct script execution)
-                file_path = Path(inspect.getfile(cls))
-                parts = file_path.parts
-
-                # Look for 'src' or 'tests' markers
-                for i, part in enumerate(parts):
-                    if part in ('src', 'tests'):
-                        module_path = parts[i + 1:]
-                        module_name = '.'.join(
-                            p.replace('.py', '') for p in module_path
-                        )
-                        _log.debug(
-                            f"Using module name from file path (src/tests marker): {module_name}")
-                        break
-
-                if module_name is None:
-                    _log.warning(
-                        f"Could not determine module name for {cls.__name__}. "
-                        f"File: {file_path}, __module__: {cls.__module__}"
-                    )
-        except Exception:
-                pass
-
-    except Exception as e:
-        # Fallback to class name conversion
-        import logging
-        type_id = _class_name_to_type(cls.__name__)
-        module_name = None
-        logger = logging.getLogger("service.decorator")
-        logger.warning(
-            f"Could not derive service type from filename for {cls.__name__}: {e}. "
-            f"Using class-name-derived type '{type_id}' instead. "
-            f"This may cause service discovery issues - ensure filename matches expected service type."
+    if not isinstance(service_type, str):
+        raise TypeError(
+            f"@service decorator requires a string service_type argument. "
+            f"Usage: @service('my_service_type'). Got: {type(service_type).__name__}"
         )
 
-    # Register the service
-    _service_registry[type_id] = cls
+    if not service_type:
+        raise ValueError(
+            "@service decorator requires a non-empty service_type argument. "
+            "Usage: @service('my_service_type')"
+        )
 
-    # Store type and module name on the class for reference
-    cls._service_type = type_id
-    if module_name:
-        cls._module_name = module_name
+    def decorator(cls: type["BaseService"]) -> type["BaseService"]:
+        # Register the service in global registry
+        _service_registry[service_type] = cls
 
-    return cls
+        # Store type on the class for reference
+        cls._service_type = service_type
+
+        # Module name is just for reference - use what Python provides
+        # No path parsing magic needed since we have explicit service_type
+        cls._module_name = cls.__module__
+
+        _log.debug(f"Registered service '{service_type}' -> {cls.__name__}")
+
+        return cls
+
+    return decorator
 
 
-def config(cls: type["BaseServiceConfig"]) -> type["BaseServiceConfig"]:
+def config(service_type: str):
     """Decorator to register a config class.
 
-    Service type is automatically derived from the filename where the class is defined.
-    The filename (without .py extension) must match the service type used in config files.
+    The service_type parameter is REQUIRED and must match the @service decorator
+    type for the corresponding service class.
+
+    Args:
+        service_type: Explicit service type identifier. Must match the
+                     @service decorator type.
 
     Example:
-        # File: hello_world.py
-        @config
+        @config('hello_world')
+        @dataclass
         class HelloWorldConfig(BaseServiceConfig):
-            pass
-        # → Registers as config for service type "hello_world"
+            message: str = "Hello!"
+            interval: int = 5
 
-        # File: guider_service.py
-        @config
-        class GuiderConfig(BaseServiceConfig):
+        @config('examples.minimal')
+        @dataclass
+        class MinimalConfig(BaseServiceConfig):
             pass
-        # → Registers as config for service type "guider_service"
     """
-    try:
-        # Get the file where the class is defined
-        import inspect
-        import os
-        from pathlib import Path
-
-        filename = inspect.getfile(cls)
-        file_path = Path(filename).resolve()
-
-        # Handle __main__ case (when run as script)
-        if os.path.splitext(os.path.basename(filename))[0] == '__main__':
-            import sys
-            script_path = sys.argv[0] if sys.argv else filename
-            file_path = Path(script_path).resolve()
-
-        # Try to detect if service is in a subdirectory under services/
-        # e.g., services/examples/02_basic.py → examples.02_basic
-        try:
-            # Find 'services' directory in path
-            parts = file_path.parts
-            if 'services' in parts:
-                services_idx = len(parts) - list(reversed(parts)).index('services') - 1
-                # Get relative path from services/ directory
-                rel_parts = parts[services_idx + 1:]
-                # Remove .py extension from last part
-                rel_parts = list(rel_parts[:-1]) + [Path(rel_parts[-1]).stem]
-                # Join with dots
-                type_id = '.'.join(rel_parts)
-            else:
-                # Fallback to just filename
-                type_id = file_path.stem
-        except (ValueError, IndexError):
-            # Fallback to just filename
-            type_id = file_path.stem
-    except Exception as e:
-        # Fallback to class name conversion (remove 'Config' suffix)
-        import logging
-        type_name = cls.__name__
-        if type_name.endswith('Config'):
-            type_name = type_name[:-6]
-        type_id = _class_name_to_type(type_name)
-        logger = logging.getLogger("config.decorator")
-        logger.warning(
-            f"Could not derive config type from filename for {cls.__name__}: {e}. "
-            f"Using class-name-derived type '{type_id}' instead."
+    if not isinstance(service_type, str):
+        raise TypeError(
+            f"@config decorator requires a string service_type argument. "
+            f"Usage: @config('my_service_type'). Got: {type(service_type).__name__}"
         )
 
-    # Register the config
-    _config_registry[type_id] = cls
+    if not service_type:
+        raise ValueError(
+            "@config decorator requires a non-empty service_type argument. "
+            "Usage: @config('my_service_type')"
+        )
 
-    # Store type on the class and set type field
-    cls._service_type = type_id
-    if hasattr(cls, '__dataclass_fields__') and 'type' in cls.__dataclass_fields__:
-        # Set default value for type field
-        cls.__dataclass_fields__['type'].default = type_id
+    def decorator(cls: type["BaseServiceConfig"]) -> type["BaseServiceConfig"]:
+        # Register the config
+        _config_registry[service_type] = cls
+        _log.debug(f"Registered config '{service_type}' -> {cls.__name__}")
 
-    return cls
+        # Store type on the class and set type field default
+        cls._service_type = service_type
+        if hasattr(cls, '__dataclass_fields__') and 'type' in cls.__dataclass_fields__:
+            cls.__dataclass_fields__['type'].default = service_type
+
+        return cls
+
+    return decorator
 
 
 def get_service_class(service_type: str) -> type["BaseService"] | None:
@@ -240,14 +145,22 @@ def list_registered_configs() -> dict[str, type["BaseServiceConfig"]]:
 
 @dataclass
 class BaseServiceConfig:
-    """Base configuration for all services."""
-    type: str = ""  # Service type identifier
-    instance_context: str = ""
+    """Base configuration for all services.
+
+    Attributes:
+        type: Service type identifier (e.g., 'hello_world', 'halina.server')
+        variant: Instance identifier - distinguishes multiple instances of same type.
+                 Cannot contain dots. Examples: 'dev', 'prod', 'jk15'
+        log_level: Logging level for the service
+    """
+    type: str = ""
+    variant: str = ""
     log_level: str = "INFO"
 
     @property
     def id(self) -> str:
-        return f'{self.type}:{self.instance_context}'
+        """Full service identifier in format: {type}.{variant}"""
+        return f'{self.type}.{self.variant}'
 
 
 class BaseService(ABC):
@@ -259,12 +172,64 @@ class BaseService(ABC):
         self.controller: ServiceController | None = None
         self.svc_config: Any = None  # Service config - renamed to avoid collision with user code
         self.svc_logger: logging.Logger | None = None  # Service logger - renamed to avoid collision with user code
-        self._is_running = False
 
     @property
     def is_running(self) -> bool:
-        """Check if service is running."""
-        return self._is_running
+        """Check if service is running.
+
+        Delegates to controller which owns the running state.
+        """
+        if not self.controller:
+            return False
+        return self.controller.is_running
+
+    def is_stopping(self) -> bool:
+        """Check if service is being stopped.
+
+        Delegates to controller which owns the stop signal.
+
+        Returns:
+            True if stop has been signaled, False otherwise
+        """
+        if not self.controller:
+            return False
+        return self.controller.is_stopping()
+
+    async def sleep(self, seconds: float | None = None) -> bool:
+        """Exit-aware sleep that wakes immediately when service stops.
+
+        This is the recommended way to sleep in services, as it allows
+        immediate wakeup when the service is being stopped.
+
+        Delegates to controller which owns the stop event.
+
+        Args:
+            seconds: Time to sleep in seconds, or None to wait indefinitely for stop
+
+        Returns:
+            True if sleep completed normally, False if interrupted by stop signal
+
+        Example:
+            # Sleep for 5 seconds (or until stop)
+            if await self.sleep(5.0):
+                # Sleep completed normally
+                self.svc_logger.info("Work cycle completed")
+            else:
+                # Service stopping - exit loop
+                self.svc_logger.info("Service stopping, exiting loop")
+                return
+
+            # Wait indefinitely for stop signal
+            await self.sleep(None)  # Blocks until service stops
+        """
+        if not self.controller:
+            # Fallback if no controller (shouldn't happen in normal operation)
+            if seconds is None:
+                await asyncio.Event().wait()  # Wait forever
+            else:
+                await asyncio.sleep(seconds)
+            return True
+        return await self.controller.sleep(seconds)
 
     @property
     def monitor(self):
@@ -272,14 +237,18 @@ class BaseService(ABC):
         return self.controller.monitor if self.controller else None
 
     async def _internal_start(self):
-        """Internal start method called by ServiceController."""
-        self._is_running = True
+        """Internal start method called by ServiceController.
+
+        Controller owns the running state, so we just call start_service().
+        """
         await self.start_service()
 
     async def _internal_stop(self):
-        """Internal stop method called by ServiceController."""
+        """Internal stop method called by ServiceController.
+
+        Controller owns the running state, so we just call stop_service().
+        """
         await self.stop_service()
-        self._is_running = False
 
     @abstractmethod
     async def start_service(self):
@@ -296,11 +265,11 @@ class BaseService(ABC):
         """Entry point for running service as a script.
 
         Usage:
-            python service_file.py                              # Use defaults
-            python service_file.py instance_context             # Custom context, no config
-            python service_file.py config.yaml instance_context # Full specification
+            python service_file.py                    # Use defaults (variant='dev')
+            python service_file.py variant            # Custom variant, no config
+            python service_file.py config.yaml variant # Full specification
 
-        The service type is automatically derived from the filename.
+        The service type is taken from the @service decorator.
 
         This is a thin wrapper that:
         1. Initializes ProcessContext (once per process)
@@ -312,6 +281,7 @@ class BaseService(ABC):
 
         from ocabox_tcs.management.process_context import ProcessContext
         from ocabox_tcs.management.service_controller import ServiceController
+        from ocabox_tcs.management.service_registry import ServiceRegistry, validate_variant
 
         parser = argparse.ArgumentParser(description="Start a TCS service.")
         parser.add_argument(
@@ -322,11 +292,11 @@ class BaseService(ABC):
             help="Path to the config file (optional, defaults to None)"
         )
         parser.add_argument(
-            "instance_context",
+            "variant",
             nargs='?',
             default="dev",
             type=str,
-            help="Service instance context/ID (optional, defaults to 'dev')"
+            help="Service variant identifier (optional, defaults to 'dev')"
         )
         parser.add_argument("--runner-id", type=str, help="Optional runner ID for monitoring")
         parser.add_argument("--parent-name", type=str, default=None,
@@ -334,16 +304,30 @@ class BaseService(ABC):
         parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
         args = parser.parse_args()
 
-        # Smart detection: if config_file is provided but instance_context is "dev" (default),
+        # Smart detection: if config_file is provided but variant is "dev" (default),
         # check if config_file looks like a file path (ends with .yaml/.yml)
-        # If not, treat it as instance_context instead
-        if args.config_file is not None and args.instance_context == "dev":
-            # Single argument provided - is it a config file or instance context?
+        # If not, treat it as variant instead
+        if args.config_file is not None and args.variant == "dev":
+            # Single argument provided - is it a config file or variant?
             if not (args.config_file.endswith('.yaml') or args.config_file.endswith('.yml')):
-                # Doesn't look like a config file - treat as instance_context
-                args.instance_context = args.config_file
+                # Doesn't look like a config file - treat as variant
+                args.variant = args.config_file
                 args.config_file = None
 
+        # Validate variant has no dots
+        try:
+            validate_variant(args.variant)
+        except ValueError as e:
+            import sys
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Get service type from decorator
+        if not hasattr(cls, '_service_type') or cls._service_type is None:
+            raise TypeError(
+                f"Service class {cls.__name__} has no @service decorator. "
+                f"Use @service('service_type') to register the class."
+            )
         service_type = cls._service_type
 
         # Load .env file if it exists (before logging setup)
@@ -364,7 +348,7 @@ class BaseService(ABC):
                 logger.info(f"Loaded environment from {env_file_path}")
             logger.info("=" * 60)
             logger.info("TCS - Telescope Control Services")
-            logger.info(f"Standalone Service: {service_type}:{args.instance_context}")
+            logger.info(f"Standalone Service: {service_type}.{args.variant}")
             if args.config_file:
                 logger.info(f"Config: {args.config_file}")
             else:
@@ -376,26 +360,23 @@ class BaseService(ABC):
             # Initialize ProcessContext (once per process)
             process_ctx = await ProcessContext.initialize(config_file=args.config_file)
 
-            # Create controller
-            # Support external modules (Feature #7) - use decorator's captured module name
-            if hasattr(cls, '_module_name'):
-                module_name = cls._module_name
-            else:
-                # Fallback for legacy services without decorator info
-                module_name = f"ocabox_tcs.services.{service_type}"
+            # Create ServiceRegistry from config
+            registry = None
+            if process_ctx.config_manager:
+                raw_config = process_ctx.config_manager.get_raw_config()
+                registry = ServiceRegistry(raw_config)
 
+            # Create controller with new service_type + variant interface
             controller = ServiceController(
-                module_name=module_name,
-                instance_id=args.instance_context,
-                runner_id=args.runner_id
+                service_type=service_type,
+                variant=args.variant,
+                registry=registry,
+                runner_id=args.runner_id,
+                parent_name=args.parent_name
             )
 
             # Initialize and start service
             if await controller.initialize():
-                # Set parent_name if provided (for hierarchical display)
-                if args.parent_name and controller.monitor:
-                    controller.monitor.parent_name = args.parent_name
-
                 if await controller.start_service():
                     try:
                         # Wait for shutdown signal

@@ -6,7 +6,6 @@ suitable for development and resource-constrained environments.
 
 import asyncio
 import logging
-import signal
 from datetime import datetime
 from time import time
 from typing import Any
@@ -14,6 +13,7 @@ from typing import Any
 from ocabox_tcs.launchers.base_launcher import BaseLauncher, BaseRunner, ServiceRunnerConfig
 from ocabox_tcs.management.process_context import ProcessContext
 from ocabox_tcs.management.service_controller import ServiceController
+from ocabox_tcs.management.service_registry import ServiceRegistry
 
 
 class AsyncioRunner(BaseRunner):
@@ -22,13 +22,16 @@ class AsyncioRunner(BaseRunner):
     def __init__(
         self,
         config: ServiceRunnerConfig,
+        registry: ServiceRegistry,
         launcher_id: str | None = None,
         subject_prefix: str = "svc"
     ):
         super().__init__(config, launcher_id=launcher_id, subject_prefix=subject_prefix)
+        self.registry = registry
         self.controller: ServiceController | None = None
         self.start_time: datetime | None = None
         self._crash_monitor_task: asyncio.Task | None = None
+        self._stopping_gracefully: bool = False  # Track if we initiated stop
 
     async def start(self) -> bool:
         """Start service in current process.
@@ -40,17 +43,13 @@ class AsyncioRunner(BaseRunner):
             return False
 
         try:
-            # Resolve module name: use explicit module if provided, else default to internal
-            if self.config.module:
-                module_name = self.config.module
-            else:
-                module_name = f"ocabox_tcs.services.{self.config.service_type}"
-            instance_id = self.config.instance_context or self.config.service_type
-
+            # Create ServiceController with service_type and variant
             self.controller = ServiceController(
-                module_name=module_name,
-                instance_id=instance_id,
-                runner_id=self.config.runner_id
+                service_type=self.config.service_type,
+                variant=self.config.variant,
+                registry=self.registry,
+                runner_id=self.config.runner_id,
+                parent_name=self.config.parent_name
             )
 
             # ProcessContext already initialized - just initialize controller
@@ -84,6 +83,9 @@ class AsyncioRunner(BaseRunner):
             return False
 
         try:
+            # Mark that we're stopping gracefully so _monitor_crash doesn't warn
+            self._stopping_gracefully = True
+
             self.logger.info(f"Stopping {self.service_id}")
             await self.controller.stop_service()
             await self.controller.shutdown()
@@ -142,11 +144,19 @@ class AsyncioRunner(BaseRunner):
             while self._is_running and self.controller is not None:
                 # Check if service is still running
                 if not self.controller.is_running and self.controller is not None:
-                    # Service crashed or stopped unexpectedly
+                    # Service stopped - check if we initiated it
                     # Clear controller immediately to prevent duplicate handling
                     controller = self.controller
                     self.controller = None
 
+                    # If we initiated stop gracefully, just publish STOP and return
+                    if self._stopping_gracefully:
+                        self.logger.info(f"Service {self.service_id} stopped gracefully")
+                        await self._publish_stop_event(reason="completed", exit_code=0)
+                        self._is_running = False
+                        return
+
+                    # Service stopped unexpectedly - warn and check if we should restart
                     self.logger.warning(
                         f"Service {self.service_id} stopped unexpectedly"
                     )
@@ -205,73 +215,6 @@ class AsyncioRunner(BaseRunner):
         except Exception as e:
             self.logger.error(f"Crash monitor error for {self.service_id}: {e}")
 
-    async def _publish_start_event(self):
-        """Publish START event to NATS registry."""
-        import socket
-        import os
-        await self._publish_registry_event(
-            "start",
-            status="startup",
-            pid=os.getpid(),
-            hostname=socket.gethostname()
-        )
-
-    async def _publish_stop_event(self, reason: str = "completed", exit_code: int = 0):
-        """Publish STOP event to NATS registry.
-
-        Args:
-            reason: Reason for stop (default: "completed")
-            exit_code: Exit code (default: 0)
-        """
-        await self._publish_registry_event(
-            "stop",
-            status="shutdown",
-            reason=reason,
-            exit_code=exit_code
-        )
-
-    async def _publish_crash_event(self, exit_code: int):
-        """Publish CRASH event to NATS registry.
-
-        Args:
-            exit_code: Exit code (1 for asyncio crash)
-        """
-        will_restart = self._should_restart(exit_code)
-        await self._publish_registry_event(
-            "crashed",
-            status="error" if will_restart else "failed",
-            exit_code=exit_code,
-            restart_policy=self.config.restart,
-            will_restart=will_restart
-        )
-
-    async def _publish_restarting_event(self, attempt: int):
-        """Publish RESTARTING event to NATS registry.
-
-        Args:
-            attempt: Restart attempt number (1-based)
-        """
-        await self._publish_registry_event(
-            "restarting",
-            status="startup",
-            restart_attempt=attempt,
-            max_restarts=self.config.restart_max if self.config.restart_max > 0 else None
-        )
-
-    async def _publish_failed_event(self, reason: str):
-        """Publish FAILED event to NATS registry.
-
-        Args:
-            reason: Reason for failure
-        """
-        await self._publish_registry_event(
-            "failed",
-            status="failed",
-            reason=reason,
-            restart_count=len(self._restart_history)
-        )
-
-
 class AsyncioLauncher(BaseLauncher):
     """Launcher that manages services within the same process using asyncio."""
 
@@ -281,121 +224,24 @@ class AsyncioLauncher(BaseLauncher):
             launcher_id = "asyncio-launcher"
 
         super().__init__(launcher_id)
-        self._shutdown_event = asyncio.Event()
-        self.process_ctx: ProcessContext | None = None
 
-    async def initialize(self, process_ctx: ProcessContext) -> bool:
-        """Initialize launcher from ProcessContext.
+    def _get_launcher_type_display(self) -> str:
+        """Get display name for banner."""
+        return "Asyncio (all services in same process)"
 
-        Uses already-initialized ProcessContext (shared by all services in this process).
-
-        Args:
-            process_ctx: Already-initialized ProcessContext
-
-        Returns:
-            True if initialization successful
-        """
-        try:
-            # Store ProcessContext reference (shared by all services)
-            self.process_ctx = process_ctx
-            self.logger.debug("Using ProcessContext for asyncio launcher")
-
-            # Initialize launcher monitoring (auto-detects NATS via ProcessContext)
-            await self.initialize_monitoring(subject_prefix="svc")
-
-            # Get services list from config_manager (use raw config to include 'services' key)
-            raw_config = process_ctx.config_manager.get_raw_config()
-            services_list = raw_config.get('services', [])
-
-            if not services_list:
-                self.logger.warning("No services found in configuration")
-                return True
-
-            # Register runners for each service
-            for service_cfg in services_list:
-                runner_config = ServiceRunnerConfig(
-                    service_type=service_cfg['type'],
-                    instance_context=service_cfg.get('instance_context'),
-                    config_file=process_ctx.config_file,  # Not used by AsyncioRunner, but keep for consistency
-                    runner_id=f"{self.launcher_id}.{service_cfg['type']}",
-                    module=service_cfg.get('module'),  # External service package (optional)
-                    restart=service_cfg.get('restart', 'no'),  # Restart policy
-                    restart_sec=float(service_cfg.get('restart_sec', 5.0)),  # Restart delay (seconds)
-                    restart_max=int(service_cfg.get('restart_max', 0)),  # Max restarts (0=unlimited)
-                    restart_window=float(service_cfg.get('restart_window', 60.0))  # Time window (seconds)
-                )
-
-                runner = AsyncioRunner(
-                    runner_config,
-                    launcher_id=self.launcher_id,
-                    subject_prefix="svc"  # TODO: get from config like ProcessLauncher does
-                )
-                self.runners[runner.service_id] = runner
-                self.logger.debug(f"Registered runner for {runner.service_id}")
-                self.logger.debug(
-                    f"Restart policy for {runner.service_id}: {runner_config.restart} "
-                    f"(max={runner_config.restart_max}, delay={runner_config.restart_sec}s)"
-                )
-
-            # Declare services to registry (marks them as part of configuration)
-            await self.declare_services(subject_prefix="svc")
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize launcher: {e}", exc_info=True)
-            return False
-
-    async def start_all(self) -> bool:
-        """Start all configured services."""
-        success = True
-        for service_id, runner in self.runners.items():
-            if not await runner.start():
-                self.logger.error(f"Failed to start {service_id}")
-                success = False
-
-        # Start launcher monitoring after services are started
-        if success:
-            await self.start_monitoring()
-
-        return success
-
-    async def stop_all(self) -> bool:
-        """Stop all running services."""
-        success = True
-        for service_id in list(self.runners.keys()):
-            if not await self.stop_service(service_id):
-                self.logger.error(f"Failed to stop {service_id}")
-                success = False
-        return success
-
-    async def run(self):
-        """Run launcher with signal handling."""
-        loop = asyncio.get_running_loop()
-
-        def handle_signal(sig):
-            self.logger.info(f"Received signal {sig}, shutting down...")
-            asyncio.create_task(self._shutdown())
-
-        loop.add_signal_handler(signal.SIGINT, lambda: handle_signal("SIGINT"))
-        loop.add_signal_handler(signal.SIGTERM, lambda: handle_signal("SIGTERM"))
-
-        self.logger.info("Services started (asyncio). Press Ctrl+C to stop.")
-        await self._shutdown_event.wait()
-        self.logger.info("Launcher shutdown complete")
-
-    async def _shutdown(self):
-        """Shutdown all services and process context."""
-        # Stop launcher monitoring first
-        await self.stop_monitoring()
-
-        self.logger.info("Stopping all services...")
-        await self.stop_all()
-
-        if self.process_ctx:
-            await self.process_ctx.shutdown()
-
-        self._shutdown_event.set()
+    def _create_runner(
+        self,
+        config: ServiceRunnerConfig,
+        registry: ServiceRegistry,
+        subject_prefix: str
+    ) -> AsyncioRunner:
+        """Create AsyncioRunner for in-process execution."""
+        return AsyncioRunner(
+            config,
+            registry=registry,
+            launcher_id=self.launcher_id,
+            subject_prefix=subject_prefix
+        )
 
 
 async def amain():
@@ -403,84 +249,28 @@ async def amain():
     import argparse
     import os
     import socket
-    import sys
-    from pathlib import Path
 
-    from ocabox_tcs.management.environment import load_dotenv_if_available
+    def customize_parser(base_parser):
+        """Customize parser for asyncio launcher."""
+        parser = argparse.ArgumentParser(
+            description="Start TCS asyncio launcher (all services in same process)",
+            parents=[base_parser]
+        )
+        return parser
 
-    # Load .env file if it exists (before everything else)
-    env_loaded, env_file_path = load_dotenv_if_available()
+    def factory(launcher_id, args):
+        """Create AsyncioLauncher."""
+        # Generate proper launcher ID
+        config_file = BaseLauncher.determine_config_file(args.config)
+        launcher_id = BaseLauncher.gen_launcher_name(
+            "asyncio-launcher",
+            config_file,
+            os.getcwd(),
+            socket.gethostname()
+        )
+        return AsyncioLauncher(launcher_id=launcher_id)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s.%(msecs)03d [%(levelname)-5s] [%(name)-15s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-    logger = logging.getLogger("launch")
-
-    # Log if .env was loaded
-    if env_loaded and env_file_path:
-        logger.info(f"Loaded environment from {env_file_path}")
-
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Start TCS asyncio launcher")
-    parser.add_argument(
-        "--config",
-        default=None,
-        help="Path to services config file (default: config/services.yaml)"
-    )
-    parser.add_argument("--no-banner", action="store_true", help="Suppress startup banner")
-    args = parser.parse_args()
-
-    # Determine config file and validate
-    if args.config is not None:
-        # User explicitly provided --config, file MUST exist
-        config_file = args.config
-        if not Path(config_file).exists():
-            logger.error(f"Configuration file not found: {config_file}")
-            logger.error("Explicitly provided config file must exist. Exiting.")
-            sys.exit(1)
-    else:
-        # Use default, missing file is OK (will use defaults)
-        config_file = "config/services.yaml"
-        if not Path(config_file).exists():
-            logger.info(f"Default config file not found: {config_file}")
-            logger.info("Continuing with empty configuration")
-
-    # Print startup banner (unless suppressed)
-    if not args.no_banner:
-        logger.info("=" * 60)
-        logger.info("TCS - Telescope Control Services")
-        logger.info("Launcher: Asyncio (all services in same process)")
-        logger.info("=" * 60)
-
-    # Initialize ProcessContext (handles config loading, shared by all services)
-    process_ctx = await ProcessContext.initialize(config_file=config_file)
-
-    # Generate deterministic launcher ID from config file path, pwd, and hostname
-    launcher_id = BaseLauncher.gen_launcher_name(
-        "asyncio-launcher",
-        config_file,
-        os.getcwd(),
-        socket.gethostname()
-    )
-
-    # Create and initialize launcher
-    launcher = AsyncioLauncher(launcher_id=launcher_id)
-    if not await launcher.initialize(process_ctx):
-        logging.error("Failed to initialize launcher")
-        await process_ctx.shutdown()
-        return
-
-    # Start services and run
-    if not await launcher.start_all():
-        logging.error("Failed to start services")
-        await launcher.stop_all()
-        await process_ctx.shutdown()
-        return
-
-    await launcher.run()
+    await BaseLauncher.launch(factory, customize_parser)
 
 
 def main():

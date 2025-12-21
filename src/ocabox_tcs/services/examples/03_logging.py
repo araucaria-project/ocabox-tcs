@@ -13,13 +13,12 @@ Run with launchers:
     poetry run tcs_asyncio --config config/examples.yaml
     poetry run tcs_process --config config/examples.yaml
 """
-import asyncio
 from dataclasses import dataclass
 
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
 
 
-@config
+@config('examples.logging')
 @dataclass
 class LoggingConfig(BaseServiceConfig):
     """Configuration for logging service."""
@@ -27,7 +26,7 @@ class LoggingConfig(BaseServiceConfig):
     simulate_errors: bool = True
 
 
-@service
+@service('examples.logging')
 class LoggingService(BaseBlockingPermanentService):
     """Service demonstrating logging best practices."""
 
@@ -60,7 +59,7 @@ class LoggingService(BaseBlockingPermanentService):
                 except ValueError as e:
                     self.svc_logger.error(f"Caught error in cycle {self.cycle}: {e}")
 
-            await asyncio.sleep(self.svc_config.interval)
+            await self.sleep(self.svc_config.interval)
 
     async def on_stop(self):
         """Called after main loop stops."""

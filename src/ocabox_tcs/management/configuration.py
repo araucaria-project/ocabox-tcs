@@ -285,10 +285,19 @@ class ConfigurationManager:
 
             self.logger.info(f"  [{source.priority:2d}] {source_name:15s} {status}{details}")
     
-    def resolve_config(self, service_module: str | None = None, instance_id: str | None = None) -> dict[str, Any]:
+    def resolve_config(
+        self, service_type: str | None = None, variant: str | None = None
+    ) -> dict[str, Any]:
         """Resolve configuration for a service from all sources.
 
-        if service_module is None, return global configuration only."""
+        Args:
+            service_type: Service type identifier (e.g., 'hello_world', 'halina.server')
+            variant: Instance variant identifier (e.g., 'dev', 'prod')
+
+        Returns:
+            Merged configuration dict for the service. If service_type is None,
+            returns global configuration only.
+        """
         merged_config = {}
 
         # Start with lowest priority sources and merge up
@@ -301,7 +310,7 @@ class ConfigurationManager:
                 if source_config:
                     # Look for service-specific config
                     service_config = self._extract_service_config(
-                        source_config, service_module, instance_id
+                        source_config, service_type, variant
                     )
                     if service_config:
                         merged_config = self._deep_merge(merged_config, service_config)
@@ -333,32 +342,58 @@ class ConfigurationManager:
 
         return merged_config
     
-    def _extract_service_config(self, config: dict[str, Any],
-                               module: str | None, instance: str | None) -> dict[str, Any]:
-        """Extract service-specific configuration, or global if module is None."""
+    def get_registry(self) -> dict[str, str | None]:
+        """Get the service registry mapping from configuration.
+
+        The registry maps service_type to module_path (or None for internal services).
+
+        Returns:
+            Dict mapping service_type to module_path, or empty dict if no registry.
+        """
+        raw_config = self.get_raw_config()
+        return raw_config.get("registry", {}) or {}
+
+    def _extract_service_config(
+        self, config: dict[str, Any], service_type: str | None, variant: str | None
+    ) -> dict[str, Any]:
+        """Extract service-specific configuration by type and variant.
+
+        Args:
+            config: Full configuration dict from a source
+            service_type: Service type identifier (e.g., 'hello_world', 'halina.server')
+            variant: Instance variant identifier (e.g., 'dev', 'prod')
+
+        Returns:
+            Merged configuration for the service
+        """
         service_config = {}
 
-        # Look for exact match: services.module.instance
-        if "services" in config and module and instance:
+        # Look for exact match in services list
+        if "services" in config and service_type and variant:
             services = config["services"]
             if isinstance(services, list):
-                # List format: find matching service entry
+                # List format: find matching service entry by type and variant
                 for service_entry in services:
-                    if (service_entry.get("type") == module.split(".")[-1] and
-                        service_entry.get("instance_context") == instance):
+                    entry_type = service_entry.get("type")
+                    # Support both old 'instance_context' and new 'variant' field names
+                    entry_variant = service_entry.get("variant") or service_entry.get("instance_context")
+                    if entry_type == service_type and entry_variant == variant:
                         service_config.update(service_entry)
+                        break
             elif isinstance(services, dict):
-                # Dict format: hierarchical lookup
-                module_name = module.split(".")[-1]
-                if module_name in services:
-                    module_config = services[module_name]
-                    if isinstance(module_config, dict) and instance in module_config:
-                        service_config.update(module_config[instance])
-                    elif not isinstance(module_config, dict):
-                        service_config.update(module_config)
+                # Dict format: hierarchical lookup (service_type -> variant -> config)
+                if service_type in services:
+                    type_config = services[service_type]
+                    if isinstance(type_config, dict) and variant in type_config:
+                        service_config.update(type_config[variant])
+                    elif not isinstance(type_config, dict):
+                        service_config.update(type_config)
 
-        # Also include global config
-        global_config = {k: v for k, v in config.items() if k != "services"}
+        # Also include global config (excluding services and registry)
+        global_config = {
+            k: v for k, v in config.items()
+            if k not in ("services", "registry")
+        }
         if global_config:
             service_config = self._deep_merge(global_config, service_config)
 

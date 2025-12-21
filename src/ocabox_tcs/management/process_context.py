@@ -52,18 +52,18 @@ class ProcessContext:
         self._fully_initialized = False  # Tracks if initialize() was called
         self._singleton_created = True
         self.logger.debug("ProcessContext singleton initialized")
-    
+
     @property
     def messenger(self) -> Messenger | None:
         """Get shared NATS messenger."""
         return self._messenger
-    
+
     async def initialize_messenger(self, host: str | None = None, port: int | None = None,
                    wait: float | bool = True, timeout: float | None = None, force_reopen: bool = False):
         """Initialize shared NATS messenger."""
         if self._messenger is not None:
             return
-        
+
         try:
             self._messenger = Messenger()
             if self._messenger.is_open:
@@ -81,7 +81,7 @@ class ProcessContext:
             self.logger.error(f"Failed to open messenger to {host}:{port}: {e}")
             self._messenger = None
             raise
-    
+
     async def shutdown_messenger(self):
         """Shutdown NATS messenger.
 
@@ -97,39 +97,39 @@ class ProcessContext:
             else:
                 self.logger.debug("Skipping messenger close - not owned by ProcessContext")
             self._messenger = None
-    
+
     def register_controller(self, controller: ServiceController):
         """Register a service controller."""
-        service_id = f"{controller.module_name}:{controller.instance_id}"
+        service_id = controller.service_id
         self._controllers[service_id] = controller
         self.logger.debug(f"Registered controller: {service_id}")
-    
+
     def unregister_controller(self, controller: ServiceController):
         """Unregister a service controller."""
-        service_id = f"{controller.module_name}:{controller.instance_id}"
+        service_id = controller.service_id
         if service_id in self._controllers:
             del self._controllers[service_id]
             self.logger.debug(f"Unregistered controller: {service_id}")
-    
-    def get_controller(self, module_name: str, instance_id: str) -> ServiceController | None:
+
+    def get_controller(self, service_type: str, variant: str) -> ServiceController | None:
         """Get a registered controller."""
-        service_id = f"{module_name}:{instance_id}"
+        service_id = f"{service_type}.{variant}"
         return self._controllers.get(service_id)
-    
+
     def cache_config(self, key: str, config: Any):
         """Cache configuration data."""
         self._config_cache[key] = config
         self.logger.debug(f"Cached config for: {key}")
-    
+
     def get_cached_config(self, key: str) -> Any | None:
         """Get cached configuration data."""
         return self._config_cache.get(key)
-    
+
     def clear_config_cache(self):
         """Clear configuration cache."""
         self._config_cache.clear()
         self.logger.debug("Cleared config cache")
-    
+
     @classmethod
     async def initialize(cls, config_file: str | None = None, args_config: dict[str, Any] | None = None) -> ProcessContext:
         """Initialize process-wide resources. Call once per OS process.

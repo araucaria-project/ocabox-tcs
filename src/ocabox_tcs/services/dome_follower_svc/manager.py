@@ -51,7 +51,7 @@ class Manager:
         self.svc_logger.info(f'Starting communication.')
         self.nats_conn = NatsConn(manager=self)
         self.tic_conn = TicConn(manager=self)
-        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.instance_context)
+        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.variant)
         await self.nats_conn.connect()
         await self.tic_conn.get_obs_cfg()
         await self.nats_conn.start_responders()

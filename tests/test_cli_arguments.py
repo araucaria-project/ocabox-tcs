@@ -34,13 +34,13 @@ def test_minimal_invocation_no_args():
     # Check output
     combined = stdout + stderr
     assert "TCS - Telescope Control Services" in combined
-    assert "external_worker:dev" in combined  # Should use default context "dev"
+    assert "external_worker.dev" in combined  # Should use default variant "dev"
     assert "Config: Using defaults (no config file)" in combined
     assert "External worker tick" in combined
 
 
 def test_minimal_invocation_context_only():
-    """Test running service with only instance_context (no config file)."""
+    """Test running service with only variant (no config file)."""
     # Setup environment with PYTHONPATH
     env = os.environ.copy()
     env['PYTHONPATH'] = PROJECT_ROOT
@@ -62,13 +62,13 @@ def test_minimal_invocation_context_only():
 
     # Check output
     combined = stdout + stderr
-    assert "external_worker:prod" in combined  # Should use custom context "prod"
+    assert "external_worker.prod" in combined  # Should use custom variant "prod"
     assert "Config: Using defaults (no config file)" in combined
     assert "External worker tick" in combined
 
 
 def test_full_invocation_with_config():
-    """Test running service with config file and context (backward compatibility)."""
+    """Test running service with config file and variant (backward compatibility)."""
     # Setup environment with PYTHONPATH
     env = os.environ.copy()
     env['PYTHONPATH'] = PROJECT_ROOT
@@ -95,7 +95,7 @@ def test_full_invocation_with_config():
 
     # Check output
     combined = stdout + stderr
-    assert "external_worker:demo" in combined  # Should use specified context "demo"
+    assert "external_worker.demo" in combined  # Should use specified variant "demo"
     assert "Config: config/test_external.yaml" in combined
     assert "External worker tick" in combined
 
@@ -126,9 +126,9 @@ def test_nats_default_connection_attempt():
 
     # Should either connect successfully or show connection attempt message
     assert (
-        "Attempting default NATS connection to localhost:4222" in combined or
-        "Connected to default NATS server" in combined or
-        "Could not connect to default NATS server" in combined or
+        "Attempting NATS connection to localhost:4222" in combined or
+        "Connected to NATS server" in combined or
+        "Could not connect to NATS server" in combined or
         "Discovered existing open Messenger" in combined
     ), f"Expected NATS connection message not found in output:\n{combined}"
 
@@ -161,7 +161,7 @@ def test_parent_name_argument():
 
     # Check that service started successfully with parent-name arg
     combined = stdout + stderr
-    assert "external_worker:dev" in combined
+    assert "external_worker.dev" in combined
     assert "TCS - Telescope Control Services" in combined
 
     # Service should start successfully (parent_name doesn't cause errors)

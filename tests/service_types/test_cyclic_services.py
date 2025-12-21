@@ -26,7 +26,7 @@ async def test_cyclic_service_executes_periodically(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="periodic",
+            variant="periodic",
             config={
                 "cycle_interval": 1.0,
                 "execution_duration": 0.3,
@@ -55,7 +55,7 @@ async def test_cyclic_service_executes_periodically(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start
-                service_id = "tests.services.mock_cyclic:periodic"
+                service_id = "mock_cyclic.periodic"
                 await wait_for_event(
                     collector,
                     event_type="start",
@@ -91,7 +91,7 @@ async def test_cyclic_service_with_max_cycles(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="limited",
+            variant="limited",
             config={
                 "cycle_interval": 0.5,
                 "execution_duration": 0.2,
@@ -120,7 +120,7 @@ async def test_cyclic_service_with_max_cycles(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start
-                service_id = "tests.services.mock_cyclic:limited"
+                service_id = "mock_cyclic.limited"
                 await wait_for_event(
                     collector,
                     event_type="start",
@@ -156,7 +156,7 @@ async def test_cyclic_service_with_failure(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="failing",
+            variant="failing",
             config={
                 "cycle_interval": 0.5,
                 "execution_duration": 0.2,
@@ -186,7 +186,7 @@ async def test_cyclic_service_with_failure(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start
-                service_id = "tests.services.mock_cyclic:failing"
+                service_id = "mock_cyclic.failing"
                 await wait_for_event(
                     collector,
                     event_type="start",
@@ -223,7 +223,7 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="fast",
+            variant="fast",
             config={
                 "cycle_interval": 0.5,
                 "execution_duration": 0.1,
@@ -232,7 +232,7 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
         ),
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="medium",
+            variant="medium",
             config={
                 "cycle_interval": 0.7,
                 "execution_duration": 0.2,
@@ -241,7 +241,7 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
         ),
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="slow",
+            variant="slow",
             config={
                 "cycle_interval": 1.0,
                 "execution_duration": 0.3,
@@ -271,7 +271,7 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
             ) as harness:
                 # Wait for all services to start
                 for scenario in scenarios:
-                    service_id = f"tests.services.mock_cyclic:{scenario.instance_context}"
+                    service_id = f"mock_cyclic.{scenario.instance_context}"
                     await wait_for_event(
                         collector,
                         event_type="start",
@@ -281,7 +281,7 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
 
                 # Wait for all services to complete (event-driven!)
                 for scenario in scenarios:
-                    service_id = f"tests.services.mock_cyclic:{scenario.instance_context}"
+                    service_id = f"mock_cyclic.{scenario.instance_context}"
                     await wait_for_event(
                         collector,
                         event_type="stop",
@@ -291,7 +291,7 @@ async def test_multiple_cyclic_services(nats_server, nats_client):
 
         # Verify all services
         for scenario in scenarios:
-            service_id = f"tests.services.mock_cyclic:{scenario.instance_context}"
+            service_id = f"mock_cyclic.{scenario.instance_context}"
             await assert_service_started(collector, service_id)
 
             # Services with max_cycles should have stopped
@@ -316,7 +316,7 @@ async def test_cyclic_service_short_interval(nats_server, nats_client):
     scenarios = [
         ServiceScenario(
             service_type="mock_cyclic",
-            instance_context="rapid",
+            variant="rapid",
             config={
                 "cycle_interval": 0.2,
                 "execution_duration": 0.05,
@@ -345,7 +345,7 @@ async def test_cyclic_service_short_interval(nats_server, nats_client):
                 capture_output=True
             ) as harness:
                 # Wait for service to start
-                service_id = "tests.services.mock_cyclic:rapid"
+                service_id = "mock_cyclic.rapid"
                 await wait_for_event(
                     collector,
                     event_type="start",
