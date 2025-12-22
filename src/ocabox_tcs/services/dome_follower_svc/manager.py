@@ -128,9 +128,26 @@ class Manager:
 
     async def dome_target_az(self, mount_az: float) -> Optional[float]:
         if self.mount_type == 'eq':
-            ra = await self.tic_conn.mount.aget_ra()
-            dec = await self.tic_conn.mount.aget_dec()
-            side_of_pier = await self.tic_conn.mount.aget_sideofpier()
+            try:
+                ra = await self.tic_conn.mount.aget_ra()
+                dec = await self.tic_conn.mount.aget_dec()
+                side_of_pier = await self.tic_conn.mount.aget_sideofpier()
+            except OcaboxServerError as e:
+                self.svc_logger.error(f'Tic OcaboxServerError, {e}')
+                self.service.monitor.set_status(
+                    Status.ERROR, f"Tic dome get Server Error {e}"
+                )
+                return None
+            except CommunicationTimeoutError:
+                self.svc_logger.error(f'Tic CommunicationTimeoutError')
+                self.service.monitor.set_status(Status.DEGRADED, f"Tic dome get Time out")
+                return None
+            except OcaboxAccessDenied:
+                self.svc_logger.error(f'Tic OcaboxAccessDenied')
+                self.service.monitor.set_status(
+                    Status.ERROR, f"Tic dome get Access Denied"
+                )
+                return None
             if ra is None or dec is None or side_of_pier is None:
                 return None
             eq_mount_az, info_dict = dome_eq_azimuth(
@@ -169,6 +186,7 @@ class Manager:
                     dome_az = await self.tic_conn.dome.aget_az()
                     mount_az = await self.tic_conn.mount.aget_az()
                     mount_slewing = await self.tic_conn.mount.aget_slewing()
+                    mount_tracking = await self.tic_conn.mount.aget_tracking()
                     await self.calc_dome_speed(dome_az=dome_az)
                     self.dome_az_last = dome_az
                 except OcaboxServerError as e:
@@ -188,7 +206,7 @@ class Manager:
                     )
                     return
 
-            if dome_slewing is False and mount_slewing is False:
+            if dome_slewing is False and mount_slewing is False and mount_tracking is True:
                 dome_target_az = await self.dome_target_az(mount_az=mount_az)
                 if dome_target_az is None:
                     self.svc_logger.error(f'Can not calculate dome target az')
