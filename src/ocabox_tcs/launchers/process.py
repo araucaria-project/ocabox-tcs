@@ -7,6 +7,7 @@ development and testing environments.
 import asyncio
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from time import time
@@ -55,7 +56,7 @@ class ProcessRunner(BaseRunner):
             module_path = self.registry.resolve_module(self.config.service_type)
 
             args = [
-                "python", "-m",
+                sys.executable, "-m",
                 module_path,
             ]
 
