@@ -462,6 +462,10 @@ class BaseLauncher(ABC):
     def determine_config_file(config_arg: str | None) -> str:
         """Determine and validate config file from argument.
 
+        Thin wrapper around `bootstrap.determine_config_file` to share semantics
+        with CLI tools (e.g., tcsctl). Explicit config files MUST exist; default
+        path is returned as-is even when missing (callers handle gracefully).
+
         Args:
             config_arg: Config file path from CLI argument (or None for default)
 
@@ -471,30 +475,8 @@ class BaseLauncher(ABC):
         Raises:
             SystemExit: If explicitly provided config file doesn't exist
         """
-        import sys
-        import logging
-        from pathlib import Path
-
-        logger = logging.getLogger("launch")
-
-        if config_arg is not None:
-            # User explicitly provided --config, file MUST exist
-            config_file = config_arg
-            if not Path(config_file).exists():
-                logger.error(f"Configuration file not found: {config_file}")
-                logger.error("Explicitly provided config file must exist. Exiting.")
-                sys.exit(1)
-            logger.info(f"Using config file: {config_file}")
-        else:
-            # Use default, missing file is OK (will use defaults)
-            config_file = "config/services.yaml"
-            if not Path(config_file).exists():
-                logger.info(f"Default config file not found: {config_file}")
-                logger.info("Continuing with empty configuration")
-            else:
-                logger.info(f"Using default config file: {config_file}")
-
-        return config_file
+        from ocabox_tcs.management.bootstrap import determine_config_file
+        return determine_config_file(config_arg)
 
     @classmethod
     async def launch(cls, launcher_factory, parser_customizer=None):

@@ -225,11 +225,31 @@ class ServiceControlClient:
 
     # ========== One-shot Methods (Snapshot) ==========
 
+    @staticmethod
+    def _is_currently_relevant(service: "ServiceInfo") -> bool:
+        """Predicate for the default (no `--all`) view.
+
+        A service is "currently relevant" if it is running, or if it is recently
+        broken: fresh ERROR/FAILED that hasn't published a stop event yet. The
+        latter covers crashes (launchers publish `crashed`, never `stop`) — they
+        keep `stop_time = None` and a non-operational status, so the plain
+        `is_running` predicate would otherwise hide them.
+        """
+        if service.is_running:
+            return True
+        return (
+            service.is_fresh
+            and service.stop_time is None
+            and service.status in (Status.ERROR, Status.FAILED)
+        )
+
     async def list_services(self, include_stopped: bool = False) -> list[ServiceInfo]:
         """Collect current snapshot of all services.
 
         Args:
-            include_stopped: Include stopped services in results
+            include_stopped: If True, return all services. If False (default),
+                return only "currently relevant" services (see
+                `_is_currently_relevant`): running plus recently-broken.
 
         Returns:
             List of ServiceInfo objects
@@ -237,7 +257,7 @@ class ServiceControlClient:
         services = await self._collect_snapshot()
 
         if not include_stopped:
-            services = [s for s in services if s.is_running]
+            services = [s for s in services if self._is_currently_relevant(s)]
 
         return services
 
@@ -311,7 +331,9 @@ class ServiceControlClient:
         Only valid after start_following() has been called.
 
         Args:
-            include_stopped: Include stopped services in results
+            include_stopped: If True, return all services. If False (default),
+                return only "currently relevant" services (see
+                `_is_currently_relevant`): running plus recently-broken.
 
         Returns:
             List of ServiceInfo objects from current state
@@ -323,7 +345,7 @@ class ServiceControlClient:
         services = list(self._services.values())
 
         if not include_stopped:
-            services = [s for s in services if s.is_running]
+            services = [s for s in services if self._is_currently_relevant(s)]
 
         return services
 

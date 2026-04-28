@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 from serverish.messenger import Messenger
 
+from ocabox_tcs.management.bootstrap import NatsSettings, resolve_nats_settings
 from ocabox_tcs.management.configuration import (
     ArgsConfigSource,
     ConfigurationManager,
@@ -166,15 +166,16 @@ class ProcessContext:
 
         # NATS initialization
         global_config = instance.config_manager.resolve_config()
-        nats_config = global_config.get("nats", {})
+        nats_section = global_config.get("nats")  # None if absent
+        nats_settings = resolve_nats_settings(instance.config_manager)
 
-        if nats_config:
-            # Config file provided with NATS config
-            await instance._init_messenger(nats_config)
-            await instance._add_nats_config_source(nats_config)
+        if nats_section is not None:
+            # Config explicitly specifies NATS — connect (or fail if required)
+            await instance._init_messenger(nats_settings)
+            await instance._add_nats_config_source(nats_section)
         else:
-            # No NATS config - try discovery and default connection
-            await instance._discover_or_default_messenger()
+            # No explicit NATS config — try discovery first, then defaults+env
+            await instance._discover_or_default_messenger(nats_settings)
 
         # Log all configuration sources
         instance.config_manager.log_sources()
@@ -204,45 +205,30 @@ class ProcessContext:
 
         self.logger.debug("Configuration manager initialized")
 
-    async def _init_messenger(self, nats_config: dict[str, Any]):
-        """Initialize NATS messenger from config.
+    async def _init_messenger(self, nats_settings: NatsSettings):
+        """Initialize NATS messenger from resolved settings.
 
-        If 'required' is True in config, will block until NATS is available.
-        Otherwise uses a short timeout to avoid blocking startup.
+        If `required` is True, blocks until NATS is available (useful for server
+        restart scenarios). Otherwise uses a short timeout to avoid blocking startup.
         """
-        host = nats_config.get("host", "localhost")
-        port_raw = nats_config.get("port", 4222)
-        required = nats_config.get("required", True)  # Default: block until NATS available
-
-        # Defensive type conversion for port (in case config expansion didn't handle it)
-        try:
-            port = int(port_raw)
-        except (ValueError, TypeError) as e:
-            self.logger.error(
-                f"Invalid NATS port value '{port_raw}' (type: {type(port_raw).__name__}). "
-                f"Port must be an integer. Check your configuration file and environment variables."
-            )
-            raise ValueError(
-                f"Invalid NATS port configuration: '{port_raw}' cannot be converted to integer"
-            ) from e
-
-        # If NATS is required, block until connected (useful for server restart scenarios)
+        # If NATS is required, block until connected
         # Otherwise use short timeout to avoid blocking startup if NATS is unavailable
-        timeout = None if required else 2.0
+        timeout = None if nats_settings.required else 2.0
 
         try:
-            await self.initialize_messenger(host=host, port=port, timeout=timeout)
+            await self.initialize_messenger(
+                host=nats_settings.host, port=nats_settings.port, timeout=timeout
+            )
             self._owns_messenger = True  # ProcessContext created this messenger
-            self.logger.debug(f"NATS messenger initialized: {host}:{port}")
+            self.logger.debug(
+                f"NATS messenger initialized: {nats_settings.host}:{nats_settings.port}"
+            )
         except Exception as e:
-            if required:
-                # If required, re-raise the exception to fail startup
+            if nats_settings.required:
                 self.logger.error(f"NATS is required but connection failed: {e}")
                 raise
             else:
-                # If optional, log warning and continue without NATS
                 self.logger.warning(f"Failed to initialize NATS messenger: {e}")
-                # Continue without NATS - not critical
 
     async def _add_nats_config_source(self, nats_config: dict[str, Any]):
         """Add NATS as a configuration source if configured."""
@@ -254,17 +240,16 @@ class ProcessContext:
             )
             self.logger.debug(f"NATS config source added: {config_subject}")
 
-    async def _discover_or_default_messenger(self):
+    async def _discover_or_default_messenger(self, nats_settings: NatsSettings):
         """Discover existing Messenger or attempt default connection.
 
         Called when no NATS config is provided. This method:
         1. First tries to discover an existing Messenger singleton (for external projects)
-        2. If not found, uses NATS_HOST/NATS_PORT env vars (from .env or system)
-        3. Falls back to localhost:4222 if env vars not set
-        4. If connection fails, continues without NATS (monitoring disabled)
+        2. If not found, uses settings resolved from env vars / defaults
+        3. If connection fails, continues without NATS (monitoring disabled)
 
-        Note: Discovered messengers are NOT owned by ProcessContext - they won't
-        be closed on shutdown since they're managed elsewhere.
+        Discovered messengers are NOT owned by ProcessContext — they are managed
+        elsewhere and will not be closed on shutdown.
         """
         # First try to discover existing Messenger
         try:
@@ -272,23 +257,16 @@ class ProcessContext:
             m = Messenger()
             if m.is_open:
                 self._messenger = m
-                self._owns_messenger = False  # We discovered but don't own this
+                self._owns_messenger = False
                 self.logger.info("Discovered existing open Messenger (not owned)")
-                return  # Success - we have a messenger
+                return
             else:
                 self.logger.debug("Messenger singleton exists but not open")
         except Exception as e:
             self.logger.debug(f"No existing Messenger found: {e}")
 
-        # No existing messenger - use env vars or defaults
-        host = os.getenv("NATS_HOST", "localhost")
-        port_str = os.getenv("NATS_PORT", "4222")
-        try:
-            port = int(port_str)
-        except ValueError:
-            self.logger.warning(f"Invalid NATS_PORT '{port_str}', using 4222")
-            port = 4222
-
+        # No existing messenger - use resolved settings (env vars or defaults)
+        host, port = nats_settings.host, nats_settings.port
         self.logger.info(f"Attempting NATS connection to {host}:{port}")
         try:
             await self.initialize_messenger(host=host, port=port, timeout=2.0)
