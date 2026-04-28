@@ -6,10 +6,10 @@ from tcsctl.client import ServiceInfo
 @pytest.fixture
 def sample_services():
     """Create sample services with parent-child relationships."""
-    from datetime import datetime, UTC
+    from datetime import datetime, timezone
     from ocabox_tcs.monitoring import Status
 
-    heartbeat_time = datetime.fromtimestamp(1234567890.0, UTC)
+    heartbeat_time = datetime.fromtimestamp(1234567890.0, timezone.utc)
 
     return [
         # Launcher (top level)
@@ -119,10 +119,10 @@ def test_three_level_hierarchy_depth(sample_services):
 
 def test_orphaned_children():
     """Test handling of children whose parent is not in the list."""
-    from datetime import datetime, UTC
+    from datetime import datetime, timezone
     from ocabox_tcs.monitoring import Status
 
-    heartbeat_time = datetime.fromtimestamp(1234567890.0, UTC)
+    heartbeat_time = datetime.fromtimestamp(1234567890.0, timezone.utc)
 
     services = [
         # Child with missing parent
@@ -205,10 +205,10 @@ def test_indent_calculation():
 
 def test_halina_scenario():
     """Test the specific HALINA scenario: launcher → halina_server → MCP servers."""
-    from datetime import datetime, UTC
+    from datetime import datetime, timezone
     from ocabox_tcs.monitoring import Status
 
-    heartbeat_time = datetime.fromtimestamp(1234567890.0, UTC)
+    heartbeat_time = datetime.fromtimestamp(1234567890.0, timezone.utc)
 
     services = [
         # Launcher

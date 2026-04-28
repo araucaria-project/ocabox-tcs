@@ -38,7 +38,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from nats.js.errors import NotFoundError
 from serverish.base import dt_from_array
@@ -120,7 +120,7 @@ class ServiceInfo:
         """
         if self.last_heartbeat is None:
             return False
-        age = (datetime.now(UTC) - self.last_heartbeat).total_seconds()
+        age = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
         return age < 86400  # 24 hours
 
     @property
@@ -162,7 +162,7 @@ class ServiceInfo:
             # Stopped service without heartbeat = expected (none)
             return "dead" if self.is_running else "none"
 
-        age = (datetime.now(UTC) - self.last_heartbeat).total_seconds()
+        age = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
         if age < 30:  # Within 3x heartbeat interval
             return "alive"
         elif age < 120:  # Within ~2 minutes
@@ -175,7 +175,7 @@ class ServiceInfo:
         """Check if service has crashed recently (within last 5 minutes)."""
         if self.last_crash_time is None:
             return False
-        age = (datetime.now(UTC) - self.last_crash_time).total_seconds()
+        age = (datetime.now(timezone.utc) - self.last_crash_time).total_seconds()
         return age < 300  # 5 minutes
 
     @property
@@ -586,7 +586,7 @@ class ServiceControlClient:
         await asyncio.gather(read_status(), read_heartbeats(), read_crash_restart())
 
         # Calculate uptime for running services
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         for service in services.values():
             if service.start_time and not service.stop_time:
                 service.uptime_seconds = (now - service.start_time).total_seconds()
@@ -643,7 +643,7 @@ class ServiceControlClient:
                         # Calculate uptime
                         if service.start_time:
                             service.uptime_seconds = (
-                                datetime.now(UTC) - service.start_time
+                                datetime.now(timezone.utc) - service.start_time
                             ).total_seconds()
 
                         # Trigger callback
@@ -764,7 +764,7 @@ class ServiceControlClient:
                         # Update uptime if running
                         if service.start_time and not service.stop_time:
                             service.uptime_seconds = (
-                                datetime.now(UTC) - service.start_time
+                                datetime.now(timezone.utc) - service.start_time
                             ).total_seconds()
 
                         # Trigger callback (heartbeat updates don't need separate callback)

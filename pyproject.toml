@@ -11,7 +11,7 @@ packages = [
 repository = "https://github.com/araucaria-project/ocabox-tcs"
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.10"
 serverish = {version = "^1.4.3", extras = ["messenger"]}  # for NATS
 ocabox = {git = "https://github.com/araucaria-project/ocabox.git", optional = true}
 python-dotenv = "^1.0.0"  # For .env file support
@@ -55,11 +55,11 @@ markers = [
 
 [tool.black]
 line-length = 100
-target-version = ['py312']
+target-version = ['py310']
 
 [tool.ruff]
-# Target Python 3.12
-target-version = "py312"
+# Target Python 3.10
+target-version = "py310"
 line-length = 100
 
 # Don't check these directories
