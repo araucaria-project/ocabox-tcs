@@ -1,0 +1,56 @@
+# Example guider service config.
+#
+# Run with:
+#   poetry run tcsd --config config/guider.example.yaml
+#
+# This config exercises the frame iteration: SimBackend + FileSimProtocol
+# + DummyMethod produce visible activity end-to-end without hardware.
+# All other backends/protocols/methods are stubbed (NotImplementedError);
+# trying to use them via this config will fail at startup.
+#
+# See doc/guider/architecture.md §6 for the full schema, and PHASES.md
+# for what becomes usable in each phase.
+
+nats:
+  host: localhost
+  port: 4222
+
+services:
+  - type: guiding_svc.guider
+    variant: dev
+    telescope_id: sim
+    subject_prefix: guider
+    poll_interval_s: 1.0
+
+    cameras:
+      - id: cam-A
+        backend:
+          type: sim
+          protocol:
+            type: file_sim
+            sensor_shape: [512, 512]   # synthetic noise + injected jittered star
+            seed: 42
+            readout_delay_s: 0.05
+        pipelines:
+          - id: monitor
+            mode: monitoring
+            method: dummy
+            method_params:
+              seed: 1
+              amplitude_px: 0.5
+            exp_time: 1.0
+            stacking_count: 1
+            corrections_avg_no: 5
+            central_point: [256.0, 256.0]
+            search_reg_px: 25
+            wide_search_radius_px: 100
+            save_raw_thumbnails: false
+            save_stacked_thumbnails: false
+            queue_depth: 4
+
+          - id: guide_off
+            mode: off                  # operator opts in via RPC set_mode
+            method: dummy
+            exp_time: 0.5
+            stacking_count: 1
+            queue_depth: 4

@@ -1,0 +1,92 @@
+# Guider service — jk15, BESO spectrograph guider (FL1).
+#
+# Run:
+#   poetry run python -m ocabox_tcs.services.guiding_svc.guider \
+#       config/guider.jk15.guider_beso.yaml jk15-guider_beso
+#
+# One service instance = one camera. Telescope + component name uniquely
+# identify the camera in TIC config and in ocaboxapi. The TCS variant is
+# `<telescope>-<component>` (hyphen, single segment — TCS rejects dots);
+# NATS subjects compose ``<telescope>.<component>`` independently for
+# hierarchical wildcard matching.
+#
+# Pipeline starts in `monitoring` mode — frames flow, Solver runs, but
+# Enforcer logs corrections without issuing pulses. Operator switches
+# to `guiding` via RPC after hand-calibrating J (see RUNBOOK_FL1.md §4).
+#
+# The `pulse_guide.jacobian` values below are placeholders. Real values
+# come from the calibration probe on first night — update them and
+# restart, or use `set_state` RPC once hot-reload of J is added (FL2).
+
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+  - type: guiding_svc.guider
+    variant: jk15-guider_beso
+    telescope_id: jk15
+    subject_prefix: svc
+    service_name: guider
+    poll_interval_s: 1.0
+
+    tic_conn:
+      client_name: CliClient        # registered in tic.config.observatory.site.client
+      software_id: guider/jk15.guider_beso
+      enable_observatory: true
+      service_mode: true            # request_special_permission on camera + mount
+
+    cameras:
+      - id: guider_beso
+        # URL + device_number resolved from tic.config.observatory:
+        # jk15.components.guider_beso.address = http://jk15-ccd.oca.lan:11111/api/v1
+        # jk15.components.guider_beso.device_number = 1
+        backend:
+          type: direct_fetch
+          protocol:
+            type: alpaca
+            prefer_binary: true     # imagebytes fast path
+        pipelines:
+          - id: mon
+            mode: monitoring        # safe default — operator arms guiding via set_mode
+            method: single_star
+            selection_policy: closest_excluding_zone
+
+            exp_time: 0.5            # seconds
+            gain: 200
+            binning: 1
+
+            # Where the star should sit on the sensor. For BESO this is
+            # the fiber-entrance pixel; tune from the live frame.
+            central_point: [968, 608]    # full-sensor centre (1936×1216 / 2)
+
+            wide_search_radius_px: 600   # cold-start search circle radius
+            search_reg_px: 30            # narrow re-acquisition half-window
+
+            stacking_count: 1            # no stacking in FL1
+            corrections_avg_no: 5
+
+            # ADU-tolerance for re-acquisition matching (per-second, scaled
+            # by exp_time at runtime).
+            adu_match_tolerance_per_sec: 5000.0
+
+            method_params:
+              fwhm: 3.0                # FFS detection PSF
+              threshold: 5.0           # FFS sigma threshold
+              saturation_adu: 50000.0  # for confidence calc
+
+            # Pulse-guide model — placeholders until hand-calibration.
+            # Sign + magnitude updated after the first probe sequence.
+            pulse_guide:
+              jacobian:
+                kN_px_per_ms: 0.012    # px/ms in pixel-y per N pulse (signed)
+                kE_px_per_ms: 0.011    # px/ms in pixel-x per E pulse (signed)
+              damping_alpha: 0.5       # critically-damped-ish
+              duration_max_ms: 1500    # hard cap (saturation guard)
+              duration_min_ms: 20      # mount can't track sub-threshold pulses
+
+            # FITS / thumbnail saving — disabled for FL1 (FL2 + NFS layout).
+            save_raw_fits: false
+            save_stacked_fits: false
+            save_raw_thumbnails: false
+            save_stacked_thumbnails: false

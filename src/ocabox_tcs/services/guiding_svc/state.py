@@ -1,0 +1,203 @@
+"""PipelineState — shared mutable state for one pipeline.
+
+Single point of truth for runtime state per pipeline. **Mutated only by
+Controller** (via `update()` under `_lock`); read by stages via
+`snapshot()` (lock-free deep copy).
+
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+from dataclasses import asdict, dataclass, field
+from enum import StrEnum
+from typing import Any
+
+
+class Mode(StrEnum):
+    OFF = "off"
+    MONITORING = "monitoring"
+    GUIDING = "guiding"
+    LIVE = "live"  # future
+
+
+# ---------------------------------------------------------------------------
+# Sub-config dataclasses (operator-tunable)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AutoExposureConfig:
+    enabled: bool = False
+    target_adu_min: float = 25_000
+    target_adu_max: float = 45_000
+    exp_time_min: float = 0.1
+    exp_time_max: float = 5.0
+    step_factor: float = 1.3
+
+
+@dataclass
+class ROIConfig:
+    enabled: bool = False
+    margin_px: int = 64
+    recenter_when_drift_frac: float = 0.5
+    full_frame_on_lost: bool = True
+
+
+@dataclass
+class CalibrationBuildConfig:
+    n_frames: int = 7
+    method: str = "median"  # 'median' | 'mean' | 'sum'
+    sigma_clip_enabled: bool = False
+    sigma_clip_sigma: float = 3.0
+    sigma_clip_iterations: int = 3
+
+
+@dataclass
+class CalibrationStepConfig:
+    enabled: bool = False
+    folder: str = ""
+    max_age_h: float = 24.0
+    build: CalibrationBuildConfig = field(default_factory=CalibrationBuildConfig)
+
+
+@dataclass
+class CalibrationConfig:
+    strategy: str = "scaled"  # 'scaled' | 'matched'
+    bias: CalibrationStepConfig = field(default_factory=CalibrationStepConfig)
+    dark_current: CalibrationStepConfig = field(
+        default_factory=lambda: CalibrationStepConfig(
+            build=CalibrationBuildConfig(n_frames=7),
+        )
+    )
+
+
+@dataclass
+class PreprocessingConfig:
+    bad_pixel_mask_enabled: bool = False
+    bad_pixel_mask_file: str = ""
+    bad_pixel_replacement: str = "local_median"  # 'local_median' | 'nan'
+    saturation_threshold: float | None = None  # None = derive from CameraInfo
+    saturation_margin: float = 100.0
+
+
+# ---------------------------------------------------------------------------
+# PipelineState
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PipelineState:
+    """Authoritative per-pipeline state.
+
+    Operator-controlled fields are set via Controller commands.
+    Auto-controlled fields are set by Solver via Controller (so the
+    Controller arbitrates).
+    Observed fields are written by Solver as it produces results.
+    """
+
+    # Identity
+    pipeline_id: str
+    camera_id: str
+
+    # --- Operator-controlled ---
+    mode: Mode = Mode.OFF
+    selection_policy: str = "brightest_in_window"
+    method: str = "dummy"
+    method_params: dict[str, Any] = field(default_factory=dict)
+    exp_time: float = 1.0
+    binning: int | tuple[int, int] = 1
+    gain: int | None = None
+    frequency: float = 1.0
+    central_point: tuple[float, float] = (1024.0, 1024.0)
+    wide_search_radius_px: int = 200
+    search_reg_px: int = 25
+    stacking_count: int = 1
+    stacking_method: str = "median"
+    corrections_avg_no: int = 5
+    corrections_avg_method: str = "median"
+    adu_match_tolerance_per_sec: float | None = 5_000.0
+    auto_exposure: AutoExposureConfig = field(default_factory=AutoExposureConfig)
+    roi: ROIConfig = field(default_factory=ROIConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    save_raw_fits: bool = False
+    save_stacked_fits: bool = False
+    save_raw_thumbnails: bool = False
+    save_stacked_thumbnails: bool = False
+
+    # --- Auto-controlled (set by Solver via Controller) ---
+    acquired: bool = False
+    acquired_pos: tuple[float, float] | None = None
+    acquired_adu: float | None = None
+    acquired_at_ts: list[int] | None = None  # serverish timestamp array
+    current_exp_time: float = 1.0
+    current_roi: tuple[int, int, int, int] | None = None
+
+    # --- Observed (written by Solver) ---
+    last_correction_dx_px: float | None = None
+    last_correction_dy_px: float | None = None
+    last_correction_drot_rad: float | None = None
+    fwhm_recent: float | None = None
+    rotation_recent: float | None = None
+
+    # --- Meta ---
+    version: int = 0
+    """Bumped on every mutation by Controller. Stages compare to detect
+    state changes between iterations."""
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-friendly dict (StrEnum members serialise as values)."""
+        d = asdict(self)
+        d["mode"] = self.mode.value
+        return d
+
+
+# ---------------------------------------------------------------------------
+# Lock + snapshot wrapper
+# ---------------------------------------------------------------------------
+
+
+class PipelineStateHolder:
+    """Wraps PipelineState with an asyncio.Lock for write serialisation
+    and a lock-free `snapshot()` for stage reads.
+
+    Stages call `snapshot()` at the start of each iteration; if `version`
+    changed since the last iteration they reconfigure.
+
+    Only Controller should call `update()`. Direct external mutation is
+    not prevented (Python doesn't have good private state) but is a
+    design violation.
+    """
+
+    def __init__(self, initial: PipelineState) -> None:
+        self._state = initial
+        self._lock = asyncio.Lock()
+
+    async def update(self, **changes: Any) -> int:
+        """Atomic partial update; returns new version."""
+        async with self._lock:
+            for key, value in changes.items():
+                if not hasattr(self._state, key):
+                    raise AttributeError(f"PipelineState has no field {key!r}")
+                setattr(self._state, key, value)
+            self._state.version += 1
+            return self._state.version
+
+    def snapshot(self) -> PipelineState:
+        """Return a deep copy of the current state (lock-free read).
+
+        Deep copy under the GIL is atomic enough for our purposes —
+        worst case a stage sees a snapshot from one version-step ago,
+        which is harmless: it'll see the new state on the next iteration.
+        """
+        return copy.deepcopy(self._state)
+
+    @property
+    def version(self) -> int:
+        return self._state.version
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        return self._lock
