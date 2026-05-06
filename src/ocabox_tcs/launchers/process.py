@@ -6,7 +6,7 @@ development and testing environments.
 
 import asyncio
 import os
-import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from time import time
@@ -20,7 +20,7 @@ from ocabox_tcs.management.service_registry import ServiceRegistry
 @dataclass
 class ProcessInfo:
     """Information about a running service process."""
-    process: subprocess.Popen
+    process: asyncio.subprocess.Process
     start_time: datetime
     args: list[str]
 
@@ -40,7 +40,7 @@ class ProcessRunner(BaseRunner):
         self.registry = registry
         self.process_info: ProcessInfo | None = None
         self.terminate_delay = terminate_delay
-        self._log_monitor_task: asyncio.Task | None = None
+        self._drain_tasks: list[asyncio.Task] = []
         self._crash_monitor_task: asyncio.Task | None = None
         self._stopping_gracefully: bool = False  # Track if we initiated stop
 
@@ -55,7 +55,7 @@ class ProcessRunner(BaseRunner):
             module_path = self.registry.resolve_module(self.config.service_type)
 
             args = [
-                "python", "-m",
+                sys.executable, "-m",
                 module_path,
             ]
 
@@ -79,11 +79,17 @@ class ProcessRunner(BaseRunner):
 
             self.logger.info(f"Starting service: {' '.join(args)}")
 
-            process = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+            # Use asyncio-native subprocess so log draining is handled on the
+            # event loop instead of the default thread pool. The previous
+            # Popen + asyncio.to_thread(readline) approach consumed two pool
+            # workers per child (readline + wait); with N>=5 children the pool
+            # was exhausted and the unlucky child's stderr was never drained,
+            # which eventually wedged the child on a blocking write to the
+            # full pipe buffer.
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
             self.process_info = ProcessInfo(
@@ -93,7 +99,10 @@ class ProcessRunner(BaseRunner):
             )
 
             self._is_running = True
-            self._log_monitor_task = asyncio.create_task(self._monitor_logs())
+            self._drain_tasks = [
+                asyncio.create_task(self._drain_stream(process.stdout, "stdout")),
+                asyncio.create_task(self._drain_stream(process.stderr, "stderr")),
+            ]
             self._crash_monitor_task = asyncio.create_task(self._monitor_crash())
             self.logger.info(f"Service {self.service_id} started (PID: {process.pid})")
 
@@ -120,34 +129,35 @@ class ProcessRunner(BaseRunner):
             # Mark that we're stopping gracefully so _monitor_crash doesn't treat SIGTERM as crash
             self._stopping_gracefully = True
 
-            proc.terminate()
+            if proc.returncode is None:
+                proc.terminate()
 
-            # Poll every 100ms for up to terminate_delay seconds
-            # Exit early if process terminates cleanly
             force_killed = False
-            poll_interval = 0.1
-            max_polls = int(self.terminate_delay / poll_interval)
-
-            for _ in range(max_polls):
-                await asyncio.sleep(poll_interval)
-                if proc.poll() is not None:
-                    # Process exited cleanly
-                    break
-            else:
-                # Timeout reached, check one more time and force kill if needed
-                if proc.poll() is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=self.terminate_delay)
+            except asyncio.TimeoutError:
+                if proc.returncode is None:
                     self.logger.warning(
                         f"Force killing {self.service_id} - did not terminate in {self.terminate_delay}s"
                     )
                     proc.kill()
+                    await proc.wait()
                     force_killed = True
 
-            if self._log_monitor_task:
-                self._log_monitor_task.cancel()
+            # Drain tasks finish naturally when the child closes its streams.
+            # Give them a brief moment to flush remaining lines, then cancel.
+            if self._drain_tasks:
                 try:
-                    await self._log_monitor_task
-                except asyncio.CancelledError:
-                    pass
+                    await asyncio.wait_for(
+                        asyncio.gather(*self._drain_tasks, return_exceptions=True),
+                        timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    for task in self._drain_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*self._drain_tasks, return_exceptions=True)
+                self._drain_tasks = []
 
             if self._crash_monitor_task:
                 self._crash_monitor_task.cancel()
@@ -204,7 +214,7 @@ class ProcessRunner(BaseRunner):
         try:
             # Block until process exits - immediate detection!
             # This runs BEFORE Python cleanup triggers ServiceController.shutdown()
-            returncode = await asyncio.to_thread(self.process_info.process.wait)
+            returncode = await self.process_info.process.wait()
 
             # Process exited! Clear process_info immediately to prevent duplicate handling
             if self.process_info is not None:
@@ -326,23 +336,30 @@ class ProcessRunner(BaseRunner):
         # No recognizable log level, default to INFO
         return logging.INFO, line
 
-    async def _monitor_logs(self):
-        """Monitor and relay service logs, preserving log levels."""
-        if not self.process_info:
+    async def _drain_stream(self, stream: asyncio.StreamReader | None, label: str) -> None:
+        """Drain a child stream line-by-line, forwarding through this runner's logger.
+
+        Uses the asyncio StreamReader natively so a stalled drain task never
+        blocks a thread-pool worker. Exits when the child closes the stream
+        (EOF on subprocess exit) or when cancelled.
+        """
+        if stream is None:
             return
 
         try:
-            while self._is_running and self.process_info:
-                line = await asyncio.to_thread(self.process_info.process.stderr.readline)
+            while True:
+                line = await stream.readline()
                 if not line:
                     break
-
-                # Parse log level from subprocess output and use same level
-                level, message = self._parse_log_level(line.strip())
+                decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not decoded:
+                    continue
+                level, message = self._parse_log_level(decoded)
                 self.logger.log(level, message)
-
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            self.logger.error(f"Log monitoring error for {self.service_id}: {e}")
+            self.logger.error(f"Log drain error for {self.service_id} ({label}): {e}")
 
 
 class ProcessLauncher(BaseLauncher):
