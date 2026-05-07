@@ -14,6 +14,7 @@ registry:
   hello_world: ~                              # -> ocabox_tcs.services.hello_world
   # examples.minimal: ~                       # -> ocabox_tcs.services.examples.01_minimal
   # halina.server: halina.server.halina_server  # External package example
+  # tic_bridge_svc.tic_bridge: ~              # -> ocabox_tcs.services.tic_bridge_svc.tic_bridge
 
 # Service instances to launch
 services:
@@ -34,6 +35,25 @@ services:
   # Uncomment to test external service discovery (requires external_example package)
   # - type: external_worker
   #   variant: demo
+
+  # TIC Bridge — forwards NATS messages to TIC (ocabox-server)
+  #   tic.command.<tel>.<component>.<command>  (fire-and-forget PUT)
+  #   tic.rpc.<tel>.<component>.<command>      (request/response; method=GET by default)
+  # Payload: {"parameters": {...}, "client_id": "...", "request_timeout": 5.0, "method": "GET"}
+  # - type: tic_bridge_svc.tic_bridge
+  #   variant: main
+  #   log_level: INFO
+  #   # tic_host: ""                  # omit to load from obs_config_stream
+  #   # tic_port: 0                   # omit to load from obs_config_stream
+  #   obs_config_stream: tic.config.observatory
+  #   default_client_name: ""         # blank → service id
+  #   max_clients: 20
+  #   client_ttl: 3600.0
+  #   default_request_timeout: 5.0
+  #   command_prefix: tic.command
+  #   rpc_prefix: tic.rpc
+  #   enable_command: true
+  #   enable_rpc: true
 
 # For tutorial examples, see config/examples.yaml
 # To learn the framework, see src/ocabox_tcs/services/examples/README.md

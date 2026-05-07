@@ -1,457 +1,161 @@
 # OCM Telescope Control Services (ocabox-tcs)
 
-Collection of automation services for OCM telescopes.
+Universal Python service framework for OCM telescope automation. Services get NATS integration, lifecycle management, health monitoring, and crash-recovery for free; they are decorator-registered and execution-method agnostic.
+
+## Prerequisites
+
+- Python 3.12+
+- NATS server (e.g. `nats.oca.lan` in observatory, `localhost` for development)
+- Poetry (for development) or pip
+- TIC (`ocabox-server`) — only for services that talk to the telescope
 
 ## Installation
 
-### Prerequisites
-
-* Python 3.12+
-* poetry (for development)
-* NATS server running (e.g. `nats.oca.lan` in observatory, or `localhost` for development)
-* TIC (`ocabox-server`) server running (only required for services controlling the telescope)
-
-### Installation Steps
-
-#### For Library Use Only
-
-The package is not published on PyPI. Install directly from the GitHub repository:
+### Library (consumers)
 
 ```bash
-# stable (default branch)
+# Library only
 pip install git+https://github.com/araucaria-project/ocabox-tcs.git
 
-# install with the optional CLI extras (wrap in quotes to include extras)
+# With CLI tools (tcsctl)
 pip install "git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs[cli]"
 ```
 
-Notes:
-- Use the `@<branch-or-tag>` suffix if you need a specific branch or tag, e.g.
-  `pip install git+https://github.com/araucaria-project/ocabox-tcs.git@main`.
-- If you prefer an editable/dev install after cloning the repo, see the Development section below.
+Add `@<branch-or-tag>` to pin a revision. Same URL works in `requirements.txt`, `pyproject.toml` (`[project].dependencies`), Poetry, uv, and pipenv.
 
-#### Requirements.txt (old-school projects)
-
-Add this line to your requirements.txt to pin the repo as a dependency:
-
-```
-git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs
-```
-
-To include CLI extras in requirements.txt:
-
-```
-git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs[cli]
-```
-
-#### Editable / Development install (pip + venv)
-
-If you're developing or want an editable install:
+### Development
 
 ```bash
-# clone first
 git clone https://github.com/araucaria-project/ocabox-tcs.git
 cd ocabox-tcs
-
-# optional: create & activate a venv
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-
-# install editable (includes extras if desired)
-pip install -e .           # library only
-pip install -e ".[cli]"    # include CLI extras
+poetry install                                     # all dev deps + CLI
+cp config/services.sample.yaml config/services.yaml   # gitignored — customize
 ```
 
-#### Poetry
+## Running services
 
-Add directly from the repo:
+Use `tcsd` — the unified launcher. Defaults: `config/services.yaml`, asyncio mode, Rich-colored logs.
 
 ```bash
-poetry add git+https://github.com/araucaria-project/ocabox-tcs.git
+poetry run tcsd                                    # default config & mode
+poetry run tcsd --config config/services.yaml     # explicit config
+poetry run tcsd --launcher process                # each service as a subprocess
+poetry run tcsd --no-color                        # plain text logs
 ```
 
-Or add to pyproject.toml dependencies:
+**Launcher modes** (`--launcher`):
+- `asyncio` (default) — all services in one process, lower overhead, easier debugging
+- `process` — each service as a subprocess, better isolation, higher overhead
 
-```toml
-[tool.poetry.dependencies]
-# point to the repository (lock to branch/tag with 'rev' if desired)
-ocabox-tcs = { git = "https://github.com/araucaria-project/ocabox-tcs.git", rev = "main" }
-```
+For production, run `tcsd` from a systemd unit (the framework itself is deployment-agnostic). See [Restart Policies Guide](doc/restart-policies.md) for crash-recovery configuration.
 
-#### uv (pyproject / PEP 621)
+### Direct service launch (development)
 
-If your project is managed with "uv" (or any tool that uses pyproject.toml / PEP‑621), add ocabox-tcs as a direct VCS dependency using a PEP‑508 direct URL. This works with tools that read [project].dependencies.
-
-Example (pyproject.toml):
-
-```toml
-[project]
-dependencies = [
-  # point to repository, lock to branch/tag/commit with @<rev>
-  "ocabox-tcs @ git+https://github.com/araucaria-project/ocabox-tcs.git@main",
-
-  # include extras if needed
-  "ocabox-tcs[cli] @ git+https://github.com/araucaria-project/ocabox-tcs.git@main"
-]
-```
-
-Notes:
-- Replace `@main` with a tag (e.g. `@v1.2.3`) or commit SHA to pin a revision.
-- If your tool instead expects a requirements-style file, use the `git+https://...#egg=...` form shown in the Requirements.txt section.
-
-#### Pipenv
-
-Install from the repo with pipenv:
+To iterate on a single service without booting the whole launcher, run the service file directly:
 
 ```bash
-pipenv install -e "git+https://github.com/araucaria-project/ocabox-tcs.git#egg=ocabox-tcs"
+python src/ocabox_tcs/services/hello_world.py                                 # all defaults
+python src/ocabox_tcs/services/hello_world.py prod                            # custom variant
+python src/ocabox_tcs/services/hello_world.py config/services.yaml prod       # explicit config + variant
 ```
 
-### For Development
+Pattern: `python service_file.py [config_file] [variant] [--runner-id ID]`. All arguments are optional — defaults: no config (uses `localhost:4222`), variant `dev`.
 
-1. Clone the repository:
-```bash
-cd ~/src
-git clone https://github.com/araucaria-project/ocabox-tcs.git
-cd ocabox-tcs
-```
-
-2. Install dependencies (includes CLI tools automatically):
-```bash
-poetry install
-```
-
-3. Create configuration:
-```bash
-# Copy sample configuration
-cp config/services.sample.yaml config/services.yaml
-
-# Edit configuration as needed
-# config/services.yaml is gitignored - customize for your environment
-```
-
-## Quick Start: Running Services
-
-### Using Launchers
-
-Run services using the provided launchers:
+## Monitoring
 
 ```bash
-# Process launcher (separate processes, recommended for production)
-poetry run tcs_process --config config/services.yaml
-
-# Asyncio launcher (same process, faster iteration for development)
-poetry run tcs_asyncio --config config/services.yaml
-
-# Tutorial examples
-poetry run tcs_asyncio --config config/examples.yaml
+tcsctl                              # running services + recently-broken
+tcsctl --all                        # include stopped/old declared
+tcsctl --detailed                   # multi-line view with metadata
+tcsctl hello_world                  # filter by service name (substring)
+tcsctl --legend                     # symbol legend
+tcsctl --host nats.oca.lan          # override config (otherwise read from services.yaml)
 ```
 
-**For production deployment**: You can create your own systemd service that runs `tcs_process` or `tcs_asyncio` with your configuration. The framework itself is deployment-agnostic.
+`tcsctl` reads NATS host/port/prefix from `config/services.yaml` (with `.env` and `NATS_HOST`/`NATS_PORT` fallbacks). CLI flags override.
 
-### Manual Service Launch
+## Writing a service
 
-Start a single service directly:
+Start with the tutorial: [`src/ocabox_tcs/services/examples/README.md`](src/ocabox_tcs/services/examples/README.md) — five progressive examples from a 30-line minimum to non-blocking with background workers. Run them via `tcsd --config config/examples.yaml`.
 
-```bash
-poetry shell  # if needed to activate venv
-python src/ocabox_tcs/services/hello_world.py config/services.yaml main
-```
+Minimal blocking service:
 
-Usage pattern: `python service_file.py config_file instance_context [--runner-id RUNNER_ID]`
-
-### Monitoring Running Services
-
-**Using `tcsctl` CLI:**
-```bash
-# List running services
-tcsctl
-
-# Show all services including stopped
-tcsctl --all
-
-# Detailed view with metadata
-tcsctl --detailed
-
-# Filter specific service
-tcsctl hello_world
-
-# Show collection statistics
-tcsctl --verbose
-
-# Show legend
-tcsctl --legend
-```
-
-## Quick Start: Developing Services
-
-### Learning the Framework
-
-**New to ocabox-tcs?** Start with the tutorial examples:
-
-```bash
-# View the Getting Started guide
-cat src/ocabox_tcs/services/examples/README.md
-
-# Run all tutorial examples
-poetry run tcs_asyncio --config config/examples.yaml
-```
-
-The tutorial includes:
-- `01_minimal.py` - Simplest possible service (< 30 lines)
-- `02_basic.py` - Service with configuration
-- `03_logging.py` - Logging best practices
-- `04_monitoring.py` - Monitoring and health checks
-- `05_nonblocking.py` - Non-blocking service with background tasks
-
-See [Tutorial Examples README](src/ocabox_tcs/services/examples/README.md) for detailed walkthrough.
-
-### Creating Your First Service
-
-1. Create a service file `my_service.py`:
 ```python
+# my_service.py — service type derived from filename
+import asyncio
 from ocabox_tcs.base_service import service, BaseBlockingPermanentService
 
 @service
 class MyService(BaseBlockingPermanentService):
     async def run_service(self):
         while self.is_running:
-            self.logger.info("Service running...")
+            self.svc_logger.info("tick")
             await asyncio.sleep(5)
 ```
 
-2. Add to config file (use filename as service type):
+Add to config:
+
 ```yaml
 services:
-  - type: my_service    # Must match filename
-    instance_context: main
+  - type: my_service       # must match filename
+    variant: main
 ```
 
-3. Run it:
-```bash
-poetry run tcs_asyncio --config config/services.yaml
+Run: `poetry run tcsd`. See [Development Guide](doc/development-guide.md) for choosing base classes and patterns.
+
+## Configuration
+
+| Source                       | Priority | Use case                          |
+|------------------------------|----------|-----------------------------------|
+| Command-line args            | highest  | Overrides for one run             |
+| YAML file                    | high     | Production, multi-service         |
+| Env vars `{SERVICE}_{FIELD}` | medium   | External projects, secrets        |
+| `@config` class defaults     | lowest   | Code defaults                     |
+
+```yaml
+# config/services.yaml
+nats:
+  host: "${NATS_HOST}"     # ${VAR} and ${VAR:-default} expansion
+  port: 4222
+
+services:                  # YAML list (each item with `-`)
+  - type: my_service
+    variant: prod
+    api_key: "${API_KEY}"
 ```
 
-For detailed guidance on choosing base classes and implementing services, see [Development Guide](doc/development-guide.md).
+**NATS connection**: `nats:` section, or `NATS_HOST`/`NATS_PORT` env vars (defaults `localhost:4222`).
 
-## Quick Start: Adding Monitoring to Your Project
+**Service config without YAML**: env vars `{SERVICE_TYPE}_{FIELD}` (uppercase) — e.g. `MY_SERVICE_API_KEY=secret` for field `api_key` in `my_service.py`. Auto-converts numbers and booleans. `.env` is auto-loaded.
 
-The monitoring system can be used in **any Python project** that needs status reporting over NATS, not just TCS services.
+Files: `config/services.sample.yaml` (template), `config/services.yaml` (yours, gitignored), `.env` (gitignored).
 
-### Basic Usage (Simple)
+## Embedding monitoring in any Python app
 
-Add monitoring to your application with automatic lifecycle management:
+The monitoring system works in any project that needs status reporting over NATS — not just TCS services.
 
 ```python
 from ocabox_tcs.monitoring import create_monitor, Status
 from serverish.messenger import Messenger
 
 async def main():
-    # You manage Messenger (your existing setup)
     messenger = Messenger()
     async with messenger.context(host='localhost', port=4222):
-        # create_monitor auto-discovers Messenger automatically!
         monitor = await create_monitor('my_app', subject_prefix='myproject')
-
         async with monitor:
             monitor.set_status(Status.OK, "Application started")
             await do_work()
 ```
 
-That's it! Your application gets:
-- Status reporting to NATS stream `myproject.status.my_app`
-- Heartbeat monitoring (10s) on `myproject.heartbeat.my_app`
-- Lifecycle events on `myproject.registry.*`
-- Automatic healthcheck loop (30s)
+This publishes status, heartbeats (10 s), and lifecycle events on `myproject.{status,heartbeat,registry}.my_app`. If NATS is unavailable, `create_monitor` returns a no-op monitor for graceful degradation.
 
-**Note**: `create_monitor()` auto-detects NATS availability. If NATS is not available, it returns a no-op monitor for graceful degradation.
+Add custom logic via `monitor.add_healthcheck_cb(...)` (periodic `Status` decisions), `monitor.add_metric_cb(...)` (custom fields in status reports), or `async with monitor.track_task(): ...` (automatic BUSY/IDLE).
 
-### Advanced: Health Check Callbacks
+For hierarchical display in `tcsctl` (parent → service → child), pass `parent_name=<parent's monitor.name>` to children — see [doc/parent-name-guidelines.md](doc/parent-name-guidelines.md).
 
-Add custom health checks that run periodically (default: every 30s):
+## Building monitoring UIs
 
-```python
-from ocabox_tcs.monitoring import create_monitor, Status
-from serverish.messenger import Messenger
-
-async def main():
-    messenger = Messenger()
-    async with messenger.context():
-        monitor = await create_monitor(name="my_app")
-        monitor.add_healthcheck_cb(check_health)
-
-        async with monitor:
-            await do_work()
-
-def check_health() -> Status | None:
-    """Called every 30s by healthcheck loop"""
-    # Return Status.DEGRADED if unhealthy, None if healthy
-    return None  # No opinion = healthy
-```
-
-### Advanced: Metric Collection
-
-Collect custom metrics in status reports:
-
-```python
-from ocabox_tcs.monitoring import create_monitor
-from serverish.messenger import Messenger
-
-async def main():
-    messenger = Messenger()
-    async with messenger.context():
-        monitor = await create_monitor(name="my_app")
-        monitor.add_metric_cb(get_metrics)
-
-        async with monitor:
-            await do_work()
-
-def get_metrics() -> dict:
-    """Called when generating status reports"""
-    return {
-        "queue_size": 10,
-        "errors": 0,
-        "processed": 1000
-    }
-```
-
-### Advanced: Task Tracking (BUSY/IDLE)
-
-Track task execution with automatic BUSY/IDLE status:
-
-```python
-from ocabox_tcs.monitoring import create_monitor
-from serverish.messenger import Messenger
-
-async def main():
-    messenger = Messenger()
-    async with messenger.context():
-        monitor = await create_monitor(name="my_app")
-
-        async with monitor:
-            await process_item("data")
-
-async def process_item(item):
-    # Automatic status management:
-    # - Immediately switches to BUSY
-    # - Waits 1s after task ends before IDLE
-    # - Cancels IDLE transition if new task starts
-    async with monitor.track_task():
-        await do_processing(item)
-```
-
-The monitoring system handles all NATS communication, status transitions, and heartbeat publishing automatically.
-
-### Advanced: Creating Service Hierarchies
-
-For applications that spawn child processes or manage subcomponents, you can create hierarchical displays in `tcsctl` using the `parent_name` parameter. This is especially useful for:
-- Services that launch helper subprocesses
-- Applications managing worker pools
-- Main servers coordinating with tool processes (e.g., MCP servers, language servers)
-
-**How It Works:**
-1. Parent process passes its **own monitor name** to child as `--parent-name` CLI argument
-2. Child process uses this value when creating its monitor
-3. `tcsctl` displays the hierarchy automatically (supports unlimited depth)
-
-**Example: Service Launching Subprocesses**
-
-```python
-# parent_service.py - Main service
-from ocabox_tcs.base_service import service, BaseBlockingPermanentService
-import asyncio
-
-@service
-class ParentService(BaseBlockingPermanentService):
-    async def on_start(self):
-        """Launch child processes with parent tracking."""
-
-        # STEP 1: Get your own monitor name
-        my_name = self.controller.monitor.name
-        # For service "parent_service:dev", this is: "parent_service:dev"
-
-        # STEP 2: Pass your name to child as --parent-name
-        self.child_process = await asyncio.create_subprocess_exec(
-            "python", "-m", "my_package.child_service",
-            "config.yaml",
-            "dev",
-            "--parent-name", my_name,  # ← Declare parent relationship
-        )
-```
-
-```python
-# child_service.py - Child subprocess
-from ocabox_tcs.base_service import service, BaseBlockingPermanentService
-
-@service
-class ChildService(BaseBlockingPermanentService):
-    # Child receives --parent-name via CLI args
-    # TCS framework automatically handles this and sets monitor.parent_name
-
-    async def run_service(self):
-        while self.is_running:
-            await asyncio.sleep(1)
-```
-
-**Result in tcsctl:**
-```bash
-$ tcsctl list
-◐ parent_service:dev [ok] (♥) up:5m - Main service
-  ├─ child_service:dev [ok] (♥) up:5m - Child process
-```
-
-**Three-Level Hierarchy (Launcher → Service → Subprocess):**
-
-When using a TCS launcher, you automatically get a third level:
-
-```bash
-$ poetry run tcs_asyncio --config config/services.yaml
-$ tcsctl list
-◐ launcher.asyncio-launcher.hostname-abc123 [ok] (♥) up:10m - Launcher
-  ├─ parent_service:dev [ok] (♥) up:10m - Main service
-      ├─ worker_1:dev [ok] (♥) up:10m - Worker process 1
-      └─ worker_2:dev [ok] (♥) up:10m - Worker process 2
-```
-
-**For Non-TCS Applications:**
-
-If you're not using TCS `BaseService`, manually pass `parent_name` when creating the monitor:
-
-```python
-import argparse
-from ocabox_tcs.monitoring import create_monitor
-
-async def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--parent-name", default=None)
-    args = parser.parse_args()
-
-    # Create monitor with parent_name
-    monitor = await create_monitor(
-        name="my_worker:dev",
-        parent_name=args.parent_name,  # From CLI argument
-    )
-
-    async with monitor:
-        await do_work()
-```
-
-**Key Points:**
-- `parent_name` is **optional** - entities without it appear as top-level
-- Parent passes **its own `monitor.name`** to children
-- For TCS services: Access via `self.controller.monitor.name`
-- Supports **unlimited hierarchy depth** (2, 3, 4+ levels)
-- Only affects **display** in `tcsctl` - doesn't change process relationships
-
-For complete guidelines, see [doc/parent-name-guidelines.md](doc/parent-name-guidelines.md).
-
-## Quick Start: Writing Monitoring UI
-
-Use `ServiceControlClient` to build custom monitoring interfaces, dashboards, or GUIs.
-
-**Note**: A NATS `Messenger` instance must be open before using `ServiceControlClient`. Open it at your application's top level with `async with messenger.context()`.
-
-### One-Shot Snapshot
+`ServiceControlClient` exposes the snapshot/streaming API used by `tcsctl`:
 
 ```python
 from tcsctl import ServiceControlClient
@@ -461,252 +165,26 @@ async def main():
     messenger = Messenger()
     async with messenger.context(host='localhost', port=4222):
         client = ServiceControlClient(messenger, subject_prefix='svc')
-        services = await client.list_services(include_stopped=False)
 
-        for service in services:
-            print(f"{service.service_id}: {service.status.value}")
-            print(f"  Uptime: {service.uptime_seconds}s")
-            print(f"  Heartbeat: {service.last_heartbeat_age}s ago")
-```
+        # Snapshot
+        for s in await client.list_services():
+            print(f"{s.service_id}: {s.status.value}")
 
-### Streaming Mode (Real-Time Updates)
-
-```python
-async def main():
-    messenger = Messenger()
-    async with messenger.context(host='localhost', port=4222):
-        client = ServiceControlClient(messenger, subject_prefix='svc')
-
-        def on_update(service_info):
-            """Called whenever a service status changes"""
-            print(f"Updated: {service_info.service_id} -> {service_info.status}")
-
-        client.on_service_update = on_update
+        # Streaming with callbacks
+        client.on_service_update = lambda info: print(f"upd: {info.service_id}")
         await client.start_following()
-
-        # Access current state anytime
-        services = client.get_current_services()
-
-        # Keep running...
-        await asyncio.sleep(60)
+        # ... client.get_current_services() any time ...
         await client.stop_following()
 ```
 
-### Building Custom Displays
-
-The `ServiceControlClient` provides:
-- Real-time service discovery
-- Status updates via callbacks
-- Hierarchical service relationships (launcher → services)
-- Heartbeat monitoring and zombie detection
-
-See `examples/monitoring_client_usage.py` for complete examples including:
-- Terminal UIs with Rich
-- Web dashboards
-- Integration with existing monitoring tools
-
-## Project Structure
-```
-ocabox-tcs/
-├── pyproject.toml
-├── README.md
-├── CLAUDE.md
-├── doc/
-│   ├── development-guide.md    # Service development guide
-│   ├── architecture.md         # Technical architecture
-│   ├── requirements-analysis.md
-│   └── feature-roadmap.md      # Planned features
-├── config/
-│   ├── services.sample.yaml    # Configuration template
-│   └── examples.yaml           # Tutorial examples
-└── src/
-    ├── ocabox_tcs/             # Core service framework
-    │   ├── __init__.py
-    │   ├── base_service.py
-    │   ├── launchers/
-    │   │   ├── process.py      # Process launcher
-    │   │   ├── asyncio.py      # Asyncio launcher
-    │   │   └── base_launcher.py
-    │   ├── services/
-    │   │   ├── __init__.py
-    │   │   ├── hello_world.py
-    │   │   └── examples/       # Tutorial examples
-    │   │       ├── 01_minimal.py
-    │   │       ├── 02_basic.py
-    │   │       ├── 03_logging.py
-    │   │       ├── 04_monitoring.py
-    │   │       ├── 05_nonblocking.py
-    │   │       └── README.md   # ← Start here!
-    │   ├── management/
-    │   │   ├── process_context.py
-    │   │   ├── service_controller.py
-    │   │   └── configuration.py
-    │   └── monitoring/
-    │       ├── status.py
-    │       ├── monitored_object.py
-    │       └── monitored_object_nats.py
-    └── tcsctl/                 # CLI tool (optional)
-        ├── __init__.py
-        ├── app.py              # Main entry point
-        ├── client.py           # ServiceControlClient
-        ├── display.py          # Rich terminal output
-        └── commands/
-            └── list.py         # List command
-```
-
-## Architecture
-
-### Universal Service Framework
-
-This project provides a universal Python service framework for telescope automation:
-
-- **Execution Independence**: Services are designed to work with multiple execution methods:
-  - **Currently available**: Manual launch, process launcher (`tcs_process`), asyncio launcher (`tcs_asyncio`)
-  - **Planned**: Systemd integration, container deployment (see [Feature Roadmap](doc/feature-roadmap.md))
-- **Service Types**: Supports permanent and blocking permanent services (single-shot planned)
-- **Decorator-Based**: Modern Python decorators for clean service registration
-- **Optional Configuration**: Config classes are optional, services can use base config
-- **Distributed Management**: NATS-based service discovery, lifecycle management, and health monitoring
-- **Flexible Deployment**: Services can be local or from external packages (external packages planned)
-
-### Services
-
-Services are individual components that perform specific automation tasks. Each service:
-
-- Uses `@service` decorator for registration (service type derived from filename)
-- Inherits from `BasePermanentService` or `BaseBlockingPermanentService`
-  - `BaseSingleShotService` exists but runner support is planned (see [Feature Roadmap](doc/feature-roadmap.md#4-single-shot-and-cyclic-services))
-- Implements `async def start_service()` and `async def stop_service()` (or `async def run_service()` for blocking services)
-- Optionally uses `@config` decorator for custom configuration
-- Gets automatic NATS integration, health checking, and management
-
-**Example Service** (File: `hello_world.py`):
-```python
-from ocabox_tcs.base_service import service, BasePermanentService
-
-@service
-class HelloWorldService(BasePermanentService):
-    async def start_service(self):
-        self.logger.info("Hello World!")
-```
-
-Services are defined in `config/services.yaml` and can be launched via multiple methods depending on deployment needs.
-
-## Configuration
-
-### Quick Reference
-
-| Source | Priority | Use Case |
-|--------|----------|----------|
-| YAML file | highest | Production, multi-service |
-| Env vars `SERVICE_FIELD` | medium | Service config without YAML |
-| `@config` class defaults | lowest | Code defaults |
-
-**NATS connection**: `nats:` section in YAML, or `NATS_HOST`/`NATS_PORT` env vars
-
-### With YAML (Recommended for Production)
-
-```yaml
-# config/services.yaml
-nats:
-  host: "${NATS_HOST}"   # env var expansion supported
-  port: 4222
-
-services:
-  - type: my_service     # ⚠️ YAML list (dash required!)
-    instance_context: prod
-    api_key: "${API_KEY}"
-    timeout: 30
-  - type: another_service  # Multiple services as list items
-    instance_context: prod
-```
-
-**Important:** `services:` must be a **YAML list** (each item starts with `-`), not a dictionary.
-
-```bash
-cp config/services.sample.yaml config/services.yaml
-poetry run tcs_asyncio --config config/services.yaml
-```
-
-### Without YAML (External Projects)
-
-```bash
-# .env
-NATS_HOST=nats.oca.lan
-NATS_PORT=4222
-MY_SERVICE_API_KEY=secret123
-MY_SERVICE_TIMEOUT=30
-```
-
-```python
-# my_service.py
-@config
-@dataclass
-class MyServiceConfig(BaseServiceConfig):
-    api_key: str = ""
-    timeout: int = 60
-
-@service
-class MyService(BaseBlockingPermanentService):
-    async def run_service(self):
-        print(self.svc_config.api_key)  # "secret123" from env
-```
-
-```bash
-python my_service.py  # No config file needed
-```
-
-### Env Var Convention
-
-Service config: `{SERVICE_TYPE}_{FIELD}` (uppercase)
-- `my_service.py` + `api_key` → `MY_SERVICE_API_KEY`
-- Auto-converts: `"30"` → `30`, `"true"` → `True`
-
-NATS connection (global):
-- `NATS_HOST` (default: localhost)
-- `NATS_PORT` (default: 4222)
-
-### Files
-
-- `config/services.sample.yaml` - Template (copy to `services.yaml`)
-- `config/services.yaml` - Your config (gitignored)
-- `.env` - Local secrets (gitignored, auto-loaded)
+See `examples/monitoring_client_usage.py` for terminal UIs (Rich), web dashboards, and integrations.
 
 ## Documentation
 
-### [Tutorial Examples](src/ocabox_tcs/services/examples/README.md) 📚 **START HERE**
-**Getting Started Guide**
-- Progressive examples from simple → complex
-- Step-by-step instructions
-- Copy-paste ready code
-- Best for learning the framework
-
-### [Development Guide](doc/development-guide.md)
-**User Guide for Service Development**
-- Decision tree for choosing the right base class
-- Examples and best practices
-- Migration patterns from old code
-- Quick reference for implementing services
-
-Use this when you need to create a new service or understand how to implement service functionality.
-
-### [Architecture](doc/architecture.md)
-**Technical Architecture Documentation**
-- Comprehensive framework design
-- Implementation details for the universal service framework
-- Component relationships and interactions
-- Detailed implementation matrix
-
-Use this when you need to understand the technical design or modify framework internals.
-
-### [Requirements Analysis](doc/requirements-analysis.md)
-**Original Requirements and Design Analysis**
-- Translated from original Polish planning document
-- Requirements gathering and analysis
-- Design decisions and rationale
-- Historical context for architecture choices
-
-Use this to understand why design decisions were made and the original requirements that drove the architecture.
-
-### [Claude Instance Guide](CLAUDE.md)
-Instructions for Claude instances working on this project
+- **[Tutorial Examples](src/ocabox_tcs/services/examples/README.md)** — start here
+- [Development Guide](doc/development-guide.md) — base classes, patterns, migration
+- [Restart Policies Guide](doc/restart-policies.md) — crash recovery configuration
+- [Architecture](doc/architecture.md) — framework internals
+- [Requirements Analysis](doc/requirements-analysis.md) — design rationale
+- [Feature Roadmap](doc/feature-roadmap.md) — planned work
+- [CLAUDE.md](CLAUDE.md) — instructions for Claude instances working on this project
