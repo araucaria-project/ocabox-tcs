@@ -155,10 +155,11 @@ class Enforcer:
 
         # 6. Issue the pulses (sequentially — the ASCOM API takes one
         # axis per call; ocabox/Alpaca handle on-the-wire serialisation).
+        # TIC pulseguide handler rejects float Duration with HTTP 400.
         if not n_skip:
-            await self.mount.aput_pulseguide(direction=n_dir, duration=n_dur)
+            await self.mount.aput_pulseguide(direction=n_dir, duration=int(round(n_dur)))
         if not e_skip:
-            await self.mount.aput_pulseguide(direction=e_dir, duration=e_dur)
+            await self.mount.aput_pulseguide(direction=e_dir, duration=int(round(e_dur)))
 
         logger.debug(
             "Enforcer applied: N/S dir=%d dur=%.1fms%s, E/W dir=%d dur=%.1fms%s",

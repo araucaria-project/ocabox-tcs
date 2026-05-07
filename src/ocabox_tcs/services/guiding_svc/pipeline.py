@@ -58,6 +58,7 @@ class Pipeline:
         *,
         pulse_guide_model: Any | None = None,
         enforcer_kwargs: dict[str, Any] | None = None,
+        thumbnail_emitter: Any | None = None,
     ) -> None:
         self.state = PipelineStateHolder(initial_state)
         self.collector = collector
@@ -70,7 +71,18 @@ class Pipeline:
         self._analysis_q: asyncio.Queue[AnalysisFrame] = asyncio.Queue(maxsize=queue_depth)
         self._correction_q: asyncio.Queue[Correction] = asyncio.Queue(maxsize=queue_depth)
 
-        self._stacker = Stacker(self._raw_q, self._analysis_q, self.state)
+        # Optional analysis-frame tap for the ThumbnailEmitter. Stacker
+        # publishes to it non-blocking (drop-oldest) so a slow consumer
+        # never throttles Solver.
+        self._thumbnail_emitter = thumbnail_emitter
+        extra_outs = []
+        if thumbnail_emitter is not None:
+            extra_outs.append(thumbnail_emitter.in_queue)
+
+        self._stacker = Stacker(
+            self._raw_q, self._analysis_q, self.state,
+            extra_out_queues=extra_outs,
+        )
         self._solver = Solver(self._analysis_q, self._correction_q, self.state, method)
         self._enforcer = Enforcer(
             self._correction_q,
@@ -103,6 +115,8 @@ class Pipeline:
                 get_params=self._build_exposure_job,
             )
         await self._stacker.start()
+        if self._thumbnail_emitter is not None:
+            await self._thumbnail_emitter.start()
         await self._solver.start()
         await self._enforcer.start()
         self._started = True
@@ -117,15 +131,24 @@ class Pipeline:
             self._subscription = None
         await self._enforcer.stop()
         await self._solver.stop()
+        if self._thumbnail_emitter is not None:
+            await self._thumbnail_emitter.stop()
         await self._stacker.stop()
         self._started = False
         logger.info("Pipeline %s stopped", self.pipeline_id)
 
     def _build_exposure_job(self) -> ExposureJob:
         snapshot = self.state.snapshot()
+        # current_exp_time is the auto-exposure override; None means
+        # "no override active, use the operator-set baseline".
+        exp_time = (
+            snapshot.current_exp_time
+            if snapshot.current_exp_time is not None
+            else snapshot.exp_time
+        )
         return ExposureJob(
             pipeline_id=snapshot.pipeline_id,
-            exp_time=snapshot.current_exp_time or snapshot.exp_time,
+            exp_time=exp_time,
             roi=snapshot.current_roi,
             binning=snapshot.binning,
             gain=snapshot.gain,

@@ -36,6 +36,7 @@ RPC_COMMANDS = (
     "set_state",
     "set_mode",
     "acquire",
+    "acquire_at",
     "snapshot",
     "dark_rebuild",
     "bias_rebuild",
@@ -139,6 +140,10 @@ class NatsConn:
                 sender, lambda data: controller.set_mode(data["mode"])
             ),
             "acquire": _wrap_handler(sender, lambda _data: controller.acquire()),
+            "acquire_at": _wrap_handler(
+                sender,
+                lambda data: controller.acquire_at(x=data["x"], y=data["y"]),
+            ),
             "snapshot": _wrap_handler(sender, lambda _data: controller.snapshot()),
             "dark_rebuild": _wrap_handler(
                 sender, lambda data: controller.dark_rebuild(**(data or {}))

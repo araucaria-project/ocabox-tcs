@@ -132,7 +132,11 @@ class PipelineState:
     acquired_pos: tuple[float, float] | None = None
     acquired_adu: float | None = None
     acquired_at_ts: list[int] | None = None  # serverish timestamp array
-    current_exp_time: float = 1.0
+    current_exp_time: float | None = None
+    """Auto-exposure override. When None, the camera uses ``exp_time``
+    (the operator-set baseline). Auto-exposure writes this to override
+    transiently; operator ``set_state(exp_time=…)`` clears it back to
+    None so the operator value wins until auto-exposure decides again."""
     current_roi: tuple[int, int, int, int] | None = None
 
     # --- Observed (written by Solver) ---

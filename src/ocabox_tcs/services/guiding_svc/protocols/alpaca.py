@@ -38,8 +38,12 @@ CAMERA_STATE_EXPOSING = 2
 
 
 def _stable_client_id(instance_id: str) -> int:
-    """Map a TCS instance name to a stable 32-bit even ``ClientID``."""
-    return zlib.crc32(instance_id.encode("utf-8")) & 0xFFFF_FFFE
+    """Map a TCS instance name to a stable signed-int32 even ``ClientID``.
+
+    Some Alpaca drivers parse ClientID as signed int32 — values above
+    2^31-1 wrap to negative and are rejected.
+    """
+    return zlib.crc32(instance_id.encode("utf-8")) & 0x7FFF_FFFE
 
 
 class AlpacaProtocol:
@@ -54,6 +58,11 @@ class AlpacaProtocol:
         prefer_binary: Use the ``imagebytes`` binary content negotiation.
         request_timeout: Per-request HTTP deadline for image GET.
         poll_interval_s: ``imageready`` poll interval during exposure.
+        transpose: When True, transpose the fetched 2-D array. Workaround
+            for cameras whose downloader returns ASCOM X-major
+            (``arr[x][y]``) data — flip to natural numpy ``arr[y][x]``
+            so PIL/FFS see ``(height, width)``. Default False preserves
+            existing behaviour for cameras already compensated downstream.
     """
 
     def __init__(
@@ -66,6 +75,7 @@ class AlpacaProtocol:
         prefer_binary: bool = True,
         request_timeout: float = 30.0,
         poll_interval_s: float = 0.05,
+        transpose: bool = False,
     ) -> None:
         if ocabox_camera is None:
             raise ValueError(
@@ -79,6 +89,7 @@ class AlpacaProtocol:
         self.prefer_binary = prefer_binary
         self.request_timeout = request_timeout
         self.poll_interval_s = poll_interval_s
+        self.transpose = transpose
 
         self._client_id = _stable_client_id(instance_id)
         self._txn_counter = 0
@@ -125,6 +136,18 @@ class AlpacaProtocol:
         readout_ts = dt_utcnow_array()
         await self._wait_image_ready(exp_time)
         array = await self._fetch_bytes()
+        # Per-camera axis-swap workaround: some downloaders return image
+        # data in ASCOM X-major order (``arr[x][y]``), others have
+        # already-compensated to numpy ``arr[y][x]``. Cameras that need
+        # the transpose set ``protocol.transpose: true`` in the guider
+        # config — without it the frame ends up rotated 90° relative to
+        # the SVG viewBox / ``central_point`` semantics. Long-term the
+        # right answer is to detect from ``tic.config.observatory``
+        # ``resolution`` vs ``array.shape``; today's flag is the
+        # operator-driven escape hatch that keeps existing cameras
+        # working untouched.
+        if self.transpose and hasattr(array, "ndim") and array.ndim == 2:
+            array = array.T
 
         return FetchedFrame(
             array=array,
@@ -213,5 +236,6 @@ class AlpacaProtocol:
         return f"{self.url}/api/v1/camera/{self.device_number}/{action}?{params}"
 
     def _next_txn(self) -> int:
-        self._txn_counter = (self._txn_counter + 1) & 0xFFFF_FFFF
+        # Stay in signed-int32 range — see _stable_client_id.
+        self._txn_counter = (self._txn_counter + 1) & 0x7FFF_FFFF
         return self._txn_counter

@@ -21,8 +21,11 @@ Lifecycle (frame iteration):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
+
+from serverish.base import dt_utcnow_array
 
 from auto_adjust.stability import DampingGuard, SaturationGuard
 from ocabox_tcs.services.guiding_svc.backends import (
@@ -43,6 +46,7 @@ from ocabox_tcs.services.guiding_svc.protocols import (
     IrisProtocol,
 )
 from ocabox_tcs.services.guiding_svc.pulse_guide import build_pulse_guide_model
+from ocabox_tcs.services.guiding_svc.stages.thumbnail_emitter import ThumbnailEmitter
 from ocabox_tcs.services.guiding_svc.stages.solver.methods import METHODS
 from ocabox_tcs.services.guiding_svc.state import (
     AutoExposureConfig,
@@ -72,6 +76,7 @@ class GuiderManager:
         self.controllers: dict[str, Controller] = {}
         self.tic_conn: Any = None
         self.nats_conn: NatsConn | None = None
+        self._started_at: list[int] | None = None
 
     # ---- Lifecycle ----
 
@@ -117,6 +122,15 @@ class GuiderManager:
             len(self.collectors),
             len(self.pipelines),
         )
+
+        # 4. Discovery metadata — published as a metric on the standard
+        # ``svc.status.<service>`` subject (the same one tcsctl reads).
+        # UI clients subscribe last-per-subject to that topic and parse
+        # ``details.metrics.guider`` for the per-instance subject + RPC map.
+        self._started_at = dt_utcnow_array()
+        monitor = getattr(self.service, "monitor", None)
+        if monitor is not None and hasattr(monitor, "add_metric_cb"):
+            monitor.add_metric_cb(self._discovery_metrics)
 
     async def on_stop(self) -> None:
         # Stop in reverse order
@@ -221,10 +235,51 @@ class GuiderManager:
                 device_number=int(device_number),
                 ocabox_camera=ocabox_camera,
                 prefer_binary=protocol_cfg.get("prefer_binary", True),
+                transpose=bool(protocol_cfg.get("transpose", False)),
             )
         if kind == "iris":
             return IrisProtocol(**protocol_cfg)
         raise ValueError(f"Unknown protocol type {kind!r}")
+
+    def _build_thumbnail_emitter(
+        self,
+        cam_id: str,
+        pipe_id: str,
+        thumb_cfg: dict[str, Any],
+    ) -> ThumbnailEmitter | None:
+        """Build a ThumbnailEmitter for this pipeline if enabled in config.
+
+        Recognised keys (all optional unless ``enabled``):
+          ``enabled`` (bool, default False),
+          ``output_dir`` (str, default ``/tmp/guider_thumbs``),
+          ``size`` ([w, h], default [480, 300]),
+          ``every_n`` (int, default 1),
+          ``latest_link`` (bool, default True),
+          ``quality`` (int, default 80),
+          ``queue_depth`` (int, default 2 — small, drop-oldest semantics
+            mean we never want more than a couple of frames in flight).
+        """
+        if not thumb_cfg.get("enabled"):
+            return None
+        in_q: asyncio.Queue = asyncio.Queue(maxsize=int(thumb_cfg.get("queue_depth", 2)))
+        publisher = (
+            self.nats_conn.thumbnail_notification_publisher(cam_id)
+            if self.nats_conn is not None
+            else None
+        )
+        size = thumb_cfg.get("size", [480, 300])
+        return ThumbnailEmitter(
+            in_queue=in_q,
+            output_dir=thumb_cfg.get("output_dir", "/tmp/guider_thumbs"),
+            instance=self.nats_conn.instance if self.nats_conn is not None else "unknown",
+            pipeline_id=pipe_id,
+            notification_publisher=publisher,
+            size=tuple(size),
+            every_n=int(thumb_cfg.get("every_n", 1)),
+            latest_link=bool(thumb_cfg.get("latest_link", True)),
+            quality=int(thumb_cfg.get("quality", 80)),
+            max_files=int(thumb_cfg.get("max_files", 200)),
+        )
 
     def _build_pulse_guide(
         self, pg_cfg: dict[str, Any]
@@ -302,7 +357,6 @@ class GuiderManager:
             method_params=pipe_cfg.get("method_params", {}),
             selection_policy=pipe_cfg.get("selection_policy", "brightest_in_window"),
             exp_time=pipe_cfg.get("exp_time", 1.0),
-            current_exp_time=pipe_cfg.get("exp_time", 1.0),
             binning=pipe_cfg.get("binning", 1),
             gain=pipe_cfg.get("gain"),
             frequency=pipe_cfg.get("frequency", 1.0),
@@ -332,6 +386,9 @@ class GuiderManager:
             if self.tic_conn is not None
             else None
         )
+        thumbnail_emitter = self._build_thumbnail_emitter(
+            cam_id, pipe_id, pipe_cfg.get("thumbnails") or {}
+        )
         pipeline = Pipeline(
             initial_state=state,
             collector=collector,
@@ -340,6 +397,7 @@ class GuiderManager:
             mount=mount_handle,
             pulse_guide_model=pulse_guide_model,
             enforcer_kwargs=enforcer_kwargs,
+            thumbnail_emitter=thumbnail_emitter,
         )
         controller = Controller(pipeline)
 
@@ -361,6 +419,61 @@ class GuiderManager:
         key = f"{cam_id}.{pipe_id}"
         self.pipelines[key] = pipeline
         self.controllers[key] = controller
+
+    # ---- Discovery metadata ----
+
+    def _discovery_metrics(self) -> dict[str, Any]:
+        """Metric callback exposing the guider's subject scheme + RPC list.
+
+        Returned data is included in ``svc.status.<service>`` reports under
+        ``details.metrics.guider``. UIs and other consumers read the same
+        ``svc.status.>`` stream tcsctl uses, so guider discovery is unified
+        with the rest of the TCS service surface.
+
+        Static once the pipelines are built — pipeline mode/state changes
+        are published on the per-pipeline state subject; this metadata only
+        carries the subject names + RPC vocabulary needed to find them.
+        """
+        if self.nats_conn is None:
+            return {}
+        from ocabox_tcs.services.guiding_svc.nats_conn import RPC_COMMANDS
+
+        nc = self.nats_conn
+        cfg_dict = _config_to_dict(self.svc_config)
+        pipelines: list[dict[str, Any]] = []
+        for key, pipeline in self.pipelines.items():
+            cam_id, pipe_id = key.split(".", 1)
+            snapshot = pipeline.state.snapshot()
+            pipelines.append({
+                "id": pipe_id,
+                "camera_id": cam_id,
+                "mode": snapshot.mode.value,
+                "method": snapshot.method,
+                "selection_policy": snapshot.selection_policy,
+                "subjects": {
+                    "rpc_root": f"{nc._root('rpc')}.pipeline.{pipe_id}.v1",
+                    "state": nc.publish_subject(pipe_id, "state"),
+                    "events": nc.publish_subject(pipe_id, "events"),
+                    "journal": nc.publish_subject(pipe_id, "journal"),
+                    "correction": nc.telemetry_subject(pipe_id, "correction"),
+                },
+                "rpcs": list(RPC_COMMANDS),
+            })
+        return {
+            "guider": {
+                "service": nc.service,
+                "instance": nc.instance,
+                "telescope_id": cfg_dict.get("telescope_id", "unknown"),
+                "variant": getattr(self.svc_config, "variant", None),
+                "subject_prefix": nc.subject_prefix,
+                "started_at": self._started_at,
+                "subjects": {
+                    "thumbnail_ready": f"{nc._root('publish')}.frame.thumbnail.ready",
+                    "active_correction": f"{nc._root('telemetry')}.active.correction",
+                },
+                "pipelines": pipelines,
+            }
+        }
 
 
 def _config_to_dict(svc_config: Any) -> dict[str, Any]:

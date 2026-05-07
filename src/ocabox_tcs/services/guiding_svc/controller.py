@@ -55,6 +55,12 @@ class Controller:
         if not patch:
             return self._snapshot_dict()
         coerced = _coerce_patch(patch)
+        # Operator override semantics: when the operator changes the
+        # baseline ``exp_time``, drop any auto-exposure override so the
+        # operator value takes effect immediately. Auto-exposure that
+        # explicitly sets ``current_exp_time`` in the same patch wins.
+        if "exp_time" in coerced and "current_exp_time" not in coerced:
+            coerced["current_exp_time"] = None
         prev_mode = self.pipeline.state.snapshot().mode
         version = await self.pipeline.state.update(**coerced)
         logger.info(
@@ -79,6 +85,31 @@ class Controller:
         """Force the next frame into wide-search mode."""
         result = await self.set_state({"acquired": False, "acquired_pos": None})
         await self._publish_event("acquire_requested", {})
+        return result
+
+    async def acquire_at(self, x: float, y: float) -> dict[str, Any]:
+        """Re-aim the next acquisition at sensor pixel ``(x, y)``.
+
+        Updates ``central_point`` and clears ``acquired`` so the next
+        frame runs the wide-search around the new target. Used by the
+        UI for click-to-acquire.
+        """
+        try:
+            xv = float(x)
+            yv = float(y)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"x/y must be numeric, got x={x!r} y={y!r}") from e
+        result = await self.set_state({
+            "central_point": (xv, yv),
+            "acquired": False,
+            "acquired_pos": None,
+        })
+        await self._publish_event(
+            "acquire_at_requested", {"x": xv, "y": yv}
+        )
+        await self._publish_journal(
+            f"acquire_at requested: ({xv:.1f}, {yv:.1f})"
+        )
         return result
 
     async def request_auto_state(self, **suggested: Any) -> dict[str, Any]:
@@ -182,7 +213,8 @@ class Controller:
                 "duration_ms": duration,
             }
 
-        await mount.aput_pulseguide(direction=dir_code, duration=duration)
+        # TIC pulseguide handler rejects float Duration with HTTP 400.
+        await mount.aput_pulseguide(direction=dir_code, duration=int(round(duration)))
         await self._publish_journal(
             f"manual_pulse {dir_label} {duration:.0f}ms"
         )
@@ -232,7 +264,7 @@ class Controller:
         try:
             await self.state_publisher.publish(
                 data=snapshot_dict,
-                meta={"message_type": "guider.state", "sender": self.sender_id},
+                meta={"message_type": "default", "sender": self.sender_id},
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("state publish failed: %s", e)
@@ -243,7 +275,7 @@ class Controller:
         try:
             await self.events_publisher.publish(
                 data={"event": event, "payload": payload, "ts": dt_utcnow_array()},
-                meta={"message_type": "guider.event", "sender": self.sender_id},
+                meta={"message_type": "default", "sender": self.sender_id},
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("event publish failed: %s", e)
@@ -253,10 +285,11 @@ class Controller:
             logger.info("[journal/%s] %s", self.sender_id, message)
             return
         try:
-            await self.journal_publisher.publish(
-                data={"message": message, "level": level},
-                meta={"message_type": "journal", "sender": self.sender_id},
-            )
+            # MsgJournalPublisher exposes a logging-like interface that
+            # fills in timestamp/conversation_id/op to satisfy the
+            # journal schema.
+            method = getattr(self.journal_publisher, level, self.journal_publisher.info)
+            await method(message)
         except Exception as e:  # noqa: BLE001
             logger.exception("journal publish failed: %s", e)
 

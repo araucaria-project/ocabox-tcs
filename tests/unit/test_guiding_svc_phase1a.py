@@ -168,6 +168,53 @@ async def test_controller_journal_falls_back_to_logger_when_no_publisher(
 
 
 # ---------------------------------------------------------------------------
+# exp_time / current_exp_time semantics — regression for the silent-shadow bug
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_state_exp_time_clears_auto_override(make_pipeline):
+    """Operator changing the baseline must drop any active auto-exposure
+    override so the operator value reaches the camera on the next frame."""
+    pipe = make_pipeline()
+    ctrl = Controller(pipe)
+    # Simulate auto-exposure having taken control.
+    await pipe.state.update(current_exp_time=2.5)
+    assert pipe.state.snapshot().current_exp_time == 2.5
+
+    await ctrl.set_state({"exp_time": 0.7})
+    snap = pipe.state.snapshot()
+    assert snap.exp_time == 0.7
+    assert snap.current_exp_time is None
+
+
+@pytest.mark.asyncio
+async def test_set_state_preserves_explicit_current_exp_time(make_pipeline):
+    """Auto-exposure may set both fields atomically; that explicit
+    ``current_exp_time`` must not be clobbered by the convenience reset."""
+    pipe = make_pipeline()
+    ctrl = Controller(pipe)
+    await ctrl.set_state({"exp_time": 0.7, "current_exp_time": 0.3})
+    snap = pipe.state.snapshot()
+    assert snap.exp_time == 0.7
+    assert snap.current_exp_time == 0.3
+
+
+def test_build_exposure_job_uses_baseline_when_no_override(make_pipeline):
+    pipe = make_pipeline()
+    asyncio.run(pipe.state.update(exp_time=0.4, current_exp_time=None))
+    job = pipe._build_exposure_job()
+    assert job.exp_time == 0.4
+
+
+def test_build_exposure_job_uses_override_when_set(make_pipeline):
+    pipe = make_pipeline()
+    asyncio.run(pipe.state.update(exp_time=0.4, current_exp_time=1.7))
+    job = pipe._build_exposure_job()
+    assert job.exp_time == 1.7
+
+
+# ---------------------------------------------------------------------------
 # nats_conn handler shaping
 # ---------------------------------------------------------------------------
 

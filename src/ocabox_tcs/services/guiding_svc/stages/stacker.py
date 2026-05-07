@@ -39,10 +39,12 @@ class Stacker:
         in_queue: asyncio.Queue[RawFrame],
         out_queue: asyncio.Queue[AnalysisFrame],
         state: PipelineStateHolder,
+        extra_out_queues: list[asyncio.Queue[AnalysisFrame]] | None = None,
     ) -> None:
         self.in_queue = in_queue
         self.out_queue = out_queue
         self.state = state
+        self.extra_out_queues = list(extra_out_queues or [])
         self._task: asyncio.Task[None] | None = None
         self._running = False
 
@@ -87,6 +89,19 @@ class Stacker:
                 metadata={**raw.metadata, "stacker": "passthrough_frame_iter"},
             )
             await self.out_queue.put(analysis)
+            for q in self.extra_out_queues:
+                # Non-blocking tap: drop the oldest element on full so a slow
+                # consumer (e.g. ThumbnailEmitter on contended NFS) never
+                # backpressures the primary Solver path.
+                while q.full():
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                try:
+                    q.put_nowait(analysis)
+                except asyncio.QueueFull:
+                    pass
 
     # -- placeholders for later iterations ------------------------------
 

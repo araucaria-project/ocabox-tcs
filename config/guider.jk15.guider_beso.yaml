@@ -46,6 +46,13 @@ services:
           protocol:
             type: alpaca
             prefer_binary: true     # imagebytes fast path
+            transpose: true         # BESO downloader returns ASCOM X-major;
+                                    # transpose to numpy (Y, X) so PIL/FFS
+                                    # see the natural landscape orientation
+                                    # and central_point=(968, 608) lands on
+                                    # the actual data, not the letterbox.
+                                    # Sister tcu cameras have downstream
+                                    # compensation already — leave default.
         pipelines:
           - id: mon
             mode: monitoring        # safe default — operator arms guiding via set_mode
@@ -90,3 +97,17 @@ services:
             save_stacked_fits: false
             save_raw_thumbnails: false
             save_stacked_thumbnails: false
+
+            # FL2 thumbnails for the UI viewer. Drop-oldest tap on the
+            # Stacker output; binary content is never sent over NATS —
+            # only the file path on this notification subject. ``max_files``
+            # bounds the on-disk footprint by rotating the oldest out;
+            # ``latest.jpg`` always points at the most recent frame.
+            thumbnails:
+              enabled: true
+              output_dir: /tmp/guider_thumbs
+              size: [480, 300]
+              every_n: 1
+              latest_link: true
+              quality: 80
+              max_files: 200
