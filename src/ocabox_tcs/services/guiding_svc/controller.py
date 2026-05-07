@@ -8,6 +8,7 @@ so we get atomicity, validation, and arbitration in one place.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -61,7 +62,22 @@ class Controller:
         # explicitly sets ``current_exp_time`` in the same patch wins.
         if "exp_time" in coerced and "current_exp_time" not in coerced:
             coerced["current_exp_time"] = None
-        prev_mode = self.pipeline.state.snapshot().mode
+        prev_snap = self.pipeline.state.snapshot()
+        prev_mode = prev_snap.mode
+        # Guide-anchor lifecycle: snapshot ``acquired_pos`` as the lock
+        # target the moment guiding turns on; clear when leaving guiding.
+        # Operator's mental model "hold star where I locked it" works
+        # without manual setup. ``central_point`` stays free for the
+        # operator's target reticle (eventually drives pulse-slew).
+        # If a caller sets ``guide_anchor`` explicitly in the same patch,
+        # that wins (future pulse-slew use case).
+        if "mode" in coerced and "guide_anchor" not in coerced:
+            new_mode = coerced["mode"]
+            if new_mode == Mode.GUIDING and prev_mode != Mode.GUIDING:
+                if prev_snap.acquired and prev_snap.acquired_pos is not None:
+                    coerced["guide_anchor"] = tuple(prev_snap.acquired_pos)
+            elif new_mode != Mode.GUIDING and prev_mode == Mode.GUIDING:
+                coerced["guide_anchor"] = None
         version = await self.pipeline.state.update(**coerced)
         logger.info(
             "Controller(%s).set_state version=%d patch_keys=%s",
@@ -92,7 +108,8 @@ class Controller:
 
         Updates ``central_point`` and clears ``acquired`` so the next
         frame runs the wide-search around the new target. Used by the
-        UI for click-to-acquire.
+        UI for the rare "move target reticle" operation (right-click
+        on the frame); routine star selection goes through ``lock_at``.
         """
         try:
             xv = float(x)
@@ -111,6 +128,104 @@ class Controller:
             f"acquire_at requested: ({xv:.1f}, {yv:.1f})"
         )
         return result
+
+    async def lock_at(self, x: float, y: float) -> dict[str, Any]:
+        """Seed the lock onto a star near sensor pixel ``(x, y)``.
+
+        Sets ``acquired_pos`` to the click coords and ``acquired=True``
+        so the next solver iteration runs *narrow* search (in a
+        ``search_reg_px`` half-window) around the click — no wide
+        search, no ``central_point`` change, no mount motion. The
+        operator's click is a hint; the solver refines to the actual
+        star peak in the box on the next frame.
+
+        ``acquired_adu`` is cleared to ``None`` so the narrow search's
+        ADU-tolerance filter doesn't reject the new candidate (it
+        re-populates from the next iteration's measured peak).
+
+        This is the routine click-on-frame action — left-click in the
+        UI. ``acquire_at`` (changes the operator's target reticle) is
+        the rare admin op, mapped to right-click.
+        """
+        try:
+            xv = float(x)
+            yv = float(y)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"x/y must be numeric, got x={x!r} y={y!r}") from e
+        # Operator picking a different star (click or TAB-cycle) is a
+        # *re-anchor* request, not "drag this star to the old anchor".
+        # In guiding mode also move the guide_anchor onto the new
+        # selection so the controller starts holding the new star
+        # where it is — no spurious large-error pulses pulling the
+        # newly-selected star toward the previous star's locked
+        # position.
+        snap = self.pipeline.state.snapshot()
+        patch: dict[str, Any] = {
+            "acquired": True,
+            "acquired_pos": (xv, yv),
+            "acquired_adu": None,
+        }
+        if snap.mode == Mode.GUIDING:
+            patch["guide_anchor"] = (xv, yv)
+        result = await self.set_state(patch)
+        await self._publish_event(
+            "lock_at_requested", {"x": xv, "y": yv}
+        )
+        await self._publish_journal(
+            f"lock_at requested: ({xv:.1f}, {yv:.1f})"
+            + (" (guide_anchor re-anchored)" if snap.mode == Mode.GUIDING else "")
+        )
+        return result
+
+    async def drop_to_reticle(self) -> dict[str, Any]:
+        """Re-anchor active guidance onto the operator's reticle —
+        the "drop the star into the fibre" operation.
+
+        Sets ``guide_anchor = central_point``. From the next solver
+        iteration the controller pulls the star toward the reticle
+        (positioned by the operator over the spectrograph fibre
+        entrance, typically via right-click) instead of wherever the
+        lock happened to be at mode→guiding transition.
+
+        Pre-condition: ``mode == guiding`` and ``acquired == True``.
+        Outside guiding ``guide_anchor`` is unused, so the request is
+        rejected with a clear message rather than silently storing a
+        value that will be cleared on the next mode flip.
+
+        This is the MVP path for fibre-injection. A fuller Mode-B with
+        predict→measure→update narrow-search and auto-promote-after-slew
+        is parked.
+        """
+        snap = self.pipeline.state.snapshot()
+        if snap.mode != Mode.GUIDING:
+            return {
+                "status": "error",
+                "error": (
+                    f"drop_to_reticle requires mode=guiding "
+                    f"(active={snap.mode.value!r}); switch to guiding first."
+                ),
+            }
+        if not snap.acquired or snap.acquired_pos is None:
+            return {
+                "status": "error",
+                "error": "drop_to_reticle requires an active lock — re-acquire first.",
+            }
+        if snap.central_point is None:
+            return {
+                "status": "error",
+                "error": "drop_to_reticle requires central_point to be set.",
+            }
+        new_anchor = (float(snap.central_point[0]), float(snap.central_point[1]))
+        await self.pipeline.state.update(guide_anchor=new_anchor)
+        await self._publish_state(self._snapshot_dict())
+        await self._publish_event(
+            "drop_to_reticle",
+            {"guide_anchor": list(new_anchor), "from_pos": list(snap.acquired_pos)},
+        )
+        await self._publish_journal(
+            f"drop_to_reticle → guide_anchor=({new_anchor[0]:.1f}, {new_anchor[1]:.1f})"
+        )
+        return {"status": "ok", "guide_anchor": list(new_anchor)}
 
     async def request_auto_state(self, **suggested: Any) -> dict[str, Any]:
         """Apply an auto-* policy state change requested by Solver.
@@ -230,19 +345,199 @@ class Controller:
         }
 
     # ------------------------------------------------------------------
+    # Calibration probe — measure (dx, dy) of star motion per pulse-ms
+    # ------------------------------------------------------------------
+
+    # Number of post-pulse frames to wait before reading the new
+    # acquired_pos. >1 lets the lock settle on the post-pulse star
+    # position before we sample.
+    _CAL_SETTLE_FRAMES = 3
+
+    # Default extra time after pulse-end before we accept a measurement,
+    # to absorb camera readout + any residual mount mechanical settle.
+    # 2.5 s was empirically calibrated on jk15 BESO (2026-05-07): below
+    # this the mount is still drifting from the pulse and individual
+    # probe σ blows up to ~5-10 px. At 2.5 s σ drops to ~2-4 px, which
+    # is dominated by detection noise + sidereal sub-pixel jitter rather
+    # than mechanical residual. Tuneable via the RPC parameter for
+    # mounts with different settle profiles.
+    _CAL_POST_PULSE_SETTLE_MS = 2500.0
+
+    async def calibrate_probe(
+        self,
+        *,
+        direction: int | str,
+        duration_ms: float,
+        settle_frames: int | None = None,
+        post_pulse_settle_ms: float | None = None,
+        timeout_s: float = 15.0,
+    ) -> dict[str, Any]:
+        """One-shot calibration probe — measure star displacement
+        caused by a known pulse.
+
+        Pre-conditions: ``acquired=True`` (need a star to track) AND
+        ``mode=monitoring`` (otherwise the guider's own corrections
+        compete with the probe and you measure nonsense). The RPC
+        refuses if either is violated rather than silently giving bad
+        data.
+
+        Workflow:
+          1. Sample ``acquired_pos`` and ``state.version``.
+          2. Issue a manual pulse via the mount (``aput_pulseguide`` is
+             fire-and-forget — the call returns immediately, the mount
+             keeps moving the star for ``duration_ms``).
+          3. **Wait for the pulse to physically complete** — ``duration_ms``
+             of mount motion plus a configurable settle margin so the
+             frame we sample was captured *after* all star motion has
+             stopped. Without this we'd sample mid-pulse and the
+             measured ``(dx, dy)`` would be a fraction of the true effect,
+             with ongoing sidereal drift smeared on top — biasing the
+             whole calibrated Jacobian.
+          4. Then wait for at least one fresh state version bump after
+             the settle deadline so the sampled ``acquired_pos`` is from
+             a frame entirely captured post-pulse.
+          5. Sample new ``acquired_pos``; return the delta + per-ms rates.
+
+        Returns ``{"status": "ok", "dx", "dy", "k_x_per_ms", "k_y_per_ms",
+                  "pos_before", "pos_after", "duration_ms", "direction_label"}``
+        on success, or ``{"status": "error", "error": "…"}`` on validation
+        / timeout failure.
+        """
+        snap = self.pipeline.state.snapshot()
+        if not snap.acquired or snap.acquired_pos is None:
+            return {"status": "error", "error": "not acquired — lock a star first"}
+        if snap.mode != Mode.MONITORING:
+            return {
+                "status": "error",
+                "error": (
+                    f"need mode=monitoring (active={snap.mode.value!r}); "
+                    "switch to monitoring so guiding corrections don't "
+                    "compete with the probe"
+                ),
+            }
+
+        settle_ms = (
+            float(post_pulse_settle_ms)
+            if post_pulse_settle_ms is not None else self._CAL_POST_PULSE_SETTLE_MS
+        )
+        pos_before = tuple(snap.acquired_pos)
+
+        # Issue the pulse — manual_pulse handles direction validation,
+        # cap, journal/event publishing, and the no-mount path.
+        pulse_result = await self.manual_pulse(
+            direction=direction, duration_ms=duration_ms
+        )
+        if pulse_result.get("status") != "ok":
+            return {
+                "status": "error",
+                "error": f"pulse failed: {pulse_result.get('status')}",
+                "pulse_result": pulse_result,
+            }
+        dir_label = pulse_result["direction_label"]
+
+        # Phase A: wait for the pulse to physically complete + settle.
+        # ``aput_pulseguide`` is fire-and-forget; only after this elapsed
+        # time can we trust the star to be at its post-pulse position.
+        wait_total_s = float(duration_ms) / 1000.0 + settle_ms / 1000.0
+        await asyncio.sleep(wait_total_s)
+
+        # Phase B: wait for a fresh frame post-settle that *also* has
+        # the lock recovered. During a long pulse the pipeline's narrow
+        # search can transiently lose lock; wide-search recovery may
+        # take 1-2 frames depending on star density and how far the
+        # pulse pushed the star. So we don't abort on any one
+        # acquired=False snapshot — we keep polling until either:
+        #   * a fresh frame (version > version_at_settle) reports
+        #     acquired=True with a position → success, or
+        #   * the timeout elapses → genuinely lost.
+        # This is the correct behaviour for the *operator's* notion of
+        # "did the probe succeed": if the pipeline can re-establish the
+        # lock within a reasonable wait, the post-pulse position is
+        # exactly what we want to measure. The earlier "first fresh
+        # frame wins" logic occasionally fired a false "lock lost"
+        # error during the recovery window, throwing away the rest of
+        # the calibration session.
+        version_at_settle = self.pipeline.state.snapshot().version
+        deadline = asyncio.get_event_loop().time() + float(timeout_s)
+        while True:
+            await asyncio.sleep(0.1)
+            snap = self.pipeline.state.snapshot()
+            if (
+                snap.version > version_at_settle
+                and snap.acquired
+                and snap.acquired_pos is not None
+            ):
+                break
+            if asyncio.get_event_loop().time() > deadline:
+                if snap.version <= version_at_settle:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"timeout waiting for fresh frame after "
+                            f"pulse-settle (version stuck at {snap.version}). "
+                            "Pipeline may be stalled or exposure cadence "
+                            "is slower than the timeout."
+                        ),
+                    }
+                return {
+                    "status": "error",
+                    "error": (
+                        f"lock not recovered after pulse — pulse={dir_label} "
+                        f"{duration_ms:.0f}ms pushed star outside narrow search "
+                        "and wide-search did not re-acquire within "
+                        f"{timeout_s:.0f}s. Try a shorter probe, or widen "
+                        "wide_search_radius_px."
+                    ),
+                }
+
+        pos_after = tuple(snap.acquired_pos)
+        dx = float(pos_after[0] - pos_before[0])
+        dy = float(pos_after[1] - pos_before[1])
+        dur = float(duration_ms)
+        result = {
+            "status": "ok",
+            "direction_label": dir_label,
+            "duration_ms": dur,
+            "pos_before": list(pos_before),
+            "pos_after": list(pos_after),
+            "dx": dx,
+            "dy": dy,
+            "k_x_per_ms": dx / dur if dur > 0 else 0.0,
+            "k_y_per_ms": dy / dur if dur > 0 else 0.0,
+        }
+        await self._publish_journal(
+            f"calibrate_probe {dir_label} {dur:.0f}ms → "
+            f"dx={dx:+.2f} dy={dy:+.2f} px "
+            f"(k=({result['k_x_per_ms']:+.5f},{result['k_y_per_ms']:+.5f}) px/ms)"
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # Solver-triggered events (called from inside the pipeline)
     # ------------------------------------------------------------------
 
     async def notify_acquired(self, *, acquired: bool, position: tuple[float, float] | None,
-                              adu: float | None) -> None:
-        """Solver tells the Controller a star was (re-)acquired or lost."""
+                              adu: float | None,
+                              candidates: list[tuple[float, float, float]] | None = None,
+                              ) -> None:
+        """Solver tells the Controller a star was (re-)acquired or lost.
+
+        When ``candidates`` is provided it's stored alongside the lock
+        so the UI can render the full detection list (debug overlay +
+        TAB-to-cycle). Pass ``None`` to leave the prior list untouched
+        — useful when the solver runs a narrow box detection and we
+        don't want the partial list to overwrite the wide-frame one.
+        """
         prev = self.pipeline.state.snapshot()
-        await self.pipeline.state.update(
+        update_kwargs: dict[str, Any] = dict(
             acquired=acquired,
             acquired_pos=position,
             acquired_adu=adu,
             acquired_at_ts=dt_utcnow_array() if acquired else prev.acquired_at_ts,
         )
+        if candidates is not None:
+            update_kwargs["candidates"] = candidates
+        await self.pipeline.state.update(**update_kwargs)
         await self._publish_state(self._snapshot_dict())
         if acquired and not prev.acquired:
             await self._publish_event(

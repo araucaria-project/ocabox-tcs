@@ -111,6 +111,10 @@ class PipelineState:
     gain: int | None = None
     frequency: float = 1.0
     central_point: tuple[float, float] = (1024.0, 1024.0)
+    # Default reticle position from camera config — UI uses for "home"
+    # to restore the operator's reticle after dragging. Immutable
+    # post-startup. None when unset (UI falls back to camera centre).
+    central_point_default: tuple[float, float] | None = None
     wide_search_radius_px: int = 200
     search_reg_px: int = 25
     stacking_count: int = 1
@@ -138,6 +142,15 @@ class PipelineState:
     transiently; operator ``set_state(exp_time=…)`` clears it back to
     None so the operator value wins until auto-exposure decides again."""
     current_roi: tuple[int, int, int, int] | None = None
+    guide_anchor: tuple[float, float] | None = None
+    """The pixel position guider corrects toward during ``guiding`` mode.
+    Captured at the moment guiding starts (``acquired_pos`` snapshot)
+    so the operator's natural mental model "hold star where I locked it"
+    works without thinking. Distinct from ``central_point`` — that one
+    is the *target reticle* the operator may drag (right-click) and
+    eventually drives the pulse-slew "drag-star-to-fiber" workflow.
+    None when not guiding; cleared on every mode transition out of
+    guiding so the next guiding session re-snapshots fresh."""
 
     # --- Observed (written by Solver) ---
     last_correction_dx_px: float | None = None
@@ -145,6 +158,14 @@ class PipelineState:
     last_correction_drot_rad: float | None = None
     fwhm_recent: float | None = None
     rotation_recent: float | None = None
+    candidates: list[tuple[float, float, float]] | None = None
+    """Per-frame detection list: ``[(x, y, adu), …]`` in rank order
+    (best-first per the active solver's ``rank_by`` policy). Surfaced
+    so operators can see *every* peak the detector found — useful for
+    verifying that hot pixels are/aren't surviving the masks, and for
+    the UI's TAB-cycle "lock the next candidate" interaction. ``None``
+    when no detection has run yet (or the solver doesn't produce a
+    candidate list)."""
 
     # --- Meta ---
     version: int = 0

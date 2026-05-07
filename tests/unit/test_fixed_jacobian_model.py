@@ -133,5 +133,5 @@ def test_build_pulse_guide_model_dispatches_to_fixed():
 
 def test_build_pulse_guide_model_rejects_unconfigured():
     """No jacobian, no learning adapter requested — surfaces NotImplementedError."""
-    with pytest.raises(NotImplementedError, match="fixed-jacobian FL1"):
+    with pytest.raises(NotImplementedError, match="provide either full 2×2"):
         build_pulse_guide_model({})

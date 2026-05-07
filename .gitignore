@@ -136,6 +136,10 @@ poetry.lock
 config/services.yaml
 
 .aider*
+.playwright*
+.claude
 
 # Local test FITS artifacts (produced by ad-hoc smoke probes)
 /guider_beso_*.fits
+
+

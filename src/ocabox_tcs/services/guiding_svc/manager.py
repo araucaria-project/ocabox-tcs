@@ -298,17 +298,27 @@ class GuiderManager:
           ``duration_min_ms`` (default 20).
         """
         jac = pg_cfg.get("jacobian") or {}
-        if "kN_px_per_ms" not in jac or "kE_px_per_ms" not in jac:
+        # Accept either FL1 diagonal (kN_px_per_ms + kE_px_per_ms) or
+        # FL2 full 2×2 (kE_x/y_px_per_ms + kN_x/y_px_per_ms). Either is
+        # enough to build a model; the dispatch happens inside
+        # ``build_pulse_guide_model``. Without either, the Enforcer
+        # falls back to log-only (no real guiding).
+        full_keys = ("kE_x_px_per_ms", "kE_y_px_per_ms", "kN_x_px_per_ms", "kN_y_px_per_ms")
+        has_diagonal = "kN_px_per_ms" in jac and "kE_px_per_ms" in jac
+        has_full = all(k in jac for k in full_keys)
+        if not (has_diagonal or has_full):
             return None, {}
 
         model = build_pulse_guide_model(pg_cfg)
         alpha = float(pg_cfg.get("damping_alpha", 0.5))
         max_ms = float(pg_cfg.get("duration_max_ms", 1500.0))
         min_ms = float(pg_cfg.get("duration_min_ms", 20.0))
+        settle_ms = float(pg_cfg.get("post_pulse_settle_ms", 1000.0))
         kwargs: dict[str, Any] = {
             "damping": DampingGuard(alpha_min=alpha, alpha_max=alpha),
             "saturation_ms": SaturationGuard(lo=-max_ms, hi=max_ms),
             "min_pulse_ms": min_ms,
+            "post_pulse_settle_ms": settle_ms,
         }
         return model, kwargs
 
@@ -361,6 +371,7 @@ class GuiderManager:
             gain=pipe_cfg.get("gain"),
             frequency=pipe_cfg.get("frequency", 1.0),
             central_point=tuple(pipe_cfg.get("central_point", (1024.0, 1024.0))),
+            central_point_default=tuple(pipe_cfg.get("central_point", (1024.0, 1024.0))),
             wide_search_radius_px=pipe_cfg.get("wide_search_radius_px", 200),
             search_reg_px=pipe_cfg.get("search_reg_px", 25),
             stacking_count=pipe_cfg.get("stacking_count", 1),

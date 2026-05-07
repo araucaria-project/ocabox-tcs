@@ -63,9 +63,11 @@ services:
             gain: 200
             binning: 1
 
-            # Where the star should sit on the sensor. For BESO this is
-            # the fiber-entrance pixel; tune from the live frame.
-            central_point: [968, 608]    # full-sensor centre (1936×1216 / 2)
+            # Where the star should sit on the sensor — the fibre entrance
+            # pixel for BESO. Measured 2026-05-07 from live frame after
+            # operator dragged the reticle into the visible fibre hole and
+            # confirmed alignment. UI "home" key restores to this value.
+            central_point: [938.87, 575.75]
 
             wide_search_radius_px: 600   # cold-start search circle radius
             search_reg_px: 30            # narrow re-acquisition half-window
@@ -75,22 +77,113 @@ services:
 
             # ADU-tolerance for re-acquisition matching (per-second, scaled
             # by exp_time at runtime).
-            adu_match_tolerance_per_sec: 5000.0
+            adu_match_tolerance_per_sec: 200000.0 # ±tol = this × exp_time;
+                                                  # very loose to survive
+                                                  # saturation jitter on
+                                                  # bright stars (60k star
+                                                  # @ 0.1s wobbles ±5k naturally
+                                                  # because peak ADU depends on
+                                                  # sub-pixel centroid position).
+                                                  # Spatial filter (search_reg_px)
+                                                  # plus our shape filters carry
+                                                  # the rejection load now.
 
             method_params:
               fwhm: 3.0                # FFS detection PSF
-              threshold: 5.0           # FFS sigma threshold
+              threshold: 7.0           # FFS sigma threshold (raised from
+                                       # 5 — fewer mask1 pixels means
+                                       # fewer noise spikes survive
+                                       # min_pixels_above_threshold)
               saturation_adu: 50000.0  # for confidence calc
+              min_pixels_above_threshold: 5  # PSF spans many pixels
+                                       # above threshold; hot pixel /
+                                       # cosmic ray = 1; tightest
+                                       # invariant we have. Drops ~80%
+                                       # of single-pixel candidates.
+              centroid_radius_px: 10   # box-half for sub-pixel centroid;
+                                       # bigger than FWHM-based default
+                                       # so we capture the *whole*
+                                       # multi-detection cluster that
+                                       # forms around a real star + fiber
+                                       # halo + reflections. Whichever
+                                       # peak the detector picks, the
+                                       # centroid integrates the same
+                                       # cluster → stable across frames.
+              centroid_threshold_sigma: 3.0  # only pixels > sky+3σ
+                                       # contribute to centroid; sky
+                                       # variation gets exactly zero
+                                       # weight (vs current "all pixels,
+                                       # bg-subtracted" which lets noise
+                                       # pull the centroid). Astrometry-
+                                       # grade subpixel stability.
+              min_smoothed_sigma: 3.0  # kernel-matched SNR mask — drops
+                                       # noise spikes that don't match
+                                       # the Gaussian-convolved PSF.
+              max_concentration: 0.5   # reject candidates where >50% of
+                                       # background-subtracted aperture
+                                       # flux is in the central pixel.
+                                       # Real PSF: ~0.2-0.4. Hot pixel /
+                                       # cosmic ray / readout spike: ~1.0.
+                                       # The single most effective single-
+                                       # pixel-artifact filter.
+              rank_by: aperture        # rank by background-subtracted
+                                       # aperture-integrated flux — total
+                                       # PSF energy. Robust against
+                                       # remaining hot-pixel-like spikes
+                                       # because they have no flux beyond
+                                       # the central pixel.
+              # aperture_radius: 6     # default = round(2 * fwhm); 6 px
+                                       # for fwhm=3 → 13×13 box.
 
-            # Pulse-guide model — placeholders until hand-calibration.
-            # Sign + magnitude updated after the first probe sequence.
+            # Pulse-guide model — calibrated 2026-05-07 on jk15 BESO.
+            #
+            # Method: scripts/calibration_session.py runs N/S/E/W probes
+            # in series. Two artefacts dominate the raw scatter:
+            #
+            #   * **Mount backlash** — first probe after a direction
+            #     reversal moves the star ~25-65% less than steady-state.
+            #     The gearbox eats most of a 1000 ms pulse just taking up
+            #     slack. Solution: discard probe[0] of every direction;
+            #     average probe[1] and onwards. The script does this.
+            #
+            #   * **Mount settle** — at the default ``post_pulse_settle_ms``
+            #     of 1000 ms the mount is still moving when we sample, so
+            #     short-settle σ ≈ 5-10 px. Bumping settle to 2500 ms cuts
+            #     σ to ~2-4 px (3× better). Live calibration runs use the
+            #     long settle; the controller default is also bumped to
+            #     match (controller.py ``_CAL_POST_PULSE_SETTLE_MS``).
+            #
+            # The resulting Jacobian is essentially **orthogonal**:
+            # N drives image-X only, E drives image-Y only — exactly what
+            # we expect for BESO with ``protocol.transpose: true`` (the
+            # raw-sensor row/column swap composed with the optical rotation
+            # gives a clean N→X / E→Y mapping post-transpose). The
+            # off-diagonal terms are below the per-probe noise floor.
+            #
+            # The previous round-1 numbers (kN_x=0.0166, kE_x=-0.0071)
+            # were dominated by backlash and short-settle scatter, which
+            # is why guiding oscillated even with damping=0.5: the
+            # controller was issuing N pulses 2.4× too small AND adding
+            # cross-coupling that wasn't physically there.
             pulse_guide:
               jacobian:
-                kN_px_per_ms: 0.012    # px/ms in pixel-y per N pulse (signed)
-                kE_px_per_ms: 0.011    # px/ms in pixel-x per E pulse (signed)
-              damping_alpha: 0.5       # critically-damped-ish
+                kE_x_px_per_ms: -0.00043   # ≈ 0 (clean orthogonal axes)
+                kE_y_px_per_ms:  0.03895   # E pulse → motion in image-Y
+                kN_x_px_per_ms:  0.03911   # N pulse → motion in image-X
+                kN_y_px_per_ms:  0.00099   # ≈ 0 (clean orthogonal axes)
+              damping_alpha: 0.5       # 0.5 with pulse-cooldown is stable.
               duration_max_ms: 1500    # hard cap (saturation guard)
               duration_min_ms: 20      # mount can't track sub-threshold pulses
+              post_pulse_settle_ms: 2500  # forbid new pulses until previous
+                                       # finishes + 2.5 s for the mount to
+                                       # actually stop. Calibration showed
+                                       # 1000 ms left ~2-3 px of post-pulse
+                                       # residual motion — enough to cause
+                                       # measurable mid-correction error in
+                                       # the next pulse. 2500 ms gives ~3×
+                                       # tighter probe-to-probe σ and
+                                       # eliminates the delayed-feedback
+                                       # signature in guiding mode.
 
             # FITS / thumbnail saving — disabled for FL1 (FL2 + NFS layout).
             save_raw_fits: false

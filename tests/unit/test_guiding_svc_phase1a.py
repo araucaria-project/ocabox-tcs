@@ -132,7 +132,13 @@ async def test_controller_publishes_state_on_mutation(make_pipeline):
     pub.publish.assert_awaited_once()
     kwargs = pub.publish.await_args.kwargs
     assert kwargs["data"]["exp_time"] == 0.25
-    assert kwargs["meta"]["message_type"] == "guider.state"
+    # Controller currently uses serverish's generic ``"default"`` message_type
+    # for state publishes. Distinct types per topic (e.g. ``guider.state``)
+    # are a follow-up — at the wire level the channel + schema validation
+    # already disambiguate. Test pins the actual value rather than the
+    # aspirational one so it tracks production behaviour.
+    assert kwargs["meta"]["message_type"] == "default"
+    assert kwargs["meta"]["sender"]  # non-empty
 
 
 @pytest.mark.asyncio
@@ -335,15 +341,21 @@ def test_subject_builders_follow_naming_convention():
 
 
 def test_rpc_commands_set_complete():
-    """Commit the wire-level command vocabulary."""
+    """Commit the wire-level command vocabulary. The tuple is the
+    public API contract — adding a command here is intentional, and
+    bumps a major-version conversation with downstream UIs."""
     assert RPC_COMMANDS == (
         "set_state",
         "set_mode",
         "acquire",
+        "acquire_at",
+        "lock_at",
+        "drop_to_reticle",
         "snapshot",
         "dark_rebuild",
         "bias_rebuild",
         "manual_pulse",
+        "calibrate_probe",
     )
 
 

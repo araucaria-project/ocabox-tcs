@@ -37,10 +37,13 @@ RPC_COMMANDS = (
     "set_mode",
     "acquire",
     "acquire_at",
+    "lock_at",
+    "drop_to_reticle",
     "snapshot",
     "dark_rebuild",
     "bias_rebuild",
     "manual_pulse",
+    "calibrate_probe",
 )
 
 
@@ -144,6 +147,14 @@ class NatsConn:
                 sender,
                 lambda data: controller.acquire_at(x=data["x"], y=data["y"]),
             ),
+            "lock_at": _wrap_handler(
+                sender,
+                lambda data: controller.lock_at(x=data["x"], y=data["y"]),
+            ),
+            "drop_to_reticle": _wrap_handler(
+                sender,
+                lambda _data: controller.drop_to_reticle(),
+            ),
             "snapshot": _wrap_handler(sender, lambda _data: controller.snapshot()),
             "dark_rebuild": _wrap_handler(
                 sender, lambda data: controller.dark_rebuild(**(data or {}))
@@ -156,6 +167,16 @@ class NatsConn:
                 lambda data: controller.manual_pulse(
                     direction=data["direction"],
                     duration_ms=data["duration_ms"],
+                ),
+            ),
+            "calibrate_probe": _wrap_handler(
+                sender,
+                lambda data: controller.calibrate_probe(
+                    direction=data["direction"],
+                    duration_ms=data["duration_ms"],
+                    settle_frames=data.get("settle_frames"),
+                    post_pulse_settle_ms=data.get("post_pulse_settle_ms"),
+                    timeout_s=data.get("timeout_s", 10.0),
                 ),
             ),
         }

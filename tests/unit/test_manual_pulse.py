@@ -133,11 +133,14 @@ async def test_manual_pulse_no_mount_returns_status(caplog):
 async def test_manual_pulse_publishes_journal_entry():
     mount = _make_mount()
     ctrl = Controller(_make_pipeline(mount=mount))
+    # MsgJournalPublisher uses a logging-like interface (.info, .warning,
+    # .error) rather than .publish — the controller calls
+    # ``journal_publisher.info(message)``. Mock the same shape.
     journal = AsyncMock()
     ctrl.journal_publisher = journal
     await ctrl.manual_pulse(direction=2, duration_ms=300)
-    journal.publish.assert_awaited_once()
-    msg = journal.publish.await_args.kwargs["data"]["message"]
+    journal.info.assert_awaited_once()
+    msg = journal.info.await_args.args[0]
     assert "manual_pulse E" in msg
     assert "300" in msg
 

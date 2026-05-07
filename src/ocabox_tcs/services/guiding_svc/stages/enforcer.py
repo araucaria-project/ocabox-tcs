@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from auto_adjust.stability import DampingGuard, SaturationGuard
@@ -56,6 +57,7 @@ class Enforcer:
         damping: DampingGuard | None = None,
         saturation_ms: SaturationGuard | None = None,
         min_pulse_ms: float = 20.0,
+        post_pulse_settle_ms: float = 1000.0,
     ) -> None:
         self.in_queue = in_queue
         self.state = state
@@ -64,6 +66,20 @@ class Enforcer:
         self.damping = damping or DampingGuard(alpha_min=0.5, alpha_max=0.5)
         self.saturation_ms = saturation_ms or SaturationGuard(lo=-1500.0, hi=1500.0)
         self.min_pulse_ms = float(min_pulse_ms)
+        # Latency model: ``aput_pulseguide`` is fire-and-forget (the call
+        # returns immediately; the mount executes the pulse over the
+        # commanded duration). Without protection, frames captured *during*
+        # the pulse see partial motion and the controller computes a fresh
+        # correction based on that partial result — interpreting it as the
+        # full pulse effect — which closes the loop on stale data and
+        # produces classic delayed-feedback instability (growing oscillation).
+        # We avoid this by forbidding new pulses until the previous one has
+        # finished AND one settle interval has passed for a clean
+        # post-motion measurement. ``post_pulse_settle_ms`` covers the
+        # exposure + readout of that clean frame; a generous ~1 s default
+        # works for typical guider cadences (0.1–1 s exposures).
+        self.post_pulse_settle_ms = float(post_pulse_settle_ms)
+        self._pulse_end_monotonic: float = 0.0
         self._task: asyncio.Task[None] | None = None
         self._running = False
 
@@ -102,6 +118,24 @@ class Enforcer:
                     snapshot.mode.value,
                     correction.dx_px,
                     correction.dy_px,
+                )
+                continue
+
+            # Pulse-cooldown gate: the previous pulse may still be running
+            # on the mount (``aput_pulseguide`` is fire-and-forget). Acting
+            # on a measurement taken mid-pulse closes the feedback loop on
+            # stale data and produces growing oscillation. Drop this
+            # correction silently — the next clean frame after the cooldown
+            # ends will produce a fresh one. (Dropping is correct: the
+            # solver re-derives the correction from each frame, so we don't
+            # lose information by skipping a stale frame.)
+            now = time.monotonic()
+            if now < self._pulse_end_monotonic:
+                remaining_ms = (self._pulse_end_monotonic - now) * 1000.0
+                logger.debug(
+                    "Enforcer: pulse cooldown active (%.0fms remaining), "
+                    "dropping correction dx=%.2f dy=%.2f",
+                    remaining_ms, correction.dx_px, correction.dy_px,
                 )
                 continue
 
@@ -161,8 +195,21 @@ class Enforcer:
         if not e_skip:
             await self.mount.aput_pulseguide(direction=e_dir, duration=int(round(e_dur)))
 
+        # 7. Update cooldown so the run-loop ignores corrections derived
+        # from frames captured during this pulse + one settle interval.
+        # Pulses are issued sequentially on the wire — the mount sees N
+        # finish before E starts (or vice versa) — so total motion time
+        # is the sum, not the max, of the two non-skipped durations.
+        active_total_ms = (n_dur if not n_skip else 0.0) + (e_dur if not e_skip else 0.0)
+        if active_total_ms > 0:
+            self._pulse_end_monotonic = (
+                time.monotonic() + (active_total_ms + self.post_pulse_settle_ms) / 1000.0
+            )
+
         logger.debug(
-            "Enforcer applied: N/S dir=%d dur=%.1fms%s, E/W dir=%d dur=%.1fms%s",
+            "Enforcer applied: N/S dir=%d dur=%.1fms%s, E/W dir=%d dur=%.1fms%s "
+            "(cooldown +%.0fms)",
             n_dir, n_dur, " (skipped)" if n_skip else "",
             e_dir, e_dur, " (skipped)" if e_skip else "",
+            active_total_ms + self.post_pulse_settle_ms if active_total_ms else 0.0,
         )
