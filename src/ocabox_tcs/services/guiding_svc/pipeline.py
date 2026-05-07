@@ -94,6 +94,18 @@ class Pipeline:
 
         self._subscription = None
         self._started = False
+        # Lightweight runtime counters reported via the manager's
+        # metrics callback. The cycle ratio (acquired / processed) is
+        # the cheapest health signal — a healthy guider in monitoring
+        # or guiding mode keeps it close to 1.0; values dropping toward
+        # zero signal a problem (camera shared with another observer,
+        # bad seeing, lost star). Wall-clock timestamps let the
+        # monitor's healthcheck flag "no progress in N seconds" as
+        # DEGRADED.
+        self._cycles_total = 0       # solver invocations since start
+        self._cycles_acquired = 0    # solver invocations that resulted in a lock
+        self._last_cycle_ts: float = 0.0     # monotonic; 0 = never
+        self._last_lock_ts: float = 0.0      # monotonic; 0 = never
 
     @property
     def pipeline_id(self) -> str:
@@ -103,16 +115,21 @@ class Pipeline:
         if self._started:
             return
         snapshot = self.state.snapshot()
+        # Always subscribe — pause/resume on mode transitions instead
+        # of subscribe/unsubscribe churn. The collector's drive loop
+        # parks itself on an idle event when *all* its subscribers are
+        # paused, so OFF mode → zero camera I/O without dropping the
+        # subscription registration.
+        self._subscription = self.collector.subscribe_stream(
+            pipeline_id=snapshot.pipeline_id,
+            out_queue=self._raw_q,
+            get_params=self._build_exposure_job,
+        )
         if snapshot.mode == Mode.OFF:
+            self._subscription.set_active(False)
             logger.info(
-                "Pipeline %s in OFF mode — not subscribing to collector",
+                "Pipeline %s starts paused (mode=OFF — camera idle)",
                 snapshot.pipeline_id,
-            )
-        else:
-            self._subscription = self.collector.subscribe_stream(
-                pipeline_id=snapshot.pipeline_id,
-                out_queue=self._raw_q,
-                get_params=self._build_exposure_job,
             )
         await self._stacker.start()
         if self._thumbnail_emitter is not None:
@@ -136,6 +153,59 @@ class Pipeline:
         await self._stacker.stop()
         self._started = False
         logger.info("Pipeline %s stopped", self.pipeline_id)
+
+    def record_cycle(self, *, acquired: bool) -> None:
+        """Solver hook — called once per detection cycle. Bumps the
+        pipeline's runtime counters used by the manager's metric
+        callback. ``acquired=True`` means the cycle ended with the
+        solver holding (or refreshing) a lock — successful work."""
+        import time as _time
+        now = _time.monotonic()
+        self._cycles_total += 1
+        self._last_cycle_ts = now
+        if acquired:
+            self._cycles_acquired += 1
+            self._last_lock_ts = now
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        """Compact runtime stats for the metrics callback. Wall-clock
+        seconds-since for last-cycle / last-lock so consumers don't
+        need to mirror our monotonic clock."""
+        import time as _time
+        now = _time.monotonic()
+        ratio = (
+            self._cycles_acquired / self._cycles_total
+            if self._cycles_total > 0 else None
+        )
+        return {
+            "cycles_total": self._cycles_total,
+            "cycles_acquired": self._cycles_acquired,
+            "cycle_acquired_ratio": ratio,
+            "last_cycle_age_s": (
+                round(now - self._last_cycle_ts, 2) if self._last_cycle_ts > 0 else None
+            ),
+            "last_lock_age_s": (
+                round(now - self._last_lock_ts, 2) if self._last_lock_ts > 0 else None
+            ),
+        }
+
+    def apply_mode(self, mode: Mode) -> None:
+        """Resume / pause camera fetching to match the requested mode.
+
+        OFF → pause the collector subscription so the camera idles and
+        any second observer sharing the device gets relief. Any
+        non-OFF mode → resume (idempotent if already active). The
+        subscription stays registered across the toggle so we don't
+        churn collector state on mode flips."""
+        if self._subscription is None:
+            return
+        self._subscription.set_active(mode != Mode.OFF)
+        logger.info(
+            "Pipeline %s subscription %s (mode=%s)",
+            self.pipeline_id,
+            "active" if mode != Mode.OFF else "paused",
+            mode.value,
+        )
 
     def _build_exposure_job(self) -> ExposureJob:
         snapshot = self.state.snapshot()

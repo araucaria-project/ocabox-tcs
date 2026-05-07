@@ -88,9 +88,13 @@ class Controller:
         new_state = self._snapshot_dict()
         await self._publish_state(new_state)
         if "mode" in coerced and coerced["mode"] != prev_mode:
+            new_mode_obj = Mode(coerced["mode"])
+            # Pause / resume camera fetching when leaving / entering OFF.
+            # Pipeline owns the subscription; controller just signals.
+            self.pipeline.apply_mode(new_mode_obj)
             await self._publish_event(
                 "mode_changed",
-                {"from": prev_mode.value, "to": Mode(coerced["mode"]).value},
+                {"from": prev_mode.value, "to": new_mode_obj.value},
             )
         return new_state
 
@@ -538,6 +542,10 @@ class Controller:
         if candidates is not None:
             update_kwargs["candidates"] = candidates
         await self.pipeline.state.update(**update_kwargs)
+        # Runtime counter bookkeeping — single choke point for every
+        # solver cycle outcome, so per-pipeline acquired-ratio metrics
+        # don't need separate plumbing through Solver.
+        self.pipeline.record_cycle(acquired=bool(acquired))
         await self._publish_state(self._snapshot_dict())
         if acquired and not prev.acquired:
             await self._publish_event(

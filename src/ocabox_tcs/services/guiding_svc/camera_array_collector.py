@@ -64,6 +64,12 @@ class CameraArrayCollector:
         self._open = False
         self._streams: list[_StreamSubscription] = []
         self._driver_task: asyncio.Task[None] | None = None
+        # Wake signal for the drive loop. Set when at least one
+        # subscriber is active (or one resumes); cleared by the loop
+        # when it observes "all paused" so it can park until something
+        # changes.
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()
 
     async def open(self) -> None:
         if self._open:
@@ -121,19 +127,35 @@ class CameraArrayCollector:
         Frame iteration: simple round-robin loop dispatching to all active
         subscribers in order. No priority arbitration.
         """
-        sub = _StreamSubscription(pipeline_id=pipeline_id, out_queue=out_queue, get_params=get_params)
+        sub = _StreamSubscription(
+            pipeline_id=pipeline_id, out_queue=out_queue, get_params=get_params,
+            _collector=self,
+        )
         self._streams.append(sub)
+        # New subscriber implies "something to do" — wake any parked
+        # drive loop. Idempotent: ``set()`` on an already-set event
+        # is a no-op.
+        self._idle_event.set()
         if self._driver_task is None and self._open:
             self._driver_task = asyncio.create_task(self._drive(), name=f"cam-{self.camera_id}")
         return sub
 
     async def _drive(self) -> None:
         """Round-robin fetch loop. Frame iteration only — replace with
-        priority-queue scheduler when multi-pipeline scenarios land."""
+        priority-queue scheduler when multi-pipeline scenarios land.
+
+        Idle behaviour: when no subscriber is active in a cycle (all
+        paused — typically every pipeline is in OFF mode) we don't
+        hammer the camera. The loop sleeps on ``_idle_event`` until a
+        subscriber resumes via ``set_active(True)`` or a new one
+        registers. Camera I/O drops to zero in OFF mode without tearing
+        the subscription down. ``_idle_event.set()`` is the wake signal."""
         while True:
+            any_active = False
             for sub in list(self._streams):
                 if not sub.active:
                     continue
+                any_active = True
                 try:
                     params = sub.get_params()
                 except Exception as e:  # noqa: BLE001
@@ -156,8 +178,28 @@ class CameraArrayCollector:
                 # No subscribers — exit cleanly.
                 self._driver_task = None
                 return
+            if not any_active:
+                # All subscribers paused (every pipeline in OFF mode):
+                # park on the wake event instead of busy-yielding so
+                # the camera (and the second observer fighting us for
+                # it) gets a real break. Cleared at the top of next
+                # iteration; pipeline.apply_mode() sets it on resume.
+                self._idle_event.clear()
+                try:
+                    await self._idle_event.wait()
+                except asyncio.CancelledError:
+                    raise
+                continue
             # Yield to event loop so other tasks can run.
             await asyncio.sleep(0)
+
+    def wake(self) -> None:
+        """Signal the drive loop to re-check subscriber states. Called
+        by ``_StreamSubscription.set_active(True)`` so a resumed
+        subscriber starts receiving frames immediately rather than
+        waiting on the next loop iteration (which never arrives if we
+        were parked on ``_idle_event``)."""
+        self._idle_event.set()
 
 
 @dataclass
@@ -166,6 +208,23 @@ class _StreamSubscription:
     out_queue: asyncio.Queue[RawFrame]
     get_params: object  # Callable[[], ExposureJob]
     active: bool = True
+    # Backref to the owning collector so ``set_active`` can wake the
+    # drive loop. Populated by ``subscribe_stream`` after construction.
+    _collector: "CameraArrayCollector | None" = None
 
     def cancel(self) -> None:
+        """Permanent removal from the collector — used at pipeline
+        teardown. For temporary mode-OFF pauses use ``set_active``."""
         self.active = False
+        if self._collector is not None:
+            self._collector.wake()
+
+    def set_active(self, active: bool) -> None:
+        """Toggle frame fetching for this subscription. Used by the
+        pipeline on mode-OFF / mode-ON transitions: keeps the
+        subscription registered (so we don't churn collector state)
+        while letting the camera idle."""
+        was = self.active
+        self.active = bool(active)
+        if active and not was and self._collector is not None:
+            self._collector.wake()

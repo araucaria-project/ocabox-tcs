@@ -179,6 +179,58 @@ async def main():
 
 See `examples/monitoring_client_usage.py` for terminal UIs (Rich), web dashboards, and integrations.
 
+## Notable services bundled with this repo
+
+### Guiding service (`guiding_svc.guider`)
+
+Production star-tracking and pulse-guiding for OCM telescopes. One service
+instance per camera; multiple pipelines per camera (each with its own
+``central_point``, exposure, mode, etc.). Designed for both photometry
+(Mode A — hold star where it is) and spectroscopy (Mode B — drop star
+into the spectrograph fibre at ``central_point``).
+
+Capabilities:
+
+- **Star detection and tracking** — pyaraucaria FFS detector with
+  hot-pixel rejection (kernel-matched SNR mask, peak/aperture
+  concentration cull, multi-pixel threshold, aperture-flux ranking)
+- **Sub-pixel centroid** — flux-weighted blob centroid resistant to
+  multi-detection clusters from fibre halos and reflections
+- **Calibrated pulse-guide model** — full 2×2 Jacobian (FL2) with a
+  geometric near-degeneracy guard; falls back to diagonal (FL1)
+- **Calibration probe RPC** — measures (Δx, Δy) per pulse-ms across
+  cardinal directions; companion ``scripts/calibration_session.py``
+  drives a full N/S/E/W series and reports a backlash-aware median
+  Jacobian
+- **Pulse-cooldown** in the Enforcer — eliminates the delayed-feedback
+  growing oscillation caused by fire-and-forget ``aput_pulseguide``
+  semantics; cools for ``post_pulse_settle_ms`` after each pulse
+- **Modes** — ``off`` / ``monitoring`` (no pulses, log corrections) /
+  ``guiding`` (apply corrections, holding ``guide_anchor``); plus
+  ``drop_to_reticle`` RPC to re-anchor on the operator's reticle for
+  fibre injection
+- **Stick-with-it lock** — narrow-search misses tolerated for a
+  configurable window before demoting to wide-search recovery, so a
+  shared camera or transient cloud doesn't break tracking
+- **Live frame thumbnails** to disk for the web UI
+
+Run:
+```bash
+poetry run tcsd --config config/guider.<telescope>.<camera>.yaml
+```
+
+Web UI: [`ocabox-guider-ui`](https://github.com/araucaria-project/ocabox-guider-ui)
+— live drift chart, image-X/Y wind-rose scatter, detection-candidates
+overlay (TAB-cycle), zoom, calibration panel with backlash-aware
+suggested YAML, mode toolbar with drop-to-reticle, configurable reticle
+with home position from camera config.
+
+### TIC bridge (`tic_bridge_svc`)
+
+Bridges TIC (telescope-control) RPC into the unified NATS subject tree
+used by ``tcsctl`` and observer dashboards. Single-instance per
+deployment.
+
 ## Documentation
 
 - **[Tutorial Examples](src/ocabox_tcs/services/examples/README.md)** — start here

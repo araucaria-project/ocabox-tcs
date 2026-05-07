@@ -37,6 +37,7 @@ from ocabox_tcs.services.guiding_svc.backends import (
 from ocabox_tcs.services.guiding_svc.camera_array_collector import (
     CameraArrayCollector,
 )
+from ocabox_tcs.monitoring import Status
 from ocabox_tcs.services.guiding_svc.controller import Controller
 from ocabox_tcs.services.guiding_svc.nats_conn import NatsConn
 from ocabox_tcs.services.guiding_svc.pipeline import Pipeline
@@ -74,6 +75,7 @@ class GuiderManager:
         self.collectors: dict[str, CameraArrayCollector] = {}
         self.pipelines: dict[str, Pipeline] = {}  # keyed by f"{cam}.{pipe}"
         self.controllers: dict[str, Controller] = {}
+        self._metric_republish_task: asyncio.Task[None] | None = None
         self.tic_conn: Any = None
         self.nats_conn: NatsConn | None = None
         self._started_at: list[int] | None = None
@@ -129,10 +131,81 @@ class GuiderManager:
         # ``details.metrics.guider`` for the per-instance subject + RPC map.
         self._started_at = dt_utcnow_array()
         monitor = getattr(self.service, "monitor", None)
-        if monitor is not None and hasattr(monitor, "add_metric_cb"):
-            monitor.add_metric_cb(self._discovery_metrics)
+        if monitor is not None:
+            if hasattr(monitor, "add_metric_cb"):
+                # Static service-discovery payload (subjects, RPC vocab).
+                monitor.add_metric_cb(self._discovery_metrics)
+                # Per-pipeline runtime stats (mode, lock, cycle ratio,
+                # ages) — readable from ``svc.status.>`` so tcsctl shows
+                # them in --detailed view.
+                monitor.add_metric_cb(self._runtime_metrics)
+            if hasattr(monitor, "add_healthcheck_cb"):
+                # Healthcheck reports IDLE / OK / BUSY / DEGRADED based
+                # on aggregate pipeline state. The framework calls this
+                # periodically and propagates the returned Status to the
+                # service-level status field that tcsctl displays.
+                monitor.add_healthcheck_cb(self._healthcheck)
+            # Force-republish status (with fresh metric callbacks)
+            # every 10 s — the framework's heartbeat path is a
+            # lightweight ping that doesn't carry metrics, and
+            # ``_send_status_report`` only fires on status *change*.
+            # For runtime metrics (cycle counters, ages) to look live
+            # on the status stream, we have to nudge the publisher
+            # ourselves.
+            self._metric_republish_task = asyncio.create_task(
+                self._metric_republish_loop(monitor),
+                name="guider-metric-republish",
+            )
+
+    async def _metric_republish_loop(self, monitor: Any) -> None:
+        """Status maintenance loop. Two things every 10 s:
+
+        1. **Drive monitor status** to match aggregate pipeline state.
+           The framework's ``add_healthcheck_cb`` only escalates to
+           unhealthy values (ERROR / DEGRADED); IDLE / BUSY / OK
+           transitions don't propagate via that hook because they're
+           all "healthy". So we set them directly here via
+           ``monitor.set_status`` — that triggers a status-change
+           republish.
+
+        2. **Force a status republish** even if the status didn't
+           change, so ``tcsctl --detailed`` (which subscribes to
+           ``svc.status.>`` last-per-subject) sees live cycle counters
+           / ages from the metric callback. Heartbeats are a separate
+           lighter stream that doesn't carry metrics.
+        """
+        try:
+            while True:
+                await asyncio.sleep(10.0)
+                target = self._healthcheck()
+                try:
+                    current = monitor.get_status()
+                    if target != current:
+                        monitor.set_status(target, f"aggregate={target.value}")
+                except Exception as e:  # noqa: BLE001
+                    self.svc_logger.warning(
+                        "status update failed: %s", e
+                    )
+                send = getattr(monitor, "_send_status_report", None)
+                if send is None:
+                    continue
+                try:
+                    await send()
+                except Exception as e:  # noqa: BLE001
+                    self.svc_logger.warning(
+                        "metric republish failed: %s", e
+                    )
+        except asyncio.CancelledError:
+            return
 
     async def on_stop(self) -> None:
+        if self._metric_republish_task is not None:
+            self._metric_republish_task.cancel()
+            try:
+                await self._metric_republish_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._metric_republish_task = None
         # Stop in reverse order
         for key, pipeline in list(self.pipelines.items()):
             try:
@@ -485,6 +558,62 @@ class GuiderManager:
                 "pipelines": pipelines,
             }
         }
+
+    # ------------------------------------------------------------------
+    # Runtime metrics + healthcheck — small per-cycle live numbers,
+    # separate from the static discovery payload above so consumers
+    # paying attention only to one or the other don't get noise.
+    # ------------------------------------------------------------------
+
+    def _runtime_metrics(self) -> dict[str, Any]:
+        """Per-pipeline runtime stats — live mode, lock state, cycle
+        counts and ratios, ages of the last cycle / last lock. Lands
+        under ``details.metrics.guider_runtime`` on the standard
+        ``svc.status.>`` topic, so tcsctl --detailed and any web UI can
+        show them without subscribing to the per-pipeline state stream.
+        """
+        out: dict[str, Any] = {}
+        for key, pipeline in self.pipelines.items():
+            cam_id, pipe_id = key.split(".", 1)
+            snap = pipeline.state.snapshot()
+            rt = pipeline.runtime_snapshot()
+            out[f"{cam_id}.{pipe_id}"] = {
+                "mode": snap.mode.value,
+                "acquired": bool(snap.acquired),
+                **rt,
+            }
+        return {"guider_runtime": out}
+
+    def _healthcheck(self) -> Status:
+        """Aggregate pipeline state → service status.
+
+        - All pipelines OFF → ``IDLE`` (camera idle, no work)
+        - Any pipeline acquired (locked + tracking or guiding) → ``BUSY``
+        - All non-OFF but no lock yet → ``OK``
+        - Last cycle older than 30 s while non-OFF → ``DEGRADED``
+          (camera I/O may have stalled — second observer hogging
+          the device, network glitch, mount disconnect, etc.)
+        """
+        if not self.pipelines:
+            return Status.OK
+        states = [p.state.snapshot() for p in self.pipelines.values()]
+        modes = [s.mode for s in states]
+        # Mode import via state — local alias keeps the import set tight.
+        from ocabox_tcs.services.guiding_svc.state import Mode  # noqa: PLC0415
+        if all(m == Mode.OFF for m in modes):
+            return Status.IDLE
+        # At least one non-OFF pipeline. Check liveness.
+        for pipeline in self.pipelines.values():
+            snap = pipeline.state.snapshot()
+            if snap.mode == Mode.OFF:
+                continue
+            rt = pipeline.runtime_snapshot()
+            age = rt.get("last_cycle_age_s")
+            if age is not None and age > 30.0:
+                return Status.DEGRADED
+        if any(s.acquired for s in states):
+            return Status.BUSY
+        return Status.OK
 
 
 def _config_to_dict(svc_config: Any) -> dict[str, Any]:
