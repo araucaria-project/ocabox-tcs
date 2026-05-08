@@ -672,6 +672,11 @@ class Controller:
             update_kwargs["last_acquired_pos"] = position
             if adu is not None:
                 update_kwargs["last_acquired_adu"] = float(adu)
+            # Prediction served its purpose — narrow search latched onto
+            # the star at (or near) the predicted spot. Clear it so the
+            # next frame without a pending pulse falls back to centring
+            # on the fresh ``acquired_pos`` instead of a stale prediction.
+            update_kwargs["predicted_pos"] = None
         # Wide-search recovery in guiding mode resets ``guide_anchor``
         # to the new lock position. Safe-failure: if smart-sort picked
         # a wrong star we won't drag it toward an anchor that no longer

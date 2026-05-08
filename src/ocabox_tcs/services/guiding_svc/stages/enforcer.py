@@ -257,6 +257,37 @@ class Enforcer:
                 time.monotonic() + (active_total_ms + self.post_pulse_settle_ms) / 1000.0
             )
 
+        # 8. Write predicted_pos so the next frame's narrow search recentres
+        # its box on where the star *will* be after this pulse — not where
+        # we last saw it. Without this, multi-frame slews (drop-to-reticle,
+        # large lock_at corrections) walk the star out of the search-box
+        # within one pulse cycle and the narrow-miss budget collapses,
+        # demoting to wide-search and cancelling the slew. Forward motion
+        # = J · t, where J = -inv(M) and M is the model's inverse-Jacobian
+        # matrix (predict() applies M; we want its negated inverse).
+        # Skipped axes contribute zero motion. Use the actually-issued
+        # signed t (post-damping, post-clipping) so prediction matches
+        # what the mount will execute.
+        try:
+            t_n_eff = 0.0 if n_skip else t_N_ms
+            t_e_eff = 0.0 if e_skip else t_E_ms
+            m11 = float(self.pulse_guide_model.m11)
+            m12 = float(self.pulse_guide_model.m12)
+            m21 = float(self.pulse_guide_model.m21)
+            m22 = float(self.pulse_guide_model.m22)
+            det = m11 * m22 - m12 * m21
+            if abs(det) > 1e-12 and snapshot.acquired_pos is not None:
+                # forward = -inv(M); applied to (t_N, t_E):
+                motion_x = (-m22 * t_n_eff + m12 * t_e_eff) / det
+                motion_y = (m21 * t_n_eff - m11 * t_e_eff) / det
+                predicted = (
+                    float(snapshot.acquired_pos[0] + motion_x),
+                    float(snapshot.acquired_pos[1] + motion_y),
+                )
+                await self.state.update(predicted_pos=predicted)
+        except (AttributeError, TypeError, ZeroDivisionError) as exc:
+            logger.debug("predicted_pos write skipped: %s", exc)
+
         logger.debug(
             "Enforcer applied: N/S dir=%d dur=%.1fms%s, E/W dir=%d dur=%.1fms%s "
             "(cooldown +%.0fms)",

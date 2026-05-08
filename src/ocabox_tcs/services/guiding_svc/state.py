@@ -150,6 +150,22 @@ class PipelineState:
     transiently; operator ``set_state(exp_time=…)`` clears it back to
     None so the operator value wins until auto-exposure decides again."""
     current_roi: tuple[int, int, int, int] | None = None
+    predicted_pos: tuple[float, float] | None = None
+    """Where the star is expected to be on the next clean frame, given
+    the most recently issued pulse. Written by Enforcer immediately after
+    each pulse using the forward Jacobian (motion = J · pulse, with the
+    actually-issued damped+clipped pulse durations). Cleared by the
+    Controller on a fresh successful acquire (the prediction has done
+    its job — narrow search latched onto the star at the expected spot).
+
+    Why this exists: drop-to-reticle and other multi-frame slews move
+    the star a long way over several pulse cycles. Centring the narrow
+    search box on the *previous* ``acquired_pos`` is the wrong question
+    — by the time the next frame arrives, the star is closer to the
+    target than to where it was last seen. With ``predicted_pos`` the
+    box tracks the pulse-induced motion, the star stays inside, lock
+    survives the slew, and the operator gets reliable drop-to-reticle.
+    """
     guide_anchor: tuple[float, float] | None = None
     """The pixel position guider corrects toward during ``guiding`` mode.
     Captured at the moment guiding starts (``acquired_pos`` snapshot)

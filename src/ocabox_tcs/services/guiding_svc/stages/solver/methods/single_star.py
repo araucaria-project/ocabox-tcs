@@ -390,13 +390,18 @@ class SingleStarMethod:
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
             )
 
-        # Spatial filter: keep candidates in the search box around the
-        # last lock. Same logic as the prior crop-detection — but
-        # operating on full-frame candidates so we get consistent
-        # background statistics and a fresh overlay every frame.
+        # Spatial filter: keep candidates in the search box around where
+        # the star is expected NOW. During a multi-frame slew (drop-to-
+        # reticle, large lock_at correction) the Enforcer publishes a
+        # ``predicted_pos`` on each pulse — the forward-Jacobian estimate
+        # of post-pulse position. Centring on it follows the slew so the
+        # narrow box stays over the star instead of where we last saw it
+        # before the pulse moved it. Falls back to ``acquired_pos`` for
+        # pure-tracking frames where no pulse just fired.
+        search_center = _xy(state.get("predicted_pos")) or acquired_pos
         in_box = (
-            (np.abs(coords[:, 0] - acquired_pos[0]) <= half)
-            & (np.abs(coords[:, 1] - acquired_pos[1]) <= half)
+            (np.abs(coords[:, 0] - search_center[0]) <= half)
+            & (np.abs(coords[:, 1] - search_center[1]) <= half)
         )
         idxs_box = np.flatnonzero(in_box)
         if idxs_box.size == 0:
