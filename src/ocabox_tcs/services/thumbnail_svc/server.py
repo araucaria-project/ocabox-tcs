@@ -79,6 +79,18 @@ class ThumbnailServerConfig(BaseServiceConfig):
     # it resolves on the network the operator is on. Override for
     # split-horizon DNS or container deployments.
     public_host: str | None = None
+    # Path component appended to the advertised ``base_url``. Use when
+    # thumbnails are served under a non-root URL prefix (e.g. when this
+    # server colocates a SPA at ``/`` and thumbnails at ``/thumbs/``):
+    # set ``base_url_path: /thumbs`` so UI clients receive
+    # ``http://host:port/thumbs`` and concatenation yields the right
+    # absolute URL. Empty (default) → bare ``http://host:port``.
+    base_url_path: str = ""
+    # Optional file served by GET / instead of the default server-stats
+    # dashboard. Lets this service double as the SPA host: point to the
+    # built ``index.html`` and the framework's static routes serve the
+    # JS/CSS bundles from a sibling root mapping.
+    index_file: str | None = None
     # Cache-Control max-age in seconds for served files. Thumbnails
     # change frequently; 1 s is a sweet spot — multiple clients pulling
     # the same ``latest.jpg`` within a second hit the cache once,
@@ -263,6 +275,12 @@ class ThumbnailServer(BaseBlockingPermanentService):
 
         from aiohttp import web
         app = web.Application(middlewares=[self._make_middleware()])
+        # Register exact-match routes BEFORE static-prefix routes:
+        # aiohttp resolves resources in registration order, and a
+        # static mount at ``/`` would shadow ``GET /`` (returning 403
+        # for the directory) before our index handler ever runs.
+        app.router.add_get("/healthz", self._healthz_handler)
+        app.router.add_get("/", self._index_handler)
         # Only register routes for roots whose directory currently
         # exists. ``add_static`` raises if the path is missing, which
         # would crash the boot — and we'd lose the chance to serve the
@@ -280,8 +298,6 @@ class ThumbnailServer(BaseBlockingPermanentService):
                 r.prefix, r.directory,
                 follow_symlinks=True, show_index=False,
             )
-        app.router.add_get("/healthz", self._healthz_handler)
-        app.router.add_get("/", self._index_handler)
         self._app = app
         self.svc_logger.info(
             "ThumbnailServer: %d root(s) configured, will bind %s:%d",
@@ -303,8 +319,17 @@ class ThumbnailServer(BaseBlockingPermanentService):
 
     async def _index_handler(self, _request: Any) -> Any:
         """Tiny HTML index — operator can hit the root URL in a browser
-        and see what's served."""
+        and see what's served. When ``index_file`` is configured, serve
+        that file instead (turns this server into a SPA host)."""
         from aiohttp import web
+        if self.svc_config.index_file:
+            ix = Path(self.svc_config.index_file)
+            if ix.is_file():
+                return web.FileResponse(ix)
+            self.svc_logger.warning(
+                "ThumbnailServer: index_file missing, falling back to "
+                "stats page: %s", ix,
+            )
         rows = "".join(
             f'<li><a href="{r.prefix}/">{r.prefix}</a> → '
             f'<code>{r.directory}</code> '
@@ -334,9 +359,13 @@ class ThumbnailServer(BaseBlockingPermanentService):
         cacheable."""
         host = self._public_host()
         port = self.svc_config.port
+        path = self.svc_config.base_url_path or ""
+        if path and not path.startswith("/"):
+            path = "/" + path
+        path = path.rstrip("/")
         return {
             "thumbnail_server": {
-                "base_url": f"http://{host}:{port}",
+                "base_url": f"http://{host}:{port}{path}",
                 "bind": f"{self.svc_config.bind}:{self.svc_config.port}",
                 "cache_max_age_s": self.svc_config.cache_max_age_s,
                 "roots": [

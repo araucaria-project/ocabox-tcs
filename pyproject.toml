@@ -30,6 +30,7 @@ pyyaml = "^6.0.3"
 # Optional extras for specific guider/auto_adjust features
 astropy = {version = "^6.0", optional = true}  # FITS reading in FileSimProtocol; required by Stacker once calibration lands
 aiohttp = {version = "^3.9", optional = true}  # direct Alpaca imagebytes fetch (DirectFetchBackend + AlpacaProtocol)
+pillow = {version = "^10.0", optional = true}  # JPEG encoding for thumbnail_emitter; star-cutout previews in solver methods
 padasip = {version = "^1.2", optional = true}  # auto_adjust RLSAdapter
 scikit-learn = {version = "^1.4", optional = true}  # auto_adjust GPAdapter
 
@@ -51,7 +52,7 @@ tcsctl = "tcsctl.app:main"
 [tool.poetry.extras]
 cli = ["typer", "rich", "textual"]  # CLI tools (tcsctl command)
 oca = ["ocabox"]  # OCABOX integration, running ocabox dependent services
-guider = ["astropy", "aiohttp"]  # full guiding_svc dependencies (FITS reading, stacking math, direct Alpaca fetch)
+guider = ["astropy", "aiohttp", "pillow"]  # full guiding_svc dependencies (FITS reading, stacking math, direct Alpaca fetch, JPEG thumbnail encoding)
 adjust-rls = ["padasip"]  # auto_adjust RLSAdapter
 adjust-gp = ["scikit-learn"]  # auto_adjust GPAdapter
 
