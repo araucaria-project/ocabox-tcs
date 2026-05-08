@@ -172,8 +172,28 @@ class CameraArrayCollector:
                 try:
                     sub.out_queue.put_nowait(raw)
                 except asyncio.QueueFull:
-                    # Drop frame — downstream stage is slow, keep going.
-                    logger.warning("subscriber %s queue full, dropping frame", sub.pipeline_id)
+                    # Drop *oldest*, keep newest. Real-time guiding cares
+                    # about frame currency, not throughput — stale frames
+                    # at the head of the queue would be processed minutes
+                    # late while the mount is already past that position.
+                    # The old "drop-newest" policy was the wrong half of
+                    # this trade-off.
+                    try:
+                        sub.out_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        sub.out_queue.put_nowait(raw)
+                    except asyncio.QueueFull:
+                        logger.warning(
+                            "subscriber %s queue still full after drain, dropping frame",
+                            sub.pipeline_id,
+                        )
+                    else:
+                        logger.debug(
+                            "subscriber %s queue full, dropped oldest to keep newest",
+                            sub.pipeline_id,
+                        )
             if not self._streams:
                 # No subscribers — exit cleanly.
                 self._driver_task = None

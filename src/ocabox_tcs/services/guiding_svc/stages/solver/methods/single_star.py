@@ -85,16 +85,22 @@ def _ffs_detect(
         # at most ``poll_interval_s`` cadence (≤ 1 Hz) and only when
         # nothing was found, so it doesn't spam acquired-and-tracking.
         try:
-            bg = float(getattr(ffs, "bg", float("nan")))
-            sigma = float(getattr(ffs, "bg_sigma", float("nan")))
-            mn = float(np.min(array))
-            mx = float(np.max(array))
-            mean = float(np.mean(array))
+            # FFS exposes ``bkg`` (background) and ``noise`` (sigma)
+            # plus ``saturation`` and ``max_amplitude`` once mk_stats()
+            # has run. Surface them so empty-result diagnostics actually
+            # tell us *why* — saturated frames vs misconfigured
+            # threshold vs flat background look very different here.
+            bkg = float(getattr(ffs, "bkg", float("nan")))
+            noise = float(getattr(ffs, "noise", float("nan")))
+            sat = float(getattr(ffs, "saturation", float("nan")))
+            max_amp = float(getattr(ffs, "max_amplitude", float("nan")))
             logger.info(
                 "FFS empty result: image=%dx%d min=%.0f max=%.0f mean=%.1f "
-                "bg=%.1f sigma=%.1f thr=%.1fσ → %.1f ADU above bg",
-                array.shape[0], array.shape[1], mn, mx, mean,
-                bg, sigma, threshold, threshold * sigma if sigma > 0 else float("nan"),
+                "bkg=%.1f noise=%.1f sat=%.0f max_amp=%.0f thr=%.1fσ → %.1f ADU above bkg",
+                array.shape[0], array.shape[1],
+                float(np.min(array)), float(np.max(array)), float(np.mean(array)),
+                bkg, noise, sat, max_amp, threshold,
+                threshold * noise if noise > 0 else float("nan"),
             )
         except Exception:  # noqa: BLE001
             pass
@@ -384,30 +390,48 @@ class SingleStarMethod:
             float(tol_per_sec) * exp_time if tol_per_sec is not None else None
         )
 
+        # Predicted post-pulse position (set by Enforcer; cleared by
+        # Controller on next successful acquire). Drives both the
+        # bracket box below and the narrow-miss grace.
+        predicted = _xy(state.get("predicted_pos"))
+        pulse_pending = predicted is not None
+
         if coords.shape[0] == 0:
             return await self._handle_narrow_miss(
                 "no detections in full frame", candidates_full,
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
+                pulse_pending=pulse_pending,
             )
 
-        # Spatial filter: keep candidates in the search box around where
-        # the star is expected NOW. During a multi-frame slew (drop-to-
-        # reticle, large lock_at correction) the Enforcer publishes a
-        # ``predicted_pos`` on each pulse — the forward-Jacobian estimate
-        # of post-pulse position. Centring on it follows the slew so the
-        # narrow box stays over the star instead of where we last saw it
-        # before the pulse moved it. Falls back to ``acquired_pos`` for
-        # pure-tracking frames where no pulse just fired.
-        search_center = _xy(state.get("predicted_pos")) or acquired_pos
-        in_box = (
-            (np.abs(coords[:, 0] - search_center[0]) <= half)
-            & (np.abs(coords[:, 1] - search_center[1]) <= half)
-        )
+        # Spatial filter. During a multi-frame slew (drop-to-reticle,
+        # large lock_at correction) the Enforcer's ``predicted_pos`` is
+        # the forward-Jacobian estimate of the post-pulse position.
+        # Center-on-end isn't enough because a mid-pulse frame may catch
+        # the star anywhere along the trajectory ``acquired_pos →
+        # predicted_pos``. So we *bracket*: accept any candidate inside
+        # an axis-aligned bounding box that spans both endpoints with
+        # ``half`` of slack on each side. For steady tracking (no pulse
+        # pending) the bracket collapses to the original square box.
+        if pulse_pending:
+            cx_lo = min(acquired_pos[0], predicted[0]) - half
+            cx_hi = max(acquired_pos[0], predicted[0]) + half
+            cy_lo = min(acquired_pos[1], predicted[1]) - half
+            cy_hi = max(acquired_pos[1], predicted[1]) + half
+            in_box = (
+                (coords[:, 0] >= cx_lo) & (coords[:, 0] <= cx_hi)
+                & (coords[:, 1] >= cy_lo) & (coords[:, 1] <= cy_hi)
+            )
+        else:
+            in_box = (
+                (np.abs(coords[:, 0] - acquired_pos[0]) <= half)
+                & (np.abs(coords[:, 1] - acquired_pos[1]) <= half)
+            )
         idxs_box = np.flatnonzero(in_box)
         if idxs_box.size == 0:
             return await self._handle_narrow_miss(
                 "no candidate in search box", candidates_full,
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
+                pulse_pending=pulse_pending,
             )
 
         # ADU tolerance filter (relative to *acquired_adu*).
@@ -423,6 +447,7 @@ class SingleStarMethod:
             return await self._handle_narrow_miss(
                 "no candidate matches ADU tolerance", candidates_full,
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
+                pulse_pending=pulse_pending,
             )
 
         # Pick the candidate closest to the previous acquired_pos.
@@ -504,6 +529,7 @@ class SingleStarMethod:
         *,
         hold_pos: tuple[float, float] | None = None,
         hold_adu: float | None = None,
+        pulse_pending: bool = False,
     ) -> None:
         """Tolerate transient narrow-search misses without dropping the
         lock. Increment a consecutive-miss counter and only demote
@@ -526,7 +552,14 @@ class SingleStarMethod:
         Enforcer's pulse-cooldown means a missed frame in guiding mode
         just means one less correction — the next good frame resumes.
         """
-        self._narrow_miss_count += 1
+        # Grace during in-flight pulses: while a pulse is still settling
+        # the star is in motion across the sensor and an individual
+        # mid-trajectory frame may legitimately miss the bracket box (the
+        # star is somewhere between acquired and predicted, possibly
+        # smeared by the exposure). Don't burn miss-budget on those —
+        # only count "real" misses where no pulse is pending.
+        if not pulse_pending:
+            self._narrow_miss_count += 1
         if self._narrow_miss_count <= self._narrow_miss_threshold:
             logger.debug(
                 "narrow miss %d/%d: %s — keeping lock",
