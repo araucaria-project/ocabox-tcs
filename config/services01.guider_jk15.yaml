@@ -1,0 +1,136 @@
+# Production deployment for services01.oca.lan — jk15 BESO guider +
+# colocated thumbnail/UI HTTP server.
+#
+# Single ``tcsd`` process supervises both services; the framework
+# lifecycle handles start order, restarts and monitoring uniformly.
+# Symlinked into systemd at ``/etc/systemd/system/oca_guider_jk15.service``
+# (see ``deploy/systemd/oca_guider_jk15.service``).
+#
+# Operator URL: http://services01.oca.lan:8090/
+#   - ``/``         → Angular guider UI (single-page dashboard)
+#   - ``/thumbs/``  → JPEG thumbnails written by the guiding service
+#   - ``/healthz``  → server health JSON
+#
+# Port 8090 chosen because 8080 on this host is occupied by the
+# ``model-stars-presence`` uvicorn service (long-running, do not move).
+#
+# UI auto-discovers ``base_url`` from the discovery metric; the
+# ``base_url_path: /thumbs`` setting below ensures the published URL
+# already includes the prefix the routes are mounted under, so the UI
+# concatenates it correctly without per-installation tweaking.
+
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+
+  # ──────────────────────────────────────────────────────────────────
+  # Guiding service — jk15 BESO spectrograph guider.
+  # ──────────────────────────────────────────────────────────────────
+  - type: guiding_svc.guider
+    variant: jk15-guider_beso
+    telescope_id: jk15
+    subject_prefix: svc
+    service_name: guider
+    poll_interval_s: 1.0
+
+    tic_conn:
+      client_name: CliClient
+      software_id: guider/jk15.guider_beso
+      enable_observatory: true
+      service_mode: true
+
+    cameras:
+      - id: guider_beso
+        backend:
+          type: direct_fetch
+          protocol:
+            type: alpaca
+            prefer_binary: true
+            transpose: true
+        pipelines:
+          - id: mon
+            mode: monitoring
+            method: single_star
+            selection_policy: closest_excluding_zone
+
+            exp_time: 0.5
+            gain: 200
+            binning: 1
+
+            central_point: [938.87, 575.75]   # fibre entrance pixel
+            wide_search_radius_px: 600
+            search_reg_px: 30
+            stacking_count: 1
+            corrections_avg_no: 5
+            adu_match_tolerance_per_sec: 200000.0
+
+            method_params:
+              fwhm: 3.0
+              threshold: 7.0
+              saturation_adu: 62000.0
+              min_pixels_above_threshold: 5
+              centroid_radius_px: 10
+              centroid_threshold_sigma: 3.0
+              min_smoothed_sigma: 3.0
+              max_concentration: 0.5
+              rank_by: aperture
+
+            pulse_guide:
+              jacobian:
+                kE_x_px_per_ms: -0.00043
+                kE_y_px_per_ms:  0.03895
+                kN_x_px_per_ms:  0.03911
+                kN_y_px_per_ms:  0.00099
+              damping_alpha: 0.5
+              duration_max_ms: 1500
+              duration_min_ms: 20
+              post_pulse_settle_ms: 600
+
+            save_raw_fits: false
+            save_stacked_fits: false
+            save_raw_thumbnails: false
+            save_stacked_thumbnails: false
+
+            thumbnails:
+              enabled: true
+              # Match the thumbnail server's mounted directory below.
+              output_dir: /storage/poweruser/thumbs/guider
+              size: [1936, 1216]
+              every_n: 1
+              latest_link: true
+              quality: 92
+              max_files: 200
+
+  # ──────────────────────────────────────────────────────────────────
+  # Thumbnail HTTP server — also serves the Angular UI from the same
+  # port. ``base_url_path: /thumbs`` lets the UI concatenate the
+  # discovered base URL with thumbnail paths without ambiguity, while
+  # ``index_file`` makes ``/`` deliver the SPA's index.html.
+  # ──────────────────────────────────────────────────────────────────
+  - type: thumbnail_svc.server
+    # The thumbnail server is per-filesystem — exactly one runs on each
+    # host that hosts guiders, regardless of how many telescopes write
+    # into its directory. The natural identifier is therefore the host
+    # name. Currently ``services01-jk15`` (kept for now since this is
+    # also today's only-jk15 deploy); when zb08 / others land on this
+    # host the variant should drop the telescope suffix → ``services01``
+    # so a single thumbnail server serves all colocated guiders.
+    variant: services01-jk15
+    bind: 0.0.0.0
+    port: 8090
+    public_host: services01.oca.lan
+    base_url_path: /thumbs
+    index_file: /home/poweruser/src/ocabox-guider-ui/dist/ocabox-guider-ui/browser/index.html
+    cache_max_age_s: 1
+    cors_origin: "*"
+
+    # Order matters: more-specific (longer) prefix first so aiohttp
+    # matches ``/thumbs/...`` against the thumbnails before falling
+    # through to the SPA root mount.
+    roots:
+      - prefix: /thumbs
+        directory: /storage/poweruser/thumbs/guider
+      - prefix: /
+        directory: /home/poweruser/src/ocabox-guider-ui/dist/ocabox-guider-ui/browser

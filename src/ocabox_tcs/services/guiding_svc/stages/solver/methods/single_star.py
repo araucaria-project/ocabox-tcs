@@ -67,12 +67,37 @@ def _ffs_detect(
             min_pixels_above_threshold=min_pixels_above_threshold,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("FFS detection failed: %s", exc)
+        # Bumped from debug → warning with traceback: silent FFS failures
+        # masquerade as "no candidates this frame" upstream and the
+        # operator only sees lock loss with no clue why. Better to
+        # surface the underlying exception so the next attempt is
+        # actionable instead of mysterious.
+        logger.warning("FFS detection failed: %s", exc, exc_info=True)
         return np.zeros((0, 2)), np.zeros((0,))
 
     coo = ffs.coo
     adu = ffs.adu
     if coo is None or len(coo) == 0:
+        # Empty result on a frame that may well contain a star — log
+        # the frame's actual statistics so we can see whether the
+        # threshold is way off, the image is uniform, or FFS just
+        # filtered every candidate. Throttled implicitly: this fires
+        # at most ``poll_interval_s`` cadence (≤ 1 Hz) and only when
+        # nothing was found, so it doesn't spam acquired-and-tracking.
+        try:
+            bg = float(getattr(ffs, "bg", float("nan")))
+            sigma = float(getattr(ffs, "bg_sigma", float("nan")))
+            mn = float(np.min(array))
+            mx = float(np.max(array))
+            mean = float(np.mean(array))
+            logger.info(
+                "FFS empty result: image=%dx%d min=%.0f max=%.0f mean=%.1f "
+                "bg=%.1f sigma=%.1f thr=%.1fσ → %.1f ADU above bg",
+                array.shape[0], array.shape[1], mn, mx, mean,
+                bg, sigma, threshold, threshold * sigma if sigma > 0 else float("nan"),
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return np.zeros((0, 2)), np.zeros((0,))
 
     coo = np.asarray(coo, dtype=float)

@@ -1,0 +1,33 @@
+# OCA jk15 guider — symlink target for /etc/systemd/system/.
+#   sudo ln -s /home/poweruser/src/ocabox-tcs/deploy/systemd/oca_guider_jk15.service \
+#       /etc/systemd/system/oca_guider_jk15.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now oca_guider_jk15
+#   sudo systemctl status oca_guider_jk15
+#
+# Mirrors the convention of oca_flat_overwatch.service: symlink lives in
+# /etc/systemd/system/, real file lives in the repo, poetry runs the
+# binary from the user's pipx install. Restart on failure so a single
+# camera glitch never takes down the supervisor.
+
+[Unit]
+Description=OCA jk15 BESO Guider + Thumbnail/UI HTTP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=poweruser
+WorkingDirectory=/home/poweruser/src/ocabox-tcs
+Environment=PATH=/home/poweruser/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/poweruser/.local/bin/poetry run tcsd \
+    --config config/services01.guider_jk15.yaml \
+    --no-color
+Restart=on-failure
+RestartSec=5s
+# Thumbnails go on /storage (root partition is only 10 GB); create the
+# directory eagerly so the guider doesn't trip on first write.
+ExecStartPre=/bin/mkdir -p /storage/poweruser/thumbs/guider
+
+[Install]
+WantedBy=multi-user.target

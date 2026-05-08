@@ -97,7 +97,15 @@ After upstream changes are pushed:
         cd ~/src/ocabox-guider-ui && git pull && \
         export PATH=$HOME/local/node/bin:$PATH && \
         npm ci && npx ng build --configuration production && \
+        rm -rf /storage/poweruser/node_modules/ocabox-guider-ui && \
+        mv node_modules /storage/poweruser/node_modules/ocabox-guider-ui && \
+        ln -sfn /storage/poweruser/node_modules/ocabox-guider-ui node_modules && \
         sudo systemctl restart oca_guider_jk15'
+
+`npm ci` (and `npm install`) **deletes** the `node_modules` symlink and
+recreates it as a real directory on `/`, eating ~430 MB of root disk.
+The three-line dance after the build moves it back onto `/storage` and
+re-symlinks. If you skip it, root partition fills within a few updates.
 
 If `pyproject.toml` changed (new/updated dep), run `poetry lock` first
 on services01 — the lockfile committed in the repo may be ahead of /
