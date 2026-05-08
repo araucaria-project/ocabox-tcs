@@ -1,0 +1,136 @@
+# Combined deployment — jk15 BESO guider + matching thumbnail HTTP
+# server. One ``tcsd`` process supervises both; framework lifecycle
+# manages start order, restart policies, and monitoring uniformly.
+#
+# Run:
+#   poetry run tcsd --config config/jk15.guider+thumbs.yaml
+#
+# What you get:
+#   - ``guiding_svc.guider.jk15-guider_beso``  → guides the BESO camera
+#   - ``thumbnail_svc.server.guider``          → serves JPEG previews
+#                                                from the same host on
+#                                                port 8080, auto-
+#                                                discovered by the UI
+#
+# Layered configs (single file or split): each entry under ``services``
+# is independent — no cross-service references. Move either to its own
+# YAML if you want to run them on separate hosts.
+
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+
+  # ──────────────────────────────────────────────────────────────────
+  # Guiding service — jk15 BESO spectrograph guider.
+  # ──────────────────────────────────────────────────────────────────
+  - type: guiding_svc.guider
+    variant: jk15-guider_beso
+    telescope_id: jk15
+    subject_prefix: svc
+    service_name: guider
+    poll_interval_s: 1.0
+
+    tic_conn:
+      client_name: CliClient
+      software_id: guider/jk15.guider_beso
+      enable_observatory: true
+      service_mode: true
+
+    cameras:
+      - id: guider_beso
+        backend:
+          type: direct_fetch
+          protocol:
+            type: alpaca
+            prefer_binary: true
+            transpose: true
+        pipelines:
+          - id: mon
+            mode: monitoring
+            method: single_star
+            selection_policy: closest_excluding_zone
+
+            exp_time: 0.5
+            gain: 200
+            binning: 1
+
+            central_point: [938.87, 575.75]   # fibre entrance pixel
+            wide_search_radius_px: 600
+            search_reg_px: 30
+            stacking_count: 1
+            corrections_avg_no: 5
+            adu_match_tolerance_per_sec: 200000.0
+
+            method_params:
+              fwhm: 3.0
+              threshold: 7.0
+              saturation_adu: 62000.0   # 62k catches uint16 plateau
+                                        # (clip ≈ 65504), preserves
+                                        # sub-pixel centroid via wings
+              min_pixels_above_threshold: 5
+              centroid_radius_px: 10
+              centroid_threshold_sigma: 3.0
+              min_smoothed_sigma: 3.0
+              max_concentration: 0.5
+              rank_by: aperture
+
+            pulse_guide:
+              jacobian:
+                kE_x_px_per_ms: -0.00043
+                kE_y_px_per_ms:  0.03895
+                kN_x_px_per_ms:  0.03911
+                kN_y_px_per_ms:  0.00099
+              damping_alpha: 0.5
+              duration_max_ms: 1500
+              duration_min_ms: 20
+              post_pulse_settle_ms: 600
+
+            save_raw_fits: false
+            save_stacked_fits: false
+            save_raw_thumbnails: false
+            save_stacked_thumbnails: false
+
+            thumbnails:
+              enabled: true
+              # Match the thumbnail server's root directory below.
+              output_dir: /tmp/guider_thumbs
+              # Full sensor — operators look for star shape and the
+              # fibre-entrance shadow at PSF centre.
+              size: [1936, 1216]
+              every_n: 1
+              latest_link: true
+              quality: 92
+              max_files: 200
+
+  # ──────────────────────────────────────────────────────────────────
+  # Thumbnail HTTP server — exposes the guider's JPEGs over HTTP for
+  # the UI. Pure aiohttp static, no API, no auth (deploy behind nginx
+  # if you need TLS / auth in production).
+  # ──────────────────────────────────────────────────────────────────
+  - type: thumbnail_svc.server
+    variant: guider
+    bind: 0.0.0.0
+    port: 8080
+    # Hostname clients use to fetch. ``localhost`` for dev (browser
+    # on the same host as the service); set to the host's LAN
+    # FQDN/IP for remote clients. ``socket.gethostname()`` returns
+    # mDNS names like ``majkmac.local`` which only resolve through
+    # Bonjour — Chrome on Linux/most-mac-configs can't dereference.
+    public_host: localhost
+    cache_max_age_s: 1
+    cors_origin: "*"
+
+    # Single root mapping the *entire* guider output_dir under the
+    # URL root. UI receives notification path
+    # ``/tmp/guider_thumbs/<instance>/<pipe>/<seq>.jpg``, strips the
+    # configured ``thumbnailPathPrefix`` (= ``/tmp/guider_thumbs`` by
+    # default), prepends the discovered base_url. Result:
+    # ``http://<host>:8080/<instance>/<pipe>/<seq>.jpg`` lines up
+    # with our root mount. No per-camera config in the URL surface —
+    # add a new guider instance and the existing thumbnail server
+    # serves it without any change.
+    roots:
+      - prefix: /
+        directory: /tmp/guider_thumbs

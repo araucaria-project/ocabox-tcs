@@ -355,6 +355,7 @@ def test_rpc_commands_set_complete():
         "dark_rebuild",
         "bias_rebuild",
         "manual_pulse",
+        "pulse_pixels",
         "calibrate_probe",
     )
 

@@ -237,9 +237,49 @@ class SingleStarMethod:
             await self._notify_acquired(False, None, None, candidates=candidates_full)
             return None
 
-        # FFS already sorts ADU-descending — first index in `idxs` is
-        # brightest within the window.
-        chosen = int(idxs[0])
+        # Smart relock — favour the same physical star we held before.
+        #
+        # Default selection (cold start, no prior lock) ranks by FFS's
+        # own brightness ordering = closest-to-rank-1 inside the wide
+        # circle. Once we *had* a lock and lost it (drop pulse moved
+        # the star out of the narrow box, brief seeing dip, etc.), we
+        # have an excellent prior: the star didn't teleport, and its
+        # ADU shouldn't change much frame to frame. So we score
+        # candidates by combined position-proximity + ADU-similarity
+        # to the last good detection — that picks the same physical
+        # star even when it lands closer to ``central_point`` than to
+        # its previous spot, or when there's a brighter neighbour
+        # nearby that the cold-start ranker would prefer.
+        last_pos = _xy(state.get("last_acquired_pos"))
+        last_adu_v = state.get("last_acquired_adu")
+        last_adu = float(last_adu_v) if last_adu_v is not None else None
+
+        if last_pos is not None:
+            # Score: proximity² normalised by wide_search radius² +
+            # |Δadu|/last_adu (relative ADU error). Position weight
+            # 0.7 dominates — lock loss happens in a small window so
+            # the same star is usually within a few px even after a
+            # capped pulse. ADU is a tiebreaker between similar
+            # brightness candidates at similar distance.
+            cand = coords[idxs]
+            cand_adu = adu[idxs]
+            ddx = cand[:, 0] - last_pos[0]
+            ddy = cand[:, 1] - last_pos[1]
+            d2 = ddx * ddx + ddy * ddy
+            pos_score = d2 / (radius * radius)
+            if last_adu is not None and last_adu > 1e-3:
+                adu_err = np.abs(cand_adu - last_adu) / last_adu
+                # Cap relative error at 1.0 so a 10× brighter spurious
+                # candidate doesn't dominate the score.
+                adu_score = np.minimum(adu_err, 1.0)
+                score = 0.7 * pos_score + 0.3 * adu_score
+            else:
+                score = pos_score
+            chosen_local = int(np.argmin(score))
+            chosen = int(idxs[chosen_local])
+        else:
+            # Cold start — use FFS's brightness ranking (best within window).
+            chosen = int(idxs[0])
         peak_x = float(coords[chosen, 0])
         peak_y = float(coords[chosen, 1])
         chosen_adu = float(adu[chosen])
@@ -249,13 +289,22 @@ class SingleStarMethod:
             frame.array, peak_x, peak_y,
             half=self.centroid_radius_px or max(2, int(round(self.fwhm))),
             threshold_sigma=self.centroid_threshold_sigma,
+            saturation_adu=self.saturation_adu,
         )
         pos = (sub_x, sub_y)
 
-        # Promote to acquired (controller is the authoritative writer;
-        # if it isn't wired, we still emit the correction — useful for
-        # sim/dev runs).
-        await self._notify_acquired(True, pos, chosen_adu, candidates=candidates_full)
+        # Promote to acquired. ``recovery=True`` when we had a previous
+        # lock fingerprint — the controller treats this as a real
+        # post-loss recovery and resets ``guide_anchor`` in guiding
+        # mode (safe-failure rule, see Controller.notify_acquired
+        # docstring). Cold start (``last_pos is None``) → recovery=False
+        # so the first lock of the session keeps the operator's chosen
+        # ``central_point`` as the implicit anchor target.
+        await self._notify_acquired(
+            True, pos, chosen_adu,
+            candidates=candidates_full,
+            recovery=last_pos is not None,
+        )
 
         # Correction reference: ``guide_anchor`` (where guiding holds
         # the star) wins over ``central_point`` (operator's target
@@ -360,6 +409,7 @@ class SingleStarMethod:
             frame.array, peak_x, peak_y,
             half=self.centroid_radius_px or max(2, int(round(self.fwhm))),
             threshold_sigma=self.centroid_threshold_sigma,
+            saturation_adu=self.saturation_adu,
         )
         new_pos = (sub_x, sub_y)
 
@@ -405,12 +455,14 @@ class SingleStarMethod:
         adu: float | None,
         *,
         candidates: list[tuple[float, float, float]] | None = None,
+        recovery: bool = False,
     ) -> None:
         if self.controller is None:
             return
         try:
             await self.controller.notify_acquired(
-                acquired=acquired, position=position, adu=adu, candidates=candidates,
+                acquired=acquired, position=position, adu=adu,
+                candidates=candidates, recovery=recovery,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("controller.notify_acquired failed: %s", exc)
@@ -501,29 +553,54 @@ def _subpixel_centroid(
     y: float,
     half: int,
     threshold_sigma: float | None = None,
+    saturation_adu: float | None = None,
 ) -> tuple[float, float]:
     """Flux-weighted centroid in a ``(2·half+1)²`` box around (x, y).
 
-    Two modes:
+    Three masking decisions, in order:
 
-    1. **Plain centroid** (``threshold_sigma=None``): all pixels in the
-       box, background-subtracted (edge-pixel median) and clipped to
-       ≥ 0, contribute weighted by their excess. Best for clean
-       isolated PSFs.
+    1. **Saturation mask** — if ``saturation_adu`` is given, pixels at or
+       above that level are excluded from the centroid weight entirely.
+       The reason is critical for sub-pixel accuracy on bright stars:
+       a saturated PSF core is a *plateau* of identical clipped values,
+       and the centroid of a constant-value plateau is its geometric
+       centre — i.e. the integer pixel at the centre of the saturated
+       blob, *destroying sub-pixel information*. The actual sub-pixel
+       position lives in the un-saturated **PSF wings** where the
+       gradient is. Excluding the plateau forces the centroid to be
+       computed from the wings, where it can resolve fractional pixels
+       again. Without this, a saturated 5×5 plateau gives integer
+       centroids and the operator sees discrete "grid" artefacts on
+       the drift chart.
 
-    2. **Blob centroid** (``threshold_sigma`` set, e.g. 3): only pixels
-       exceeding ``edge_median + threshold_sigma · edge_MAD_sigma``
-       contribute. This is the "what does the bright stuff look like
-       collectively?" estimator — robust to multi-peak clusters where
-       the detector might pick any of several nearby peaks (e.g.,
-       optical-reflection rings around a fiber, hot-pixel families
-       beside a real star). Whichever peak from the cluster the
-       detector hands us, the same set of pixels survive the threshold,
-       so the returned centroid is stable across detector jumps.
+    2. **Mode masking** (after saturation):
+       a. ``threshold_sigma=None`` → plain centroid: all (un-saturated)
+          pixels, background-subtracted and clipped ≥ 0, contribute
+          weighted by excess. Best for clean isolated PSFs without
+          multi-peak structure.
+       b. ``threshold_sigma`` set, e.g. 3 → blob centroid: only pixels
+          exceeding ``edge_median + threshold_sigma · edge_MAD_sigma``
+          contribute. Robust to multi-peak clusters where the detector
+          might pick any of several nearby peaks (fibre halos,
+          reflections, hot-pixel families). The same set of wing
+          pixels survives across detector jumps, so the returned
+          centroid is stable.
 
-    Falls back to the integer input when the patch is degenerate or no
-    pixels survive — the caller's lock position is preserved rather
-    than corrupted by a bad sample.
+    3. **Fallback**: if the patch is degenerate (< 3 px) or no pixels
+       survive masking, return the integer input — the caller's lock
+       position is preserved rather than corrupted by a bad sample.
+
+    Args:
+        image: Full sensor frame.
+        x, y: Approximate centre pixel (typically FFS detection peak).
+        half: Box half-width in pixels.
+        threshold_sigma: Blob-mode threshold (None → plain centroid).
+        saturation_adu: Pixel value at/above which a pixel is counted
+            as saturated and excluded. Pass the camera's saturation
+            level (often ~65500 for uint16 cameras). None → no
+            saturation handling (centroid will be integer-quantised on
+            saturated PSFs — only safe when you know stars are below
+            saturation).
 
     Returns ``(sub_x, sub_y)`` in full-frame sensor coords.
     """
@@ -540,6 +617,14 @@ def _subpixel_centroid(
     ])
     bg = float(np.median(edge))
 
+    # Saturation mask — built once, applied to whichever weighting
+    # branch fires below. ``< saturation_adu`` keeps everything strictly
+    # below the clip; the plateau pixels get zero weight.
+    if saturation_adu is not None and saturation_adu > 0:
+        unsat = patch < float(saturation_adu)
+    else:
+        unsat = np.ones_like(patch, dtype=bool)
+
     if threshold_sigma is not None:
         # Robust local sigma from edge pixels (MAD-based; falls back to
         # std() if MAD collapses on a near-uniform edge).
@@ -548,15 +633,16 @@ def _subpixel_centroid(
         if local_sigma <= 0:
             local_sigma = float(np.std(edge)) or 1.0
         threshold = bg + float(threshold_sigma) * local_sigma
-        # Only above-threshold pixels contribute; weighted by excess
-        # over background. Anything else gets exactly zero weight —
-        # background variations don't bias the centroid.
-        work = np.where(patch > threshold, patch - bg, 0.0)
+        # Only above-threshold AND below-saturation pixels contribute.
+        mask = (patch > threshold) & unsat
+        work = np.where(mask, patch - bg, 0.0)
     else:
-        work = np.clip(patch - bg, 0.0, None)
+        work = np.where(unsat, np.clip(patch - bg, 0.0, None), 0.0)
 
     total = float(work.sum())
     if total <= 0.0:
+        # All pixels saturated, or none above threshold — preserve the
+        # caller's integer estimate rather than producing a NaN.
         return float(x), float(y)
     yy, xx = np.indices(work.shape)
     sub_x = float((xx * work).sum() / total + x0)

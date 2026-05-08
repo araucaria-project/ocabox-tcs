@@ -1,0 +1,41 @@
+# Thumbnail HTTP server — guider deployment.
+#
+# Single instance per observatory. Mounts every guider's thumbnail
+# output_dir under a stable URL prefix. UI auto-discovers via
+# ``svc.status.thumbnail_svc.>`` and reads ``base_url`` + ``roots``
+# from the metric payload — operator doesn't configure two URLs.
+#
+# Run:
+#   poetry run python -m ocabox_tcs.services.thumbnail_svc.server \
+#       config/thumbnail_svc.guider.yaml main
+
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+  - type: thumbnail_svc.server
+    variant: guider
+    bind: 0.0.0.0
+    port: 8080
+
+    # Hostname browsers will fetch from. None → ``socket.gethostname()``;
+    # fine on observatory LAN with mDNS or managed DNS. Override for
+    # split-horizon or container deployments.
+    public_host: null
+
+    # Cache lifetime in seconds. Thumbnails refresh fast; 1 s is a
+    # sweet spot — lets multiple browser tabs share one fetch but
+    # operators see ≤ 1 s lag.
+    cache_max_age_s: 1
+    cors_origin: "*"
+
+    # Each root maps a URL prefix to a filesystem directory. Add one
+    # per guider instance whose thumbnails this server should expose.
+    # The directory must match the guider's
+    # ``thumbnails.output_dir`` setting.
+    roots:
+      - prefix: /guider/jk15-tcu
+        directory: /tmp/guider_thumbs/jk15.guider_tcu
+      - prefix: /guider/jk15-beso
+        directory: /tmp/guider_thumbs/jk15.guider_beso

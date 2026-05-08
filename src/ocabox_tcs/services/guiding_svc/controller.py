@@ -78,6 +78,12 @@ class Controller:
                     coerced["guide_anchor"] = tuple(prev_snap.acquired_pos)
             elif new_mode != Mode.GUIDING and prev_mode == Mode.GUIDING:
                 coerced["guide_anchor"] = None
+        # Mode → OFF is a session boundary — drop the wide-search
+        # fingerprint so the next time we light up, we don't try to
+        # find "the same star as last night".
+        if "mode" in coerced and coerced["mode"] == Mode.OFF and prev_mode != Mode.OFF:
+            coerced.setdefault("last_acquired_pos", None)
+            coerced.setdefault("last_acquired_adu", None)
         version = await self.pipeline.state.update(**coerced)
         logger.info(
             "Controller(%s).set_state version=%d patch_keys=%s",
@@ -102,34 +108,67 @@ class Controller:
         return await self.set_state({"mode": mode})
 
     async def acquire(self) -> dict[str, Any]:
-        """Force the next frame into wide-search mode."""
-        result = await self.set_state({"acquired": False, "acquired_pos": None})
+        """Force the next frame into wide-search mode. Clears the
+        last-known star fingerprint so wide search picks closest to
+        ``central_point`` rather than dragging us back to whatever
+        star was previously held — operator's "fresh start" intent."""
+        result = await self.set_state({
+            "acquired": False,
+            "acquired_pos": None,
+            "last_acquired_pos": None,
+            "last_acquired_adu": None,
+        })
         await self._publish_event("acquire_requested", {})
         return result
 
     async def acquire_at(self, x: float, y: float) -> dict[str, Any]:
-        """Re-aim the next acquisition at sensor pixel ``(x, y)``.
+        """Move the operator's reticle (``central_point``) to ``(x, y)``.
 
-        Updates ``central_point`` and clears ``acquired`` so the next
-        frame runs the wide-search around the new target. Used by the
-        UI for the rare "move target reticle" operation (right-click
-        on the frame); routine star selection goes through ``lock_at``.
+        Behaviour depends on mode — the same RPC has two semantics
+        because right-click in the UI maps here:
+
+        - **monitoring / off**: full reset semantics — clear ``acquired``
+          so the next frame runs wide-search around the new target.
+          Last-known fingerprint cleared too. Operator's "look around"
+          mode: a right-click teleports the target and starts a fresh
+          search.
+
+        - **guiding**: visual-only move. ``central_point`` is updated
+          but ``acquired`` and ``guide_anchor`` are left alone — the
+          controller continues holding the current lock. This is the
+          fix for "right-click during guiding nukes the lock and tries
+          to drag a different star to the old anchor": operator's
+          intent when dragging the reticle mid-guiding is to re-aim
+          the *visual* target (e.g. position the reticle over the
+          fibre entrance), not to abandon the held star. Committing
+          the new reticle as the actual hold target requires an
+          explicit ``drop_to_reticle`` after.
         """
         try:
             xv = float(x)
             yv = float(y)
         except (TypeError, ValueError) as e:
             raise ValueError(f"x/y must be numeric, got x={x!r} y={y!r}") from e
-        result = await self.set_state({
-            "central_point": (xv, yv),
-            "acquired": False,
-            "acquired_pos": None,
-        })
+        snap = self.pipeline.state.snapshot()
+        patch: dict[str, Any]
+        if snap.mode == Mode.GUIDING:
+            patch = {"central_point": (xv, yv)}
+        else:
+            patch = {
+                "central_point": (xv, yv),
+                "acquired": False,
+                "acquired_pos": None,
+                "last_acquired_pos": None,
+                "last_acquired_adu": None,
+            }
+        result = await self.set_state(patch)
         await self._publish_event(
-            "acquire_at_requested", {"x": xv, "y": yv}
+            "acquire_at_requested",
+            {"x": xv, "y": yv, "mode": snap.mode.value},
         )
         await self._publish_journal(
             f"acquire_at requested: ({xv:.1f}, {yv:.1f})"
+            + (" (visual-only — guiding lock retained)" if snap.mode == Mode.GUIDING else "")
         )
         return result
 
@@ -168,6 +207,13 @@ class Controller:
             "acquired": True,
             "acquired_pos": (xv, yv),
             "acquired_adu": None,
+            # Operator picked a fresh seed — invalidate the smart-sort
+            # fingerprint of the previous lock. ADU repopulates from
+            # the next narrow detection; meanwhile wide-search smart
+            # sort falls back to proximity (= falls back to
+            # ``last_acquired_pos`` only).
+            "last_acquired_pos": (xv, yv),
+            "last_acquired_adu": None,
         }
         if snap.mode == Mode.GUIDING:
             patch["guide_anchor"] = (xv, yv)
@@ -280,6 +326,65 @@ class Controller:
     _PULSE_DIRECTIONS = {0, 1, 2, 3}
     # Hard cap on a single manual pulse — protects against finger-fumbles.
     _MANUAL_PULSE_MAX_MS = 5000.0
+
+    async def pulse_pixels(self, *, dx_px: float, dy_px: float) -> dict[str, Any]:
+        """Issue a pulse to move the star by an *image-axis pixel*
+        target — UI's pixel-mode arrows.
+
+        Solves the per-camera transpose ambiguity: instead of asking
+        the operator to remember "N moves star right because of
+        ``protocol.transpose: true``", they say "move 30 px in +X" and
+        the controller does the Jacobian inversion. Same primitive the
+        regular guiding loop uses (``pulse_guide_model.predict``), but
+        triggered by an explicit operator command rather than a
+        per-frame correction.
+
+        Cap: the same ``saturation_ms`` the Enforcer respects for
+        guiding pulses applies — clamps each axis to
+        ``duration_max_ms``. Reported back so the UI can show the
+        operator how much of their request actually happened.
+        """
+        if self.pipeline._enforcer is None or self.pipeline._enforcer.pulse_guide_model is None:
+            return {"status": "error", "error": "no pulse-guide model loaded"}
+        try:
+            dx = float(dx_px)
+            dy = float(dy_px)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"dx_px/dy_px must be numeric, got dx={dx_px!r} dy={dy_px!r}") from e
+        model = self.pipeline._enforcer.pulse_guide_model
+        # ``predict()`` is the *cancel-error* primitive used by the
+        # guiding loop: input = "the star is dx,dy off target", output
+        # = pulses that move it by (-dx,-dy) to bring it back. For the
+        # operator's "move the star by +30 px" intent we need the
+        # *forward* sense — feed -(dx,dy) to get pulses that move +
+        # (dx,dy). One sign flip; semantics consistent with the rest
+        # of the codebase.
+        prediction = model.predict((-dx, -dy))
+        t_N_ms, t_E_ms = prediction.y
+        cap_ms = float(self.pipeline._enforcer.saturation_ms.hi)
+        # Clip each axis independently so the operator gets two
+        # truthful pulses, not one weirdly-scaled compromise.
+        clip_n = abs(t_N_ms) > cap_ms
+        clip_e = abs(t_E_ms) > cap_ms
+        t_N_ms = max(-cap_ms, min(cap_ms, t_N_ms))
+        t_E_ms = max(-cap_ms, min(cap_ms, t_E_ms))
+        # Translate signed durations into ASCOM (direction, abs_dur) pairs.
+        n_dir, n_dur = (0, t_N_ms) if t_N_ms >= 0 else (1, -t_N_ms)
+        e_dir, e_dur = (2, t_E_ms) if t_E_ms >= 0 else (3, -t_E_ms)
+        results: list[dict[str, Any]] = []
+        for direction, dur in ((n_dir, n_dur), (e_dir, e_dur)):
+            if dur < 1.0:  # below quantisation; skip
+                continue
+            r = await self.manual_pulse(direction=direction, duration_ms=dur)
+            results.append(r)
+        return {
+            "status": "ok",
+            "requested_dx_px": dx,
+            "requested_dy_px": dy,
+            "pulses": results,
+            "n_clipped": clip_n,
+            "e_clipped": clip_e,
+        }
 
     async def manual_pulse(
         self,
@@ -523,14 +628,34 @@ class Controller:
     async def notify_acquired(self, *, acquired: bool, position: tuple[float, float] | None,
                               adu: float | None,
                               candidates: list[tuple[float, float, float]] | None = None,
+                              recovery: bool = False,
                               ) -> None:
         """Solver tells the Controller a star was (re-)acquired or lost.
 
-        When ``candidates`` is provided it's stored alongside the lock
-        so the UI can render the full detection list (debug overlay +
-        TAB-to-cycle). Pass ``None`` to leave the prior list untouched
-        — useful when the solver runs a narrow box detection and we
-        don't want the partial list to overwrite the wide-frame one.
+        Args:
+            acquired: True = solver has a lock this frame; False = no lock.
+            position: Sub-pixel ``(x, y)`` of the lock when acquired.
+            adu: Peak ADU of the locked star.
+            candidates: Per-frame detection list ``[(x, y, adu), …]`` —
+                ``None`` leaves the previous list untouched.
+            recovery: True when this is a wide-search re-acquisition
+                following a confirmed lock-loss (narrow miss budget
+                exhausted). When set AND mode=guiding, ``guide_anchor``
+                is reset to the new ``position`` — the safe-failure
+                rule: after we genuinely lost the star and a *different*
+                detection regained it, we don't trust we're still on
+                the same physical star, so we stop dragging it toward
+                the previous anchor. Operator must explicitly re-issue
+                ``drop_to_reticle`` (or accept the new anchor as the
+                hold target). False during routine narrow-track frames
+                and stick-with-it grace updates — those don't disturb
+                the anchor.
+
+        Maintains ``last_acquired_pos`` / ``last_acquired_adu`` —
+        persisted across loss so wide-search smart sort can favour the
+        same physical star (proximity + ADU similarity) on the next
+        recovery. Updated only on successful acquisitions; preserved
+        verbatim when ``acquired=False``.
         """
         prev = self.pipeline.state.snapshot()
         update_kwargs: dict[str, Any] = dict(
@@ -539,6 +664,27 @@ class Controller:
             acquired_adu=adu,
             acquired_at_ts=dt_utcnow_array() if acquired else prev.acquired_at_ts,
         )
+        # Refresh last-known on every successful detection — that's
+        # what wide-search-after-loss reaches for. On loss leave the
+        # prior values intact (the field is *the most recent good
+        # detection*, not "the current").
+        if acquired and position is not None:
+            update_kwargs["last_acquired_pos"] = position
+            if adu is not None:
+                update_kwargs["last_acquired_adu"] = float(adu)
+        # Wide-search recovery in guiding mode resets ``guide_anchor``
+        # to the new lock position. Safe-failure: if smart-sort picked
+        # a wrong star we won't drag it toward an anchor that no longer
+        # corresponds to a meaningful target. If smart-sort picked the
+        # right star (likely with proximity + ADU match), the operator
+        # interrupted ``drop_to_reticle`` mid-flight and can re-issue.
+        if (
+            recovery
+            and acquired
+            and position is not None
+            and prev.mode == Mode.GUIDING
+        ):
+            update_kwargs["guide_anchor"] = (float(position[0]), float(position[1]))
         if candidates is not None:
             update_kwargs["candidates"] = candidates
         await self.pipeline.state.update(**update_kwargs)
@@ -548,9 +694,18 @@ class Controller:
         self.pipeline.record_cycle(acquired=bool(acquired))
         await self._publish_state(self._snapshot_dict())
         if acquired and not prev.acquired:
-            await self._publish_event(
-                "acquired_gained", {"position": list(position) if position else None}
-            )
+            ev = "acquired_gained"
+            payload: dict[str, Any] = {"position": list(position) if position else None}
+            if recovery:
+                payload["recovery"] = True
+                if prev.mode == Mode.GUIDING:
+                    payload["anchor_reset"] = True
+            await self._publish_event(ev, payload)
+            if recovery and prev.mode == Mode.GUIDING:
+                await self._publish_journal(
+                    f"wide-search recovery — guide_anchor → "
+                    f"({position[0]:.1f}, {position[1]:.1f})"
+                )
         elif not acquired and prev.acquired:
             await self._publish_event("acquired_lost", {})
 

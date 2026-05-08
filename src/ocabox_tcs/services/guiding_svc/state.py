@@ -115,6 +115,14 @@ class PipelineState:
     # to restore the operator's reticle after dragging. Immutable
     # post-startup. None when unset (UI falls back to camera centre).
     central_point_default: tuple[float, float] | None = None
+    # Persisted across lock-loss: the position and ADU of the most
+    # recent SUCCESSFUL detection. Used by wide-search to favour the
+    # same physical star (proximity + ADU similarity) when re-acquiring
+    # after a brief lock drop. Distinct from ``acquired_pos`` (which is
+    # cleared on loss). Reset on operator-forced restart
+    # (``acquire``, ``lock_at`` to a new spot, mode→OFF).
+    last_acquired_pos: tuple[float, float] | None = None
+    last_acquired_adu: float | None = None
     wide_search_radius_px: int = 200
     search_reg_px: int = 25
     stacking_count: int = 1

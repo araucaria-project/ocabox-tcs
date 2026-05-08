@@ -202,21 +202,57 @@ class ThumbnailEmitter:
 
 
 def _normalise_to_uint8(arr: np.ndarray) -> np.ndarray:
-    """Stretch 1st..99th percentile to 0..255 for a JPEG-friendly preview.
+    """Asinh stretch for a JPEG-friendly preview.
 
-    Uses the median/MAD as a fallback when percentiles collapse on
-    nearly-uniform frames (clouds, dark sky).
+    Why asinh and not a simple percentile-clip:
+      * Operators look at *shape* of bright PSFs (focus quality, coma,
+        trefoil) and at the *fibre-entrance shadow* dip in the centre
+        of saturated stars during fibre injection. Both live in the
+        bright end of the dynamic range. A linear 1..99 percentile clip
+        wipes them out — everything above the 99th-percentile is
+        rendered as flat white.
+      * Asinh is the astronomy-standard stretch (Lupton et al. 2004,
+        used by SDSS / DECaLS image releases) — linear for sky and
+        faint sources, logarithmic for bright peaks, smooth transition
+        between. Preserves both the noise grain (FWHM checks) and
+        intra-PSF structure (fibre shadow, near-saturated halo).
+
+    Algorithm:
+      bg = median(arr)
+      sig = MAD(arr) * 1.4826   # robust σ
+      x = (arr - bg) / sig
+      out = asinh(scale * x) / asinh(scale * x_top)
+      where x_top = the 99.99-percentile of x — only the few brightest
+      pixels of the entire frame saturate to 255, everything else
+      keeps detail.
+
+    ``scale`` controls the "soft knee" — bigger = more compression of
+    the bright end. 8 is a sane default tested on jk15 BESO with
+    10kADU stars + sky 30..200 ADU.
+
+    Falls back to a flat mid-grey when the array is uniform (clouds,
+    closed dome, dark frame) so the operator sees *something* rather
+    than a 0-or-255 binary.
     """
     a = arr
     if a.ndim != 2:
         a = np.asarray(a).squeeze()
     a = np.where(np.isfinite(a), a, 0).astype(np.float32, copy=False)
-    lo, hi = np.percentile(a, (1.0, 99.0))
-    if hi - lo < 1e-6:
-        med = float(np.median(a))
-        mad = float(np.median(np.abs(a - med))) or 1.0
-        lo, hi = med - 3.0 * mad, med + 3.0 * mad
-    if hi - lo < 1e-6:
-        hi = lo + 1.0
-    scaled = np.clip((a - lo) / (hi - lo), 0.0, 1.0) * 255.0
-    return scaled.astype(np.uint8)
+
+    bg = float(np.median(a))
+    mad = float(np.median(np.abs(a - bg)))
+    sigma = max(mad * 1.4826, 1.0)
+    x = (a - bg) / sigma
+
+    # Cap the soft "white" point at the 99.99 percentile — only the
+    # brightest handful of pixels saturate to 255, everything below
+    # keeps detail.
+    x_top = float(np.percentile(x, 99.99))
+    if x_top <= 0.5:  # nearly-uniform frame, e.g. dome closed
+        return np.full_like(a, 128, dtype=np.uint8)
+
+    scale = 8.0
+    stretched = np.arcsinh(scale * x)
+    norm = float(np.arcsinh(scale * x_top))
+    out = np.clip(stretched / norm, 0.0, 1.0) * 255.0
+    return out.astype(np.uint8)

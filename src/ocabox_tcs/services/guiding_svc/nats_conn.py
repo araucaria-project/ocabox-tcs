@@ -43,6 +43,7 @@ RPC_COMMANDS = (
     "dark_rebuild",
     "bias_rebuild",
     "manual_pulse",
+    "pulse_pixels",
     "calibrate_probe",
 )
 
@@ -167,6 +168,13 @@ class NatsConn:
                 lambda data: controller.manual_pulse(
                     direction=data["direction"],
                     duration_ms=data["duration_ms"],
+                ),
+            ),
+            "pulse_pixels": _wrap_handler(
+                sender,
+                lambda data: controller.pulse_pixels(
+                    dx_px=data["dx_px"],
+                    dy_px=data["dy_px"],
                 ),
             ),
             "calibrate_probe": _wrap_handler(

@@ -497,6 +497,12 @@ class GuiderManager:
             controller.events_publisher = self.nats_conn.events_publisher(cam_id, pipe_id)
             controller.journal_publisher = self.nats_conn.journal_publisher(cam_id, pipe_id)
             controller.sender_id = f"{cam_id}.{pipe_id}"
+            # Wire the Enforcer's event hook into the controller's
+            # ``_publish_event`` so per-pulse chart annotations appear
+            # on the same per-pipeline events subject the UI already
+            # subscribes to. Single-channel = no extra subscription.
+            if hasattr(pipeline, "_enforcer") and pipeline._enforcer is not None:
+                pipeline._enforcer.event_publisher = controller._publish_event
 
         await pipeline.start()
 

@@ -94,7 +94,16 @@ services:
                                        # 5 — fewer mask1 pixels means
                                        # fewer noise spikes survive
                                        # min_pixels_above_threshold)
-              saturation_adu: 50000.0  # for confidence calc
+              saturation_adu: 62000.0  # camera clips at ~65504 (uint16
+                                       # near full); 62000 catches the
+                                       # saturation plateau (whose
+                                       # constant clipped values destroy
+                                       # sub-pixel centroid precision —
+                                       # see _subpixel_centroid docstring)
+                                       # while leaving bright-but-not-
+                                       # maxed pixels in the wings to
+                                       # contribute to the centroid.
+                                       # Also feeds the confidence calc.
               min_pixels_above_threshold: 5  # PSF spans many pixels
                                        # above threshold; hot pixel /
                                        # cosmic ray = 1; tightest
@@ -174,16 +183,27 @@ services:
               damping_alpha: 0.5       # 0.5 with pulse-cooldown is stable.
               duration_max_ms: 1500    # hard cap (saturation guard)
               duration_min_ms: 20      # mount can't track sub-threshold pulses
-              post_pulse_settle_ms: 2500  # forbid new pulses until previous
-                                       # finishes + 2.5 s for the mount to
-                                       # actually stop. Calibration showed
-                                       # 1000 ms left ~2-3 px of post-pulse
-                                       # residual motion — enough to cause
-                                       # measurable mid-correction error in
-                                       # the next pulse. 2500 ms gives ~3×
-                                       # tighter probe-to-probe σ and
-                                       # eliminates the delayed-feedback
-                                       # signature in guiding mode.
+              post_pulse_settle_ms: 600   # cool-down between *guiding*
+                                       # pulses. Distinct from the
+                                       # *calibration probe* settle (RPC
+                                       # ``calibrate_probe`` uses 2500 ms
+                                       # for sub-px σ on a single
+                                       # measurement). Guiding doesn't
+                                       # need pristine per-pulse
+                                       # settling — error averages out
+                                       # across many corrections,
+                                       # damping_alpha smooths overshoot,
+                                       # and a long cool-down just
+                                       # widens the staleness gap
+                                       # between *frame measured at T*
+                                       # and *pulse applied at T+Δ*
+                                       # (sidereal drift + mount-tracking
+                                       # jitter accumulate during Δ).
+                                       # 600 ms covers typical mount
+                                       # mechanical settle without
+                                       # bottlenecking the controller.
+                                       # Tune per-mount if oscillations
+                                       # return.
 
             # FITS / thumbnail saving — disabled for FL1 (FL2 + NFS layout).
             save_raw_fits: false
@@ -199,8 +219,17 @@ services:
             thumbnails:
               enabled: true
               output_dir: /tmp/guider_thumbs
-              size: [480, 300]
+              # Full sensor resolution — operators look for star *shape*
+              # (focus / coma / trefoil) and the fibre-entrance shadow at
+              # PSF centre during injection. Both require pixel-level
+              # detail; downsampled previews smear them. ``thumbnail()``
+              # is a no-op when the source is ≤ this bound, so 1936×1216
+              # passes through unchanged.
+              size: [1936, 1216]
               every_n: 1
               latest_link: true
-              quality: 80
+              # Higher JPEG quality preserves the faint dip in saturated
+              # PSF cores (the fibre shadow). At quality 80 the
+              # quantisation step around saturation rounds it away.
+              quality: 92
               max_files: 200

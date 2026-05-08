@@ -58,6 +58,7 @@ class Enforcer:
         saturation_ms: SaturationGuard | None = None,
         min_pulse_ms: float = 20.0,
         post_pulse_settle_ms: float = 1000.0,
+        event_publisher: Any | None = None,
     ) -> None:
         self.in_queue = in_queue
         self.state = state
@@ -66,6 +67,11 @@ class Enforcer:
         self.damping = damping or DampingGuard(alpha_min=0.5, alpha_max=0.5)
         self.saturation_ms = saturation_ms or SaturationGuard(lo=-1500.0, hi=1500.0)
         self.min_pulse_ms = float(min_pulse_ms)
+        # Optional callback for chart-annotation events (UI sees each
+        # auto pulse). Async coroutine ``async (event_name, payload)
+        # -> None``. None = sim/dev path or pre-NATS bootstrap; we
+        # just skip publishing.
+        self.event_publisher = event_publisher
         # Latency model: ``aput_pulseguide`` is fire-and-forget (the call
         # returns immediately; the mount executes the pulse over the
         # commanded duration). Without protection, frames captured *during*
@@ -187,13 +193,58 @@ class Enforcer:
                 e_dur, "*" if e_clipped else "",
             )
 
+        # Frame-staleness telemetry: how old was the measurement we're
+        # acting on? With a busy Alpaca camera (second observer), this
+        # gap can grow to multiple seconds during which sidereal drift
+        # and tracking jitter accumulate, biasing the correction. INFO
+        # level for visibility — operator sees "applying 1.8s-old
+        # correction" patterns directly in the log.
+        try:
+            corr_ts = correction.timestamp  # 7-int UTC array from serverish
+            from serverish.base import dt_from_array
+            corr_dt = dt_from_array(corr_ts)
+            from datetime import datetime, UTC
+            staleness_ms = (datetime.now(UTC) - corr_dt).total_seconds() * 1000.0
+        except Exception:  # noqa: BLE001
+            staleness_ms = float("nan")
+
         # 6. Issue the pulses (sequentially — the ASCOM API takes one
         # axis per call; ocabox/Alpaca handle on-the-wire serialisation).
         # TIC pulseguide handler rejects float Duration with HTTP 400.
+        wire_t0 = time.monotonic()
         if not n_skip:
             await self.mount.aput_pulseguide(direction=n_dir, duration=int(round(n_dur)))
         if not e_skip:
             await self.mount.aput_pulseguide(direction=e_dir, duration=int(round(e_dur)))
+        wire_ms = (time.monotonic() - wire_t0) * 1000.0
+        logger.info(
+            "Enforcer pulse: dx=%+.2f dy=%+.2f → N(%d)=%.0fms%s E(%d)=%.0fms%s "
+            "frame_age=%.0fms wire=%.0fms cooldown→%.0fms",
+            correction.dx_px, correction.dy_px,
+            n_dir, n_dur, "*" if n_clipped else " ",
+            e_dir, e_dur, "*" if e_clipped else " ",
+            staleness_ms, wire_ms,
+            (n_dur + e_dur if not (n_skip and e_skip) else 0.0) + self.post_pulse_settle_ms,
+        )
+        # Chart annotation — let the UI render a tick at this pulse.
+        if self.event_publisher is not None:
+            try:
+                await self.event_publisher(
+                    "enforcer_pulse",
+                    {
+                        "dx_px": float(correction.dx_px),
+                        "dy_px": float(correction.dy_px),
+                        "n_dir": int(n_dir),
+                        "n_dur_ms": float(n_dur if not n_skip else 0.0),
+                        "e_dir": int(e_dir),
+                        "e_dur_ms": float(e_dur if not e_skip else 0.0),
+                        "n_clipped": bool(n_clipped),
+                        "e_clipped": bool(e_clipped),
+                        "frame_age_ms": float(staleness_ms) if staleness_ms == staleness_ms else None,
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Enforcer event publish failed: %s", e)
 
         # 7. Update cooldown so the run-loop ignores corrections derived
         # from frames captured during this pulse + one settle interval.
