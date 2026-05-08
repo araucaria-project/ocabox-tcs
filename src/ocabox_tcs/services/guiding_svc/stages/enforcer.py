@@ -276,17 +276,24 @@ class Enforcer:
             m21 = float(self.pulse_guide_model.m21)
             m22 = float(self.pulse_guide_model.m22)
             det = m11 * m22 - m12 * m21
-            if abs(det) > 1e-12 and snapshot.acquired_pos is not None:
+            # Fresh snapshot — the post-pulse state is what the next
+            # solver iteration will look at, so taking it here (not at
+            # the top of ``_apply``) keeps the prediction tied to the
+            # actual lock position used to derive this pulse.
+            snap = self.state.snapshot()
+            if abs(det) > 1e-12 and snap.acquired_pos is not None:
                 # forward = -inv(M); applied to (t_N, t_E):
                 motion_x = (-m22 * t_n_eff + m12 * t_e_eff) / det
                 motion_y = (m21 * t_n_eff - m11 * t_e_eff) / det
                 predicted = (
-                    float(snapshot.acquired_pos[0] + motion_x),
-                    float(snapshot.acquired_pos[1] + motion_y),
+                    float(snap.acquired_pos[0] + motion_x),
+                    float(snap.acquired_pos[1] + motion_y),
                 )
                 await self.state.update(predicted_pos=predicted)
-        except (AttributeError, TypeError, ZeroDivisionError) as exc:
-            logger.debug("predicted_pos write skipped: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — the prediction is
+            # advisory; never let a write-side bug take down the
+            # enforcer task and stall the whole pipeline.
+            logger.warning("predicted_pos write skipped: %s", exc, exc_info=True)
 
         logger.debug(
             "Enforcer applied: N/S dir=%d dur=%.1fms%s, E/W dir=%d dur=%.1fms%s "
