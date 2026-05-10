@@ -83,6 +83,86 @@ class PreprocessingConfig:
 
 
 # ---------------------------------------------------------------------------
+# Pulse event — first-class temporal record of an issued pulse
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PulseEvent:
+    """Single source of truth for "a pulse has been issued and the mount
+    is moving". Replaces the implicit triple of (Enforcer's monotonic
+    cooldown gate, ``predicted_pos`` field, narrow-miss budget grace)
+    with explicit absolute UTC timestamps that any stage can interpret.
+
+    The lifecycle is:
+
+    - Enforcer writes a ``PulseEvent`` to ``PipelineState.active_pulse``
+      immediately after issuing pulse-guide commands. The three
+      timestamps mark the boundaries of the four phases:
+
+          ``t < issued_utc``        →  TRACKING (pre-pulse, normal)
+          ``issued_utc..motion_end`` →  IN_FLIGHT (mount moving, smear)
+          ``motion_end..settled``    →  SETTLING (mount damping)
+          ``t >= settled_utc``       →  ACQUIRING (first valid frame)
+
+    - Solver classifies each frame by ``frame.t_mid`` (mid-exposure UTC)
+      against these boundaries and chooses behaviour per phase (skip
+      detect during IN_FLIGHT/SETTLING, bracket-search during ACQUIRING,
+      narrow-track during TRACKING).
+
+    - Controller clears ``active_pulse`` on the first successful
+      ``ACQUIRING``-phase acquire (predicted reached, lock re-latched).
+
+    All timestamps are serverish 7-int UTC arrays (``[Y, M, D, h, m, s,
+    μs]``) so they cross NATS unmodified and are directly comparable
+    with ``frame.timestamp`` set by the camera protocol.
+    """
+
+    issued_utc: list[int]
+    """When the enforcer commanded the pulse(s). Approximate within the
+    duration of the ``aput_pulseguide`` round-trips (logged as
+    ``wire_ms`` already)."""
+
+    motion_end_utc: list[int]
+    """When the mount is expected to finish executing the pulse —
+    ``issued_utc + sum_of_active_durations_ms``. Pulses are issued
+    sequentially per ASCOM, so total motion time is the *sum* of the N
+    and E durations (after damping + clipping), not the max."""
+
+    settled_utc: list[int]
+    """When the mount damping is expected to be done —
+    ``motion_end_utc + post_pulse_settle_ms``. After this any frame
+    whose mid-exposure falls past ``settled_utc`` should reflect the
+    new optical state and is the first one we trust to re-acquire."""
+
+    src_pos: tuple[float, float]
+    """The ``acquired_pos`` snapshot at issue time. Defines one endpoint
+    of the trajectory drawn on the GUI (motion-blur oval / arrow) for
+    frames classified as IN_FLIGHT."""
+
+    predicted_pos: tuple[float, float]
+    """Forward-Jacobian estimate of where the star ends up after the
+    pulse: ``src_pos + J · (t_N_actual, t_E_actual)``. The other
+    endpoint of the GUI trajectory and the search-box centre during
+    ACQUIRING."""
+
+    pulse_t_n_ms: float
+    """Signed N-axis pulse duration after damping + clipping (positive
+    = N, negative = S). Stored signed so downstream code can derive
+    direction without re-running the sign-extraction."""
+
+    pulse_t_e_ms: float
+    """Signed E-axis pulse duration (positive = E, negative = W)."""
+
+    correction_dx_px: float
+    """The error vector this pulse was meant to cancel — useful for
+    after-the-fact validation that the actual motion matched the
+    intent. Equals the ``Correction.dx_px`` we received."""
+
+    correction_dy_px: float
+
+
+# ---------------------------------------------------------------------------
 # PipelineState
 # ---------------------------------------------------------------------------
 
@@ -150,6 +230,20 @@ class PipelineState:
     transiently; operator ``set_state(exp_time=…)`` clears it back to
     None so the operator value wins until auto-exposure decides again."""
     current_roi: tuple[int, int, int, int] | None = None
+    active_pulse: PulseEvent | None = None
+    """First-class temporal record of an in-flight pulse, written by
+    Enforcer at issue time, cleared by Controller on the first
+    post-settle successful acquire. Source of truth for the
+    TRACKING/IN_FLIGHT/SETTLING/ACQUIRING phase the pipeline is in;
+    Solver classifies each frame against ``active_pulse.{issued,
+    motion_end, settled}_utc`` and chooses behaviour accordingly.
+
+    ``None`` ⇔ no pulse in flight ⇔ pipeline is in TRACKING phase.
+
+    See ``PulseEvent`` docstring for full lifecycle. ``predicted_pos``
+    below mirrors ``active_pulse.predicted_pos`` for now (legacy
+    consumers still read it); a follow-up commit consolidates."""
+
     predicted_pos: tuple[float, float] | None = None
     """Where the star is expected to be on the next clean frame, given
     the most recently issued pulse. Written by Enforcer immediately after

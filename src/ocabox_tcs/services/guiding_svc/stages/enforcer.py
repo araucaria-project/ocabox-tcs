@@ -15,9 +15,19 @@ import logging
 import time
 from typing import Any
 
+from datetime import UTC, datetime, timedelta
+
 from auto_adjust.stability import DampingGuard, SaturationGuard
 from ocabox_tcs.services.guiding_svc.correction import Correction
-from ocabox_tcs.services.guiding_svc.state import Mode, PipelineStateHolder
+from ocabox_tcs.services.guiding_svc.state import Mode, PipelineStateHolder, PulseEvent
+
+
+def _dt_to_array(dt: datetime) -> list[int]:
+    """Encode a UTC ``datetime`` as the serverish 7-int array used
+    throughout the codebase. Inverse of ``serverish.base.dt_from_array``.
+    Kept here (not in serverish) because it's a one-liner and the rest
+    of this module already does its own UTC bookkeeping."""
+    return [dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond]
 
 
 logger = logging.getLogger(__name__.rsplit(".", maxsplit=1)[-1])
@@ -289,7 +299,37 @@ class Enforcer:
                     float(snap.acquired_pos[0] + motion_x),
                     float(snap.acquired_pos[1] + motion_y),
                 )
-                await self.state.update(predicted_pos=predicted)
+                # First-class temporal record of the pulse — same
+                # information the monotonic cooldown gate uses, but
+                # expressed in the absolute UTC frame that camera
+                # timestamps live in. Phase 2 of the rework will
+                # consume this in the Solver to classify each frame as
+                # TRACKING/IN_FLIGHT/SETTLING/ACQUIRING; this commit
+                # only populates the field so the downstream change is
+                # incremental.
+                issued_dt = datetime.now(UTC)
+                motion_end_dt = issued_dt + timedelta(milliseconds=active_total_ms)
+                settled_dt = motion_end_dt + timedelta(milliseconds=self.post_pulse_settle_ms)
+                pulse_event = PulseEvent(
+                    issued_utc=_dt_to_array(issued_dt),
+                    motion_end_utc=_dt_to_array(motion_end_dt),
+                    settled_utc=_dt_to_array(settled_dt),
+                    src_pos=(float(snap.acquired_pos[0]), float(snap.acquired_pos[1])),
+                    predicted_pos=predicted,
+                    pulse_t_n_ms=float(t_n_eff),
+                    pulse_t_e_ms=float(t_e_eff),
+                    correction_dx_px=float(correction.dx_px),
+                    correction_dy_px=float(correction.dy_px),
+                )
+                # Both fields kept in sync for now — ``predicted_pos``
+                # is the legacy single-value handle still read by the
+                # Solver's bracket-box logic; ``active_pulse`` is the
+                # new source of truth that Phase 2 will switch the
+                # Solver to.
+                await self.state.update(
+                    predicted_pos=predicted,
+                    active_pulse=pulse_event,
+                )
         except Exception as exc:  # noqa: BLE001 — the prediction is
             # advisory; never let a write-side bug take down the
             # enforcer task and stall the whole pipeline.

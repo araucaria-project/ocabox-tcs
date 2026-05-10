@@ -673,10 +673,14 @@ class Controller:
             if adu is not None:
                 update_kwargs["last_acquired_adu"] = float(adu)
             # Prediction served its purpose — narrow search latched onto
-            # the star at (or near) the predicted spot. Clear it so the
-            # next frame without a pending pulse falls back to centring
-            # on the fresh ``acquired_pos`` instead of a stale prediction.
+            # the star at (or near) the predicted spot. Clear both the
+            # legacy ``predicted_pos`` handle and the first-class
+            # ``active_pulse`` record so the pipeline returns to the
+            # TRACKING phase. Keeping them in lock-step avoids any
+            # consumer reading half-stale state during the Phase 2
+            # transition.
             update_kwargs["predicted_pos"] = None
+            update_kwargs["active_pulse"] = None
         # Wide-search recovery in guiding mode resets ``guide_anchor``
         # to the new lock position. Safe-failure: if smart-sort picked
         # a wrong star we won't drag it toward an anchor that no longer
