@@ -169,12 +169,42 @@ must live on `/storage` (98 GB) — see deploy README.
 ## Recent commits
 
 ```
+f9e1220 guider: phase 1 of timing rework — PulseEvent dataclass + active_pulse field
+616600d doc: session handoff with timing-architecture proposal and phased rollout
 c60e0e8 guider: fix NameError in enforcer predicted_pos block
 3cbed41 guider: bracket-box narrow search + miss budget grace + drop-oldest queue
 c3c1419 guider: predicted_pos centers narrow search on post-pulse target
 142f68c deploy: services01 production stack + FFS diagnostic logging
 51edccf server conf and health  (operator's, before this session)
 ```
+
+## Phase 1 deploy status
+
+**Committed + pushed (`f9e1220`); deploy on services01 pending.**
+
+The OCA LAN was unreachable from the dev machine when phase 1 landed
+(operator on a plane, gateway not responding from outside). Phase 1 is
+a no-behaviour-change commit — adds the `PulseEvent` dataclass and the
+`active_pulse` field, populated by Enforcer alongside the existing
+`predicted_pos`, cleared by Controller in lock-step. Existing
+behaviour unchanged; the field is invisible to current consumers and
+just appears in NATS state messages for inspection.
+
+Whoever resumes runs:
+
+```
+ssh poweruser@services01.oca.lan
+cd ~/src/ocabox-tcs && git pull
+~/.local/bin/poetry install --extras "cli guider oca" --sync
+sudo systemctl restart oca_guider_jk15
+```
+
+To verify, read a state message after a pulse fires (e.g. flip
+mode→guiding briefly) and confirm `active_pulse` populates with
+`{issued_utc, motion_end_utc, settled_utc, src_pos, predicted_pos,
+pulse_t_n_ms, pulse_t_e_ms, correction_dx_px, correction_dy_px}`. If
+yes — phase 1 done, phase 2 (the actual fix that consumes the field
+in the Solver) is next.
 
 ## Open questions for operator
 
