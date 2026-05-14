@@ -84,7 +84,13 @@ services:
                 kN_x_px_per_ms:  0.03911
                 kN_y_px_per_ms:  0.00099
               damping_alpha: 0.5
-              duration_max_ms: 1500
+              # Pulse max ≈ wide-search radius (~0.04 px/ms × 5000ms = 200 px).
+              # With Phase-2 timing the solver waits for the settle window
+              # before re-acquiring, so a longer single pulse no longer
+              # creates "miss frames" that burn the budget. Bigger pulses
+              # also mean drop-to-reticle / large-correction slews converge
+              # in fewer cycles instead of N×damping_alpha geometric crawl.
+              duration_max_ms: 5000
               duration_min_ms: 20
               post_pulse_settle_ms: 600
 

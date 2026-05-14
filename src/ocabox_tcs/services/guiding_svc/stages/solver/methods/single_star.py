@@ -205,11 +205,60 @@ class SingleStarMethod:
         # any successful re-detection.
         self._narrow_miss_count = 0
         self._narrow_miss_threshold = 5
+        # ACQUIRING-phase budget: how many consecutive post-settle frames
+        # we look at for the star at predicted_pos before giving up and
+        # demoting to wide-search recovery. Generous because the first
+        # post-settle frame may still have residual oscillation
+        # squeezing the star below the detection threshold; 10 frames
+        # ~= a few seconds of patience.
+        self._acquiring_miss_count = 0
+        self._acquiring_miss_threshold = 10
 
     async def solve(
         self, frame: AnalysisFrame, state: dict[str, Any]
     ) -> Correction | None:
         if frame.array.size == 0:
+            return None
+
+        # Phase classification — compare the frame's mid-exposure UTC
+        # against the active pulse's lifecycle timestamps. Anything
+        # captured during the pulse's motion or settle window is
+        # smeared / unsettled and we skip detection entirely; the next
+        # post-settle frame is where re-acquisition begins.
+        active_pulse = state.get("active_pulse")
+        exp_time = float(state.get("exp_time", 1.0)) or 1.0
+        t_mid = None
+        try:
+            from datetime import timedelta  # noqa: PLC0415
+            from serverish.base import dt_from_array  # noqa: PLC0415
+            if isinstance(frame.timestamp, list) and len(frame.timestamp) >= 6:
+                t_mid = dt_from_array(frame.timestamp) + timedelta(seconds=exp_time / 2.0)
+        except Exception:  # noqa: BLE001
+            t_mid = None
+        from ocabox_tcs.services.guiding_svc.state import (  # noqa: PLC0415
+            FramePhase, classify_frame_phase,
+        )
+        phase = classify_frame_phase(active_pulse, t_mid)
+
+        if phase in (FramePhase.IN_FLIGHT, FramePhase.SETTLING):
+            # Mount in motion or damping: the star is smeared along the
+            # trajectory ``src_pos → predicted_pos`` (IN_FLIGHT) or
+            # bouncing toward predicted_pos (SETTLING). Detection on
+            # such a frame would either miss (smear-flattened PSF
+            # below threshold) or pick a wrong peak. Hold lock state
+            # so the UI's last-known position stays put; publish the
+            # frame_phase so the GUI swaps the overlay to the
+            # trajectory arrow / acquisition-in-progress indicator.
+            # ``candidates=None`` leaves the previous list (UI keeps
+            # showing the candidates from the pre-pulse frame, which
+            # remain a reasonable approximation while smeared).
+            await self._notify_acquired(
+                bool(state.get("acquired")),
+                _xy(state.get("acquired_pos")),
+                state.get("acquired_adu"),
+                candidates=None,
+                frame_phase=phase.value,
+            )
             return None
 
         # Detection is always full-frame, regardless of mode. Two reasons:
@@ -234,8 +283,8 @@ class SingleStarMethod:
         candidates_full = _candidates_payload(coords, adu)
 
         if state.get("acquired"):
-            return await self._narrow(frame, state, coords, adu, candidates_full)
-        return await self._wide(frame, state, coords, adu, candidates_full)
+            return await self._narrow(frame, state, coords, adu, candidates_full, phase=phase.value)
+        return await self._wide(frame, state, coords, adu, candidates_full, phase=phase.value)
 
     # ------------------------------------------------------------------
     # Wide search (cold start / post-loss recovery)
@@ -248,6 +297,8 @@ class SingleStarMethod:
         coords: np.ndarray,
         adu: np.ndarray,
         candidates_full: list[tuple[float, float, float]],
+        *,
+        phase: str | None = None,
     ) -> Correction | None:
         central = _xy(state.get("central_point"))
         if central is None:
@@ -256,7 +307,9 @@ class SingleStarMethod:
         radius = float(state.get("wide_search_radius_px", 200))
 
         if coords.shape[0] == 0:
-            await self._notify_acquired(False, None, None, candidates=candidates_full)
+            await self._notify_acquired(
+                False, None, None, candidates=candidates_full, frame_phase=phase,
+            )
             return None
 
         # Filter by circular wide-search region.
@@ -265,7 +318,9 @@ class SingleStarMethod:
         in_range = (dx * dx + dy * dy) <= (radius * radius)
         idxs = np.flatnonzero(in_range)
         if idxs.size == 0:
-            await self._notify_acquired(False, None, None, candidates=candidates_full)
+            await self._notify_acquired(
+                False, None, None, candidates=candidates_full, frame_phase=phase,
+            )
             return None
 
         # Smart relock — favour the same physical star we held before.
@@ -335,6 +390,7 @@ class SingleStarMethod:
             True, pos, chosen_adu,
             candidates=candidates_full,
             recovery=last_pos is not None,
+            frame_phase=phase,
         )
 
         # Correction reference: ``guide_anchor`` (where guiding holds
@@ -372,6 +428,8 @@ class SingleStarMethod:
         coords: np.ndarray,
         adu: np.ndarray,
         candidates_full: list[tuple[float, float, float]],
+        *,
+        phase: str | None = None,
     ) -> Correction | None:
         acquired_pos = _xy(state.get("acquired_pos"))
         if acquired_pos is None:
@@ -379,7 +437,9 @@ class SingleStarMethod:
             # immediately — this isn't a transient detection miss but a
             # state-machine glitch that wide search can recover from.
             self._narrow_miss_count = 0
-            await self._notify_acquired(False, None, None, candidates=candidates_full)
+            await self._notify_acquired(
+                False, None, None, candidates=candidates_full, frame_phase=phase,
+            )
             return None
         acquired_adu = state.get("acquired_adu")
         central = _xy(state.get("central_point")) or acquired_pos
@@ -400,7 +460,7 @@ class SingleStarMethod:
             return await self._handle_narrow_miss(
                 "no detections in full frame", candidates_full,
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
-                pulse_pending=pulse_pending,
+                pulse_pending=pulse_pending, phase=phase,
             )
 
         # Spatial filter. During a multi-frame slew (drop-to-reticle,
@@ -431,7 +491,7 @@ class SingleStarMethod:
             return await self._handle_narrow_miss(
                 "no candidate in search box", candidates_full,
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
-                pulse_pending=pulse_pending,
+                pulse_pending=pulse_pending, phase=phase,
             )
 
         # ADU tolerance filter (relative to *acquired_adu*).
@@ -447,7 +507,7 @@ class SingleStarMethod:
             return await self._handle_narrow_miss(
                 "no candidate matches ADU tolerance", candidates_full,
                 hold_pos=acquired_pos, hold_adu=acquired_adu,
-                pulse_pending=pulse_pending,
+                pulse_pending=pulse_pending, phase=phase,
             )
 
         # Pick the candidate closest to the previous acquired_pos.
@@ -472,7 +532,9 @@ class SingleStarMethod:
         # consecutive-miss counter — we tolerated a few bad frames and
         # the star came back.
         self._narrow_miss_count = 0
-        await self._notify_acquired(True, new_pos, new_adu, candidates=candidates_full)
+        await self._notify_acquired(
+            True, new_pos, new_adu, candidates=candidates_full, frame_phase=phase,
+        )
 
         # Correction: the requested pixel offset to bring the star back
         # to the guide anchor (= where lock was when guiding started),
@@ -511,6 +573,7 @@ class SingleStarMethod:
         *,
         candidates: list[tuple[float, float, float]] | None = None,
         recovery: bool = False,
+        frame_phase: str | None = None,
     ) -> None:
         if self.controller is None:
             return
@@ -518,6 +581,7 @@ class SingleStarMethod:
             await self.controller.notify_acquired(
                 acquired=acquired, position=position, adu=adu,
                 candidates=candidates, recovery=recovery,
+                frame_phase=frame_phase,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("controller.notify_acquired failed: %s", exc)
@@ -530,6 +594,7 @@ class SingleStarMethod:
         hold_pos: tuple[float, float] | None = None,
         hold_adu: float | None = None,
         pulse_pending: bool = False,
+        phase: str | None = None,
     ) -> None:
         """Tolerate transient narrow-search misses without dropping the
         lock. Increment a consecutive-miss counter and only demote
@@ -572,6 +637,7 @@ class SingleStarMethod:
             # the box, vs no detections at all).
             await self._notify_acquired(
                 True, hold_pos, hold_adu, candidates=candidates_full,
+                frame_phase=phase,
             )
             return None
         # Exceeded budget — declare lost so wide-search can recover.
@@ -580,7 +646,9 @@ class SingleStarMethod:
             self._narrow_miss_count, reason,
         )
         self._narrow_miss_count = 0
-        await self._notify_acquired(False, None, None, candidates=candidates_full)
+        await self._notify_acquired(
+            False, None, None, candidates=candidates_full, frame_phase=phase,
+        )
         return None
 
     def reset(self) -> None:

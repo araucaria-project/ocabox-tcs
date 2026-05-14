@@ -655,6 +655,7 @@ class Controller:
                               adu: float | None,
                               candidates: list[tuple[float, float, float]] | None = None,
                               recovery: bool = False,
+                              frame_phase: str | None = None,
                               ) -> None:
         """Solver tells the Controller a star was (re-)acquired or lost.
 
@@ -690,6 +691,8 @@ class Controller:
             acquired_adu=adu,
             acquired_at_ts=dt_utcnow_array() if acquired else prev.acquired_at_ts,
         )
+        if frame_phase is not None:
+            update_kwargs["frame_phase"] = frame_phase
         # Refresh last-known on every successful detection — that's
         # what wide-search-after-loss reaches for. On loss leave the
         # prior values intact (the field is *the most recent good

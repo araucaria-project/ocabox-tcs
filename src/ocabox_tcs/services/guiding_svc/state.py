@@ -22,6 +22,78 @@ class Mode(StrEnum):
     LIVE = "live"  # future
 
 
+class FramePhase(StrEnum):
+    """Per-frame phase relative to the most recent issued pulse.
+
+    Derived in the Solver from ``frame.t_mid_utc`` (mid-exposure
+    timestamp) against ``active_pulse.{issued, motion_end, settled}_utc``.
+    Drives stage behaviour:
+
+    - ``TRACKING``  → no pulse in flight (or frame captured before it).
+                      Run normal narrow-search around ``acquired_pos``.
+    - ``IN_FLIGHT`` → mount is moving during this frame's exposure.
+                      Star is smeared along the trajectory. Skip
+                      detect; hold lock state; GUI draws an arrow
+                      from ``src_pos`` to ``predicted_pos``.
+    - ``SETTLING``  → motion complete, damping in progress. Skip
+                      detect (frame may catch residual oscillation).
+    - ``ACQUIRING`` → first frame whose mid-exposure is past
+                      ``settled_utc``. Star should be near
+                      ``predicted_pos``. Detect with a bracket-box
+                      around the trajectory. On hit, lock and clear
+                      ``active_pulse`` — pipeline returns to TRACKING.
+                      After N consecutive ACQUIRING misses we give up
+                      and demote to wide-search.
+    """
+    TRACKING = "tracking"
+    IN_FLIGHT = "in_flight"
+    SETTLING = "settling"
+    ACQUIRING = "acquiring"
+
+
+def classify_frame_phase(active_pulse: Any, t_mid: Any) -> "FramePhase":
+    """Compute the phase of a frame.
+
+    ``active_pulse`` is either a ``PulseEvent`` instance or its
+    ``asdict`` projection (Solver works with the dict snapshot).
+    ``None`` ⇔ no pulse in flight ⇔ ``TRACKING``.
+
+    ``t_mid`` is a Python ``datetime`` in UTC — mid-exposure timestamp
+    derived in Solver as ``dt_from_array(frame.timestamp) +
+    exp_time/2``. We accept ``None`` defensively (returns TRACKING)
+    so a malformed frame timestamp never blows up phase classification
+    upstream.
+    """
+    if active_pulse is None or t_mid is None:
+        return FramePhase.TRACKING
+    # Tolerate both dict (from to_dict) and dataclass forms.
+    if isinstance(active_pulse, dict):
+        issued = active_pulse.get("issued_utc")
+        motion_end = active_pulse.get("motion_end_utc")
+        settled = active_pulse.get("settled_utc")
+    else:
+        issued = getattr(active_pulse, "issued_utc", None)
+        motion_end = getattr(active_pulse, "motion_end_utc", None)
+        settled = getattr(active_pulse, "settled_utc", None)
+    if not (issued and motion_end and settled):
+        return FramePhase.TRACKING
+    # Lazy import keeps ``state`` lightweight for non-async callers.
+    from serverish.base import dt_from_array  # noqa: PLC0415
+    try:
+        issued_dt = dt_from_array(issued)
+        motion_end_dt = dt_from_array(motion_end)
+        settled_dt = dt_from_array(settled)
+    except Exception:  # noqa: BLE001 — malformed timestamp → safe default
+        return FramePhase.TRACKING
+    if t_mid < issued_dt:
+        return FramePhase.TRACKING
+    if t_mid < motion_end_dt:
+        return FramePhase.IN_FLIGHT
+    if t_mid < settled_dt:
+        return FramePhase.SETTLING
+    return FramePhase.ACQUIRING
+
+
 # ---------------------------------------------------------------------------
 # Sub-config dataclasses (operator-tunable)
 # ---------------------------------------------------------------------------
@@ -230,6 +302,15 @@ class PipelineState:
     transiently; operator ``set_state(exp_time=…)`` clears it back to
     None so the operator value wins until auto-exposure decides again."""
     current_roi: tuple[int, int, int, int] | None = None
+    frame_phase: str | None = None
+    """Phase of the most recently processed frame
+    (``FramePhase.value``). Updated by Solver on every iteration so
+    the UI can render mode-appropriate overlays (skip-detect arrow
+    during IN_FLIGHT/SETTLING, predicted-position search circle during
+    ACQUIRING). ``None`` means no frame has been processed yet (cold
+    start) or no acquisition history is being maintained.
+    """
+
     active_pulse: PulseEvent | None = None
     """First-class temporal record of an in-flight pulse, written by
     Enforcer at issue time, cleared by Controller on the first
