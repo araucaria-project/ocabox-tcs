@@ -197,9 +197,14 @@ class AlpacaProtocol:
             elif saw_exposing and state == CAMERA_STATE_IDLE:
                 if not first_loss_logged:
                     logger.warning(
-                        "_wait_image_ready: imageready never True but "
-                        "camerastate Exposing→Idle — another Alpaca client "
-                        "may be stealing the signal. Fetching anyway."
+                        "_wait_image_ready: camerastate transitioned "
+                        "Exposing→Idle without imageready=true (camera "
+                        "firmware quirk, transient network glitch during "
+                        "exposure, or another Alpaca client reading the "
+                        "frame first). Proceeding to fetch the buffer "
+                        "anyway — if bytes are stale or missing, the "
+                        "downstream solver will simply produce no "
+                        "detection this cycle.",
                     )
                     first_loss_logged = True
                 return

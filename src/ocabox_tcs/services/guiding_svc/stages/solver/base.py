@@ -124,8 +124,24 @@ class Solver:
                 break
 
             snapshot = self.state.snapshot().to_dict()
+
+            # Bound detection work. A pathological frame (extreme
+            # noise, partially-saturated everything, FFS internal
+            # spin) must not freeze the whole pipeline — better to
+            # drop the frame and try the next one. 5× exp_time is a
+            # generous ceiling; real detection runs in tens of ms.
+            exp_time = float(snapshot.get("exp_time", 1.0)) or 1.0
             try:
-                correction = await self.method.solve(frame, snapshot)
+                correction = await asyncio.wait_for(
+                    self.method.solve(frame, snapshot),
+                    timeout=max(5.0 * exp_time, 5.0),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Solver method timed out after %.1fs — dropping frame",
+                    max(5.0 * exp_time, 5.0),
+                )
+                continue
             except Exception as e:  # noqa: BLE001
                 logger.exception("Solver method failed: %s", e)
                 continue
@@ -136,7 +152,25 @@ class Solver:
                 avg_no = snapshot.get("corrections_avg_no", 5)
                 if len(self._recent_corrections) > avg_no:
                     self._recent_corrections = self._recent_corrections[-avg_no:]
-                await self.out_queue.put(correction)
+                # Drop-oldest on the correction queue. Real-time
+                # guiding: a stale correction from N frames ago is
+                # worse than no correction (mount has moved since;
+                # the latest frame's correction supersedes). Producer
+                # must never block on a slow Enforcer — if the queue
+                # fills, the freshest correction wins.
+                try:
+                    self.out_queue.put_nowait(correction)
+                except asyncio.QueueFull:
+                    try:
+                        self.out_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        self.out_queue.put_nowait(correction)
+                    except asyncio.QueueFull:
+                        logger.warning(
+                            "correction queue full after drain; dropping",
+                        )
 
     def averaged_correction(self) -> Correction | None:
         """Compute averaged correction over the rolling window.

@@ -220,57 +220,76 @@ Faza D (większe features):
 11. **B6 + U7**: FITS snapshot.
 12. **B9 finishing**: Phase 3 GUI timing visualization (oval, status pill).
 
-## Phase 4 (bounded waits) — konkretny szkic
+## Phase 4 — robustness by design (NOT watchdog)
 
-Implementacja `Phase 4` jest na tyle istotna że szkicuję od razu —
-operator może powiedzieć "tak, leć" bez dyskusji:
+Operator's directive (2026-05-14): nie "watchdog ratujący skutki", ale
+**eliminacja źródeł hangu by design**. Pipeline po prostu nie może się
+zawiesić bo każdy zewnętrzny await ma bounded timeout, a każda kolejka
+jest drop-oldest. Wszystkie problemy są naturalnym stanem działania,
+elegancko obsłużonym.
 
-```python
-# camera_array_collector.py
-try:
-    raw = await asyncio.wait_for(
-        self.submit_one(params),
-        timeout=max(3 * exp_time, 10.0),
-    )
-except asyncio.TimeoutError:
-    logger.warning(
-        "subscriber %s: backend submit_one timed out after %.1fs "
-        "(>= 3× exp_time); reopening protocol to clear any stuck state",
-        sub.pipeline_id, timeout,
-    )
-    await self._reopen_protocol()  # backend.protocol.close+open
-    continue
-except Exception as e:
-    ...  # existing exception path
-```
+### Zasady
 
-```python
-# manager.py — auto-recovery watchdog
-async def _watchdog_loop(self):
-    """Runs every 10s. If any pipeline's last_cycle_age > 60s while
-    mode != OFF, force pipeline reset. Logs to journal so operator
-    sees it. Counts events for metrics."""
-    while self.is_running:
-        await asyncio.sleep(10)
-        for pipe in self.pipelines.values():
-            snap = pipe.state.snapshot()
-            if snap.mode == Mode.OFF:
-                continue
-            age = pipe.runtime_snapshot().get("last_cycle_age_s")
-            if age and age > 60:
-                logger.warning(
-                    "watchdog: pipeline %s stalled (%.0fs since last "
-                    "cycle) — auto-recovering", pipe.pipeline_id, age,
-                )
-                await pipe.reset()  # close+reopen camera, restart stages
-                self._recovery_count += 1
-```
+1. **Każdy `await` na zewnętrzne IO ma explicit `asyncio.wait_for`
+   z timeoutem proporcjonalnym do exp_time (lub stałym).**
+   - Camera fetch: `3 × exp_time + 15 s` (od `submit_one` całość).
+   - Mount aput_pulseguide: `5 s` (ASCOM fire-and-forget = ms-rząd
+     w zdrowym świecie; 5 s to obrona przed stuck TIC handler).
+   - NATS publisher: `2 s` (LAN < 50 ms; 2 s to broker blip ceiling).
+   - FFS detection (in to_thread): `5 × exp_time` (pathological frame).
 
-`pipe.reset()` to nowa metoda na `Pipeline`: stop stages, close
-protocol, reopen, restart stages. State (acquired_pos, central_point
-etc) zostaje — tylko transport refresh. Operator nic nie robi.
+2. **Każda kolejka w hot-path = drop-oldest, producer NEVER blocks.**
+   - Camera → Stacker: drop-oldest ✓ (już było).
+   - Stacker → Solver: drop-oldest ✓ (dodane).
+   - Solver → Enforcer: drop-oldest ✓ (dodane). Real-time:
+     stała korekta sprzed N klatek = bezużyteczna; latest wins.
+   - Stacker → ThumbnailEmitter (tap): drop-oldest ✓ (już było).
 
-Estymata: 4-6 h coding + integracja testowa, jeden focused commit.
+3. **NATS publish failures są non-fatal.**
+   - Timeout / brokerError → log warning, skip wiadomość, pipeline jedzie.
+   - State self-healing: następna mutacja republikuje pełen stan.
+
+4. **State lock trzymany tylko nad dict-assignments, nigdy nad I/O.**
+   - Audit: `update()` w `state.py` — tylko setattr pod lock, OK.
+
+5. **Komunikaty log są szczere co do niewiedzy.**
+   - "another Alpaca client may be stealing" → wymieniona na listę
+     możliwych przyczyn z honest framing.
+
+### Stages — czego dotyka jeden commit
+
+- `stages/solver/base.py`: bounded FFS via `wait_for`, drop-oldest na
+  out_queue, log warning na drop.
+- `stages/stacker.py`: drop-oldest na primary out_queue.
+- `stages/enforcer.py`: `wait_for` wokół obu `aput_pulseguide`. Na
+  timeout: skip cooldown update (next cycle re-attempt), brak hangu.
+- `controller.py`: każdy `_publish_*` opakowany `wait_for(2s)`. Manual
+  pulse `aput_pulseguide` z `wait_for(5s)`.
+- `camera_array_collector.py`: top-level `wait_for(submit_one)` z
+  `3 × exp_time + 15s` deadline. Pokrywa wszystkie ocabox-API calls
+  które nie mają wewnętrznych timeoutów (`aput_binx`, `aput_gain`,
+  `aput_startexposure`).
+- `protocols/alpaca.py`: honest warning message.
+
+### Czego TO NIE załatwia (i dlaczego OK)
+
+- **TIC po stronie obs01 mogący wisieć**: jeśli aput_pulseguide
+  faktycznie nie wraca po 5 s, robimy log + skip pulse. Następny
+  cykl spróbuje ponownie. Operator zobaczy w journalu częstotliwość
+  timeoutów — to sygnał diagnostyczny, nie awaria.
+- **Camera reaguje powolnie raz na 100 ramek**: 3×exp_time + 15 s
+  zniwleluje normalną wolność. Patologiczne zwisy ucinamy.
+- **NATS broker reboot**: publish timeouty kilka sekund, potem
+  re-connect. State self-healing.
+
+### Czego TO NIE robi (deliberately, per operator)
+
+- ~~Manager watchdog auto-recovery~~. Wycofane — eliminujemy źródła,
+  nie maskujemy. Jeśli mimo wszystko coś się zawiesi (bug nie ujęty
+  w bounds), kara naturalna: operator zauważy DEGRADED status w UI
+  i zbada przyczynę. Robustness-by-design > recovery-after-fact.
+
+Estymata: 1 focused commit. ~150 LOC zmian rozproszonych po stages.
 
 ## Note on "drugi klient ukradł sygnał"
 

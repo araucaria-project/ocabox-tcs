@@ -438,7 +438,16 @@ class Controller:
             }
 
         # TIC pulseguide handler rejects float Duration with HTTP 400.
-        await mount.aput_pulseguide(direction=dir_code, duration=int(round(duration)))
+        # 5 s deadline matches Enforcer's autopulse path — well over a
+        # healthy round-trip but bounded against a stuck mount handler.
+        try:
+            await asyncio.wait_for(
+                mount.aput_pulseguide(direction=dir_code, duration=int(round(duration))),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("manual pulse_guide aput timed out after 5 s")
+            return {"status": "error", "error": "aput_pulseguide timeout (5 s)"}
         await self._publish_journal(
             f"manual_pulse {dir_label} {duration:.0f}ms"
         )
@@ -725,13 +734,31 @@ class Controller:
     def _snapshot_dict(self) -> dict[str, Any]:
         return self.pipeline.state.snapshot().to_dict()
 
+    # NATS publish timeout. Any single publish that takes longer than
+    # this is treated as a transient infrastructure issue (broker
+    # blip, JetStream backpressure, network glitch). We drop the
+    # message and continue rather than block the pipeline. State
+    # messages are self-healing — the next state mutation republishes
+    # everything; events are journal-style and a missed one is
+    # acceptable over a hung solver. Anything > 1 s here is already
+    # pathological in a healthy LAN.
+    _PUBLISH_TIMEOUT_S = 2.0
+
     async def _publish_state(self, snapshot_dict: dict[str, Any]) -> None:
         if self.state_publisher is None:
             return
         try:
-            await self.state_publisher.publish(
-                data=snapshot_dict,
-                meta={"message_type": "default", "sender": self.sender_id},
+            await asyncio.wait_for(
+                self.state_publisher.publish(
+                    data=snapshot_dict,
+                    meta={"message_type": "default", "sender": self.sender_id},
+                ),
+                timeout=self._PUBLISH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "state publish timed out after %.1fs — message dropped, "
+                "next mutation will republish", self._PUBLISH_TIMEOUT_S,
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("state publish failed: %s", e)
@@ -740,9 +767,17 @@ class Controller:
         if self.events_publisher is None:
             return
         try:
-            await self.events_publisher.publish(
-                data={"event": event, "payload": payload, "ts": dt_utcnow_array()},
-                meta={"message_type": "default", "sender": self.sender_id},
+            await asyncio.wait_for(
+                self.events_publisher.publish(
+                    data={"event": event, "payload": payload, "ts": dt_utcnow_array()},
+                    meta={"message_type": "default", "sender": self.sender_id},
+                ),
+                timeout=self._PUBLISH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "event publish timed out after %.1fs (event=%s) — dropped",
+                self._PUBLISH_TIMEOUT_S, event,
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("event publish failed: %s", e)
@@ -756,7 +791,12 @@ class Controller:
             # fills in timestamp/conversation_id/op to satisfy the
             # journal schema.
             method = getattr(self.journal_publisher, level, self.journal_publisher.info)
-            await method(message)
+            await asyncio.wait_for(method(message), timeout=self._PUBLISH_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "journal publish timed out after %.1fs — message: %r",
+                self._PUBLISH_TIMEOUT_S, message,
+            )
         except Exception as e:  # noqa: BLE001
             logger.exception("journal publish failed: %s", e)
 

@@ -221,11 +221,37 @@ class Enforcer:
         # 6. Issue the pulses (sequentially — the ASCOM API takes one
         # axis per call; ocabox/Alpaca handle on-the-wire serialisation).
         # TIC pulseguide handler rejects float Duration with HTTP 400.
+        #
+        # ``aput_pulseguide`` is fire-and-forget per ASCOM semantics —
+        # the call should return promptly (just hands off the command),
+        # not after the pulse duration. So a healthy round-trip is
+        # tens of milliseconds. ``wait_for(5s)`` is defensive against
+        # a TIC handler stall or transport hang: better to lose a
+        # pulse than wedge the Enforcer task forever. Lost pulses
+        # self-correct on the next frame (the solver will compute a
+        # similar correction; we'd just be one cycle late).
         wire_t0 = time.monotonic()
-        if not n_skip:
-            await self.mount.aput_pulseguide(direction=n_dir, duration=int(round(n_dur)))
-        if not e_skip:
-            await self.mount.aput_pulseguide(direction=e_dir, duration=int(round(e_dur)))
+        try:
+            if not n_skip:
+                await asyncio.wait_for(
+                    self.mount.aput_pulseguide(direction=n_dir, duration=int(round(n_dur))),
+                    timeout=5.0,
+                )
+            if not e_skip:
+                await asyncio.wait_for(
+                    self.mount.aput_pulseguide(direction=e_dir, duration=int(round(e_dur))),
+                    timeout=5.0,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "aput_pulseguide timed out after 5s — pulse may have been "
+                "issued but unconfirmed; skipping cooldown update so the "
+                "next cycle can re-attempt rather than wait blind",
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("aput_pulseguide failed: %s", e)
+            return
         wire_ms = (time.monotonic() - wire_t0) * 1000.0
         logger.info(
             "Enforcer pulse: dx=%+.2f dy=%+.2f → N(%d)=%.0fms%s E(%d)=%.0fms%s "

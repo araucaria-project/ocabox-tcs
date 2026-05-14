@@ -161,10 +161,37 @@ class CameraArrayCollector:
                 except Exception as e:  # noqa: BLE001
                     logger.exception("subscriber %s get_params failed: %s", sub.pipeline_id, e)
                     continue
+                # Bound the entire camera round-trip. The protocol's
+                # internal ``_wait_image_ready`` and ``_fetch_bytes``
+                # have their own timeouts (typically 30 s each), but
+                # the surrounding ``aput_binx`` / ``aput_gain`` /
+                # ``aput_startexposure`` calls go through ocaboxapi
+                # which doesn't expose a per-call deadline. A stuck
+                # TIC handler on any of those would freeze the camera
+                # loop indefinitely — the same failure mode that's
+                # bitten us in production. ``3 × exp_time + 15 s``
+                # gives generous headroom for a healthy long exposure
+                # plus camera-config overhead, and is short enough
+                # that the operator sees the recovery (in logs) on
+                # the same scale as their attention span. On timeout
+                # we abandon this frame, sleep briefly, and loop —
+                # the next iteration will retry from a fresh state.
+                exp_time = float(getattr(params, "exp_time", 0.0) or 0.0)
+                fetch_deadline = 3.0 * max(exp_time, 1.0) + 15.0
                 try:
-                    raw = await self.submit_one(params)
+                    raw = await asyncio.wait_for(
+                        self.submit_one(params), timeout=fetch_deadline,
+                    )
                 except asyncio.CancelledError:
                     raise
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "subscriber %s: submit_one exceeded %.1f s "
+                        "(3×exp_time + 15 s) — abandoning frame, retrying",
+                        sub.pipeline_id, fetch_deadline,
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
                 except Exception as e:  # noqa: BLE001
                     logger.exception("backend submit_one failed: %s", e)
                     await asyncio.sleep(1.0)

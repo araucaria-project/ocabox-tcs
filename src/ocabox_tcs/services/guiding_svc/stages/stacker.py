@@ -88,7 +88,26 @@ class Stacker:
                 roi=raw.roi,
                 metadata={**raw.metadata, "stacker": "passthrough_frame_iter"},
             )
-            await self.out_queue.put(analysis)
+            # Drop-oldest on the primary path too. Real-time guiding
+            # cares about freshness, not throughput — if Solver fell
+            # behind (slow FFS frame, transient hang), holding stale
+            # frames in the queue and blocking Stacker would freeze the
+            # whole pipeline, including thumbnails. By dropping the
+            # oldest the producer NEVER blocks; Solver always sees the
+            # latest available frame when it picks the queue up.
+            try:
+                self.out_queue.put_nowait(analysis)
+            except asyncio.QueueFull:
+                try:
+                    self.out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    self.out_queue.put_nowait(analysis)
+                except asyncio.QueueFull:
+                    logger.warning(
+                        "stacker out_queue full after drain; dropping frame",
+                    )
             for q in self.extra_out_queues:
                 # Non-blocking tap: drop the oldest element on full so a slow
                 # consumer (e.g. ThumbnailEmitter on contended NFS) never
