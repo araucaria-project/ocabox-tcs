@@ -234,22 +234,22 @@ class Controller:
             # we were doing" signal.
             "predicted_pos": None,
             "active_pulse": None,
+            # ``lock_at`` chooses *which star* to track, not *where*
+            # to drag it. The click is a seed for narrow search; the
+            # actual anchor is the refined centroid the next frame
+            # produces. Clearing here lets the bootstrap rule in
+            # ``notify_acquired`` set anchor = found-centroid on the
+            # very first post-click detection. Operator who wants a
+            # specific target uses ``acquire_at`` (reticle move) +
+            # ``drop_to_reticle``, not lock_at.
+            "guide_anchor": None,
         }
-        # Re-anchor in any non-OFF mode. Operator picking a star (left
-        # click) IS the explicit "track from here" signal — applies
-        # whether we're holding the star (guiding) or watching it
-        # drift (monitoring). Without this, monitoring's "last Δ"
-        # readout would jump to a huge value the moment operator
-        # locks a star far from the current reticle.
-        if snap.mode in (Mode.GUIDING, Mode.MONITORING):
-            patch["guide_anchor"] = (xv, yv)
         result = await self.set_state(patch)
         await self._publish_event(
             "lock_at_requested", {"x": xv, "y": yv}
         )
         await self._publish_journal(
-            f"lock_at requested: ({xv:.1f}, {yv:.1f})"
-            + (" (guide_anchor re-anchored)" if snap.mode == Mode.GUIDING else "")
+            f"lock_at requested: ({xv:.1f}, {yv:.1f}) — anchor will follow refined centroid"
         )
         return result
 
@@ -471,6 +471,18 @@ class Controller:
                 "direction_label": dir_label,
                 "duration_ms": duration,
             }
+
+        # A manual nudge invalidates the current "where to hold" target —
+        # the operator has explicitly moved the mount, so the previous
+        # anchor (and any in-flight auto-pulse plan from the Enforcer)
+        # no longer matches their intent. Clear all three; the bootstrap
+        # rule in ``notify_acquired`` will set a fresh anchor on the
+        # next post-pulse re-acquire (= where the star ends up).
+        await self.pipeline.state.update(
+            guide_anchor=None,
+            predicted_pos=None,
+            active_pulse=None,
+        )
 
         # TIC pulseguide handler rejects float Duration with HTTP 400.
         # 5 s deadline matches Enforcer's autopulse path — well over a
@@ -728,36 +740,57 @@ class Controller:
             # transition.
             update_kwargs["predicted_pos"] = None
             update_kwargs["active_pulse"] = None
-        # Wide-search recovery does NOT touch ``guide_anchor``.
+        # Wide-search recovery anchor logic — distance gate.
         #
-        # Earlier iteration reset anchor to the recovered position as a
-        # "safe-failure" against smart-sort grabbing the wrong star —
-        # idea was "don't drag a random star to the old anchor". In
-        # practice this broke every deliberate slew (drop_to_reticle,
-        # large lock_at): the first wide-recovery during the slew
-        # collapsed the target, leaving the star wherever it ended up
-        # mid-way. Operator saw the slew abort with anchor sitting on
-        # the partially-moved star instead of the reticle.
-        #
-        # Correct semantics: guide_anchor is the operator's target,
-        # changed only by explicit operator action (mode→GUIDING with
-        # current acquired_pos, drop_to_reticle, lock_at, mode→OFF
-        # clear). Wide-recovery just refinds the star and keeps
-        # driving it toward the existing anchor — exactly what the
-        # operator asked for. Wrong-star risk is mitigated by smart-
-        # sort using last_acquired_pos + ADU, which heavily favours
-        # the same physical star.
-        # First acquire of the session — set ``guide_anchor`` if it's
-        # still unset (mode→MONITORING from OFF without an existing
-        # lock leaves it None; the lock that just happened IS the
-        # operator's drift baseline). No-op in GUIDING since that
-        # path always pre-populates guide_anchor at mode-change.
+        # Smart-sort biases toward the same star (proximity + ADU),
+        # but no guarantee. We compare the recovered position against
+        # the expected position to decide whether to keep or reset
+        # anchor:
+        #   - expected = predicted_pos if a pulse was in flight,
+        #     else last_acquired_pos (steady-tracking loss).
+        #   - if recovered within RECOVERY_SAME_STAR_PX of expected →
+        #     same physical star, keep anchor (continue the plan).
+        #   - if further → either a different star, or mount went
+        #     somewhere we didn't expect; reset anchor to recovered
+        #     position so we don't try to drag a random star toward
+        #     an old target the operator no longer cares about.
+        # During a deliberate drop_to_reticle, this means: if timing
+        # is right we never reach this branch (narrow keeps lock through
+        # ACQUIRING); if narrow fails and wide brings the same star
+        # close to predicted_pos, anchor stays at central_point and
+        # slew continues; if wide finds something far, slew aborts
+        # and operator notices.
+        if recovery and acquired and position is not None:
+            expected = prev.predicted_pos or prev.last_acquired_pos
+            if expected is not None:
+                dx = float(position[0]) - float(expected[0])
+                dy = float(position[1]) - float(expected[1])
+                search_reg = float(getattr(prev, "search_reg_px", 25) or 25)
+                threshold_px = 2.0 * search_reg
+                if (dx * dx + dy * dy) > threshold_px * threshold_px:
+                    update_kwargs["guide_anchor"] = (float(position[0]), float(position[1]))
+                    logger.info(
+                        "wide-recovery: found at (%.1f, %.1f), expected (%.1f, %.1f), "
+                        "dist > %.1fpx — resetting anchor",
+                        position[0], position[1], expected[0], expected[1], threshold_px,
+                    )
+        # Anchor bootstrap. Whenever we hold a lock but guide_anchor is
+        # None, set it to the current acquired_pos. Covers:
+        #   - first acquire after mode→MONITORING/GUIDING from OFF (no
+        #     prior lock to snapshot from at mode-change time);
+        #   - first acquire after lock_at (which deliberately clears
+        #     anchor so the refined centroid wins over the click);
+        #   - first acquire after manual_pulse (operator nudged, the
+        #     new equilibrium IS the target);
+        #   - any other path that clears anchor.
+        # No-op once anchor is set; subsequent frames in the same
+        # session don't re-trigger.
         if (
             acquired
             and position is not None
-            and not prev.acquired
-            and prev.mode == Mode.MONITORING
             and prev.guide_anchor is None
+            and prev.mode != Mode.OFF
+            and "guide_anchor" not in update_kwargs  # already set above (wide-recovery)
         ):
             update_kwargs["guide_anchor"] = (float(position[0]), float(position[1]))
         if candidates is not None:

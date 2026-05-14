@@ -75,12 +75,20 @@ overlay odpowiedni do fazy.
 
 ### `lock_at(x, y)` — left-click na gwiazdę
 
-Operator wybiera GWIAZDĘ (do śledzenia). To **nowy plan**.
+Operator wybiera **którą gwiazdę** śledzić — NIE gdzie ją przeciągać.
+Klik jest "seed'em" do narrow-search; faktyczny anchor to centroid
+znalezionej gwiazdy (przez bootstrap w `notify_acquired`).
+
+Use-case: po drop'ie operator chce wybrać inną gwiazdę do guidingu
+(taką która nie nakłada się na dziurę). Klika koło niej. System znajduje
+gwiazdę, anchor na centroidzie. Mikro-klik 3 px obok nie wyciąga
+gwiazdy z dziury programowo.
+
 - `acquired = True`
 - `acquired_pos = (x, y)` (kliknięte, refined przy następnej klatce)
 - `acquired_adu = None`
 - `last_acquired_pos = (x, y)`, `last_acquired_adu = None`
-- **`guide_anchor = (x, y)`** (jeśli mode ≠ OFF) — nowy target = ta gwiazda.
+- **`guide_anchor = None`** — bootstrap wstawi centroid przy następnej detekcji.
 - **`active_pulse = None`**, **`predicted_pos = None`** — porzucamy poprzedni plan.
 
 ### `acquire_at(x, y)` — right-click
@@ -213,19 +221,37 @@ state.update(**update_kwargs)
 publish event/journal jeśli transition
 ```
 
-## Cykl `guide_anchor` — gdzie się zmienia, w jednym miejscu
+## Cykl `guide_anchor` — gdzie się zmienia
 
-1. **mode → GUIDING from OFF**: snapshot `acquired_pos` (jeśli locked) lub None.
-2. **mode → MONITORING from OFF**: snapshot `acquired_pos` (jeśli locked) lub None.
-3. **mode → OFF**: None.
-4. **lock_at(x, y)** (non-OFF): set `(x, y)`.
-5. **drop_to_reticle()** (GUIDING tylko): set `central_point`.
-6. **first acquire in MONITORING** (bootstrap): jeśli guide_anchor=None i acquired transitions False→True, set `position`.
-7. Eksplicit caller patch `guide_anchor=...` zawsze wygrywa.
+**Eksplicit operator action (idiomatyczne):**
 
-**Wszystkie inne ścieżki** (notify_acquired w guiding, wide-recovery,
-solver loops): **NIE zmieniają guide_anchor**. Operator jest jedynym
-źródłem zmian targetu.
+1. **mode → GUIDING/MONITORING from OFF**: snapshot `acquired_pos` jeśli
+   locked, inaczej None (bootstrap pokryje).
+2. **mode → OFF**: None.
+3. **lock_at(x, y)**: None (bootstrap pokryje refined centroidem).
+4. **drop_to_reticle()** (GUIDING tylko): set `central_point`.
+5. **manual_pulse**: None (bootstrap pokryje na pozycji post-pulse).
+
+**Automatyczne, w `notify_acquired`:**
+
+6. **Bootstrap**: `acquired AND guide_anchor is None AND mode ≠ OFF` →
+   anchor = current `acquired_pos`. Wykonuje się przy każdym pierwszym
+   detect'cie po wyczyszczeniu (lock_at, manual_pulse, świeży mode-change).
+   Idempotentne — po ustawieniu już nie wraca dopóki ktoś znowu nie wyzeruje.
+
+7. **Wide-recovery distance gate**: gdy `recovery=True` (wide-search
+   po utracie), porównaj `position` z expected:
+   - `expected = predicted_pos OR last_acquired_pos`.
+   - jeśli `dist(position, expected) ≤ 2 × search_reg_px` → ta sama gwiazda
+     w spodziewanej okolicy, **anchor zostaje** (kontynuuj plan).
+   - jeśli dalej → inna gwiazda lub mount nie tam gdzie liczono,
+     **anchor = position** (świeży baseline).
+   - jeśli `expected is None` (cold start, recovery=False) → ścieżka
+     bootstrap powyżej.
+
+**Wszystkie inne ścieżki** (notify_acquired w steady tracking,
+enforcer pulses): **NIE zmieniają guide_anchor**. Auto-pulse jest
+częścią planu, plan nie odnawia targetu.
 
 ## Cykl `active_pulse` / `predicted_pos`
 
@@ -249,27 +275,17 @@ active_pulse świeżą wartością.)
 | SETTLING | Identycznie jak IN_FLIGHT, badge "SETTLING". |
 | ACQUIRING | Box `2·search_reg_px` na `predicted_pos` (zielony dashed). Badge "ACQUIRING". |
 
-## Audyt — co aktualny kod łamie
+## Brzegowe przypadki — sprawdź mentalnie
 
-1. **`lock_at` nie czyści `active_pulse` / `predicted_pos`**. Jeśli
-   operator klika gdy puls w toku, solver dalej myśli że jest w
-   ACQUIRING, bracketuje od starego predicted_pos. Bug.
-
-2. **`drop_to_reticle` polega na enforcerze nadpisaniu active_pulse**,
-   ale jeśli enforcer ma cooldown z poprzedniego pulsa (sprzed dropa),
-   puls się nie wyda dopóki cooldown nie wygaśnie. W tym oknie
-   solver ma stary active_pulse (cudzy plan) + nowy guide_anchor.
-   Klasyfikuje ACQUIRING wg starego predicted, bracketuje wg starego
-   src_pos — szuka źle. → Też trzeba clearować przy drop.
-
-3. **Bootstrap anchor w MONITORING** (`prev.mode == MONITORING`) ma
-   subtle bug: jeśli operator startuje od GUIDING (z OFF), guide_anchor
-   ustawia się przy mode-change. Ale jeśli OFF → MONITORING → GUIDING,
-   anchor z monitoringu zostaje. To prawdopodobnie OK.
-
-4. **UI status-bar pokazuje state.guide_anchor**. Jeśli lock_at
-   pisze guide_anchor do state, UI powinno odzwierciedlić. Jeśli operator
-   widzi że "anchor nie zmienia się przy lock_at" — sprawdzić czy:
-   - lock_at faktycznie wywołuje server-side (logi),
-   - state message zawiera nowy guide_anchor (NATS reader),
-   - UI komponent re-renderuje (signal dependency).
+| Sytuacja | Co dzieje się z anchor |
+|---|---|
+| Cold start, mode → GUIDING, pierwszy wide-find brightest | Bootstrap → anchor = found centroid. |
+| Steady tracking, lock zgubione na 1 klatkę, narrow miss-budget grace, znaleziono | Anchor bez zmian (notify_acquired bez recovery). |
+| Steady tracking, lock zgubione na > 5 klatek, demote do wide, wide znajduje gwiazdę 3 px od last_pos | recovery=True, dist ≤ 2×search_reg → anchor zostaje. |
+| Steady tracking, wide znajduje inną gwiazdę 200 px od last_pos | recovery=True, dist > 2×search_reg → anchor = new position. |
+| Drop in progress, narrow przegrywa, wide znajduje gwiazdę blisko predicted_pos | recovery=True, dist ≤ → anchor (central_point) zostaje, slew kontynuuje. |
+| Drop in progress, wide znajduje gwiazdę daleko od predicted_pos | recovery=True, dist > → anchor = new position, slew aborted. |
+| Operator klika lock_at na nową gwiazdę | guide_anchor=None, predicted/active_pulse=None. Pierwszy detect → bootstrap → anchor = centroid. |
+| Operator wciska manual_pulse N (np. 100 ms) | guide_anchor=None + active_pulse=None + predicted_pos=None. Po pulsie i re-detect → bootstrap → anchor = new acquired_pos. |
+| Operator manual_pulse podczas guidingu, gwiazda nie zgubiła locka | acquired stays True, bootstrap kicks in on next notify_acquired (anchor was None) → anchor = current acquired_pos. |
+| Drop → konwerguje → operator klika inną gwiazdę | lock_at czyści wszystko, bootstrap ustawia nowy anchor. Bez interferencji z dziurą. |
