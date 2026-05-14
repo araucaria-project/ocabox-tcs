@@ -225,6 +225,15 @@ class Controller:
             # ``last_acquired_pos`` only).
             "last_acquired_pos": (xv, yv),
             "last_acquired_adu": None,
+            # Abandon any pulse plan tied to the previous lock. Without
+            # clearing, the next solver iteration would still see
+            # ``predicted_pos`` from a pulse fired BEFORE the click
+            # and bracket-search from the new ``acquired_pos`` to that
+            # stale predicted — wrong region, no detection, lock
+            # ping-pongs. Operator click is the explicit "forget what
+            # we were doing" signal.
+            "predicted_pos": None,
+            "active_pulse": None,
         }
         # Re-anchor in any non-OFF mode. Operator picking a star (left
         # click) IS the explicit "track from here" signal — applies
@@ -283,7 +292,16 @@ class Controller:
                 "error": "drop_to_reticle requires central_point to be set.",
             }
         new_anchor = (float(snap.central_point[0]), float(snap.central_point[1]))
-        await self.pipeline.state.update(guide_anchor=new_anchor)
+        # Clear any in-flight pulse plan from the prior anchor — drop
+        # is a fresh navigation order, the next enforcer iteration
+        # produces its own active_pulse against the new target.
+        # Without this, a still-set ``predicted_pos`` from a pre-drop
+        # pulse would make the solver bracket-search the wrong region.
+        await self.pipeline.state.update(
+            guide_anchor=new_anchor,
+            predicted_pos=None,
+            active_pulse=None,
+        )
         await self._publish_state(self._snapshot_dict())
         await self._publish_event(
             "drop_to_reticle",
