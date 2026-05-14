@@ -710,19 +710,25 @@ class Controller:
             # transition.
             update_kwargs["predicted_pos"] = None
             update_kwargs["active_pulse"] = None
-        # Wide-search recovery resets ``guide_anchor`` to the new lock
-        # position. Safe-failure: if smart-sort picked a wrong star we
-        # won't drag it toward an anchor that no longer corresponds to
-        # a meaningful target. Applies in GUIDING (operator may need
-        # to re-issue drop_to_reticle) and in MONITORING (drift readout
-        # now reflects the recovered star, not the old one).
-        if (
-            recovery
-            and acquired
-            and position is not None
-            and prev.mode in (Mode.GUIDING, Mode.MONITORING)
-        ):
-            update_kwargs["guide_anchor"] = (float(position[0]), float(position[1]))
+        # Wide-search recovery does NOT touch ``guide_anchor``.
+        #
+        # Earlier iteration reset anchor to the recovered position as a
+        # "safe-failure" against smart-sort grabbing the wrong star —
+        # idea was "don't drag a random star to the old anchor". In
+        # practice this broke every deliberate slew (drop_to_reticle,
+        # large lock_at): the first wide-recovery during the slew
+        # collapsed the target, leaving the star wherever it ended up
+        # mid-way. Operator saw the slew abort with anchor sitting on
+        # the partially-moved star instead of the reticle.
+        #
+        # Correct semantics: guide_anchor is the operator's target,
+        # changed only by explicit operator action (mode→GUIDING with
+        # current acquired_pos, drop_to_reticle, lock_at, mode→OFF
+        # clear). Wide-recovery just refinds the star and keeps
+        # driving it toward the existing anchor — exactly what the
+        # operator asked for. Wrong-star risk is mitigated by smart-
+        # sort using last_acquired_pos + ADU, which heavily favours
+        # the same physical star.
         # First acquire of the session — set ``guide_anchor`` if it's
         # still unset (mode→MONITORING from OFF without an existing
         # lock leaves it None; the lock that just happened IS the
