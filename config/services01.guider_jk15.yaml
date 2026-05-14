@@ -120,7 +120,13 @@ services:
     variant: services01-jk15
     bind: 0.0.0.0
     port: 8090
-    public_host: services01.oca.lan
+    # IP, not hostname. The operator may connect from outside the
+    # observatory LAN (VPN), where ``services01.oca.lan`` is not
+    # resolvable — DNS for ``oca.lan`` lives only on the internal
+    # gateway. Discovery messages publish this string verbatim into
+    # ``base_url``, and the UI relies on it being a name the browser
+    # can resolve. IP works for both LAN and VPN clients.
+    public_host: 192.168.7.45
     base_url_path: /thumbs
     index_file: /home/poweruser/src/ocabox-guider-ui/dist/ocabox-guider-ui/browser/index.html
     cache_max_age_s: 1
