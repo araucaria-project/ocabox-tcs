@@ -97,10 +97,18 @@ services:
               enabled: true
               # Match the thumbnail server's mounted directory below.
               output_dir: /storage/poweruser/thumbs/guider
-              size: [1936, 1216]
+              # Half-resolution: 968×608 ≈ 250 KB JPEGs (vs ~1.9 MB at
+              # full-res). Operators on VPN couldn't keep up with the
+              # 4 fps cadence at the full size — each fetch took longer
+              # than the gap between frames, image stayed frozen
+              # despite metadata advancing. Sub-pixel star positions
+              # in the UI come from the solver (which sees the full
+              # 1936 sensor), so overlay accuracy is unaffected;
+              # operator just gets a softer bitmap when they zoom.
+              size: [968, 608]
               every_n: 1
               latest_link: true
-              quality: 92
+              quality: 80
               max_files: 200
 
   # ──────────────────────────────────────────────────────────────────
