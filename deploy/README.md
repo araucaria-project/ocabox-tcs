@@ -95,17 +95,25 @@ After upstream changes are pushed:
         cd ~/src/ocabox-tcs   && git pull && \
         ~/.local/bin/poetry install --extras "cli guider oca" --sync && \
         cd ~/src/ocabox-guider-ui && git pull && \
+        rm -f node_modules && rm -rf /storage/poweruser/node_modules/ocabox-guider-ui && \
         export PATH=$HOME/local/node/bin:$PATH && \
         npm ci && npx ng build --configuration production && \
-        rm -rf /storage/poweruser/node_modules/ocabox-guider-ui && \
         mv node_modules /storage/poweruser/node_modules/ocabox-guider-ui && \
         ln -sfn /storage/poweruser/node_modules/ocabox-guider-ui node_modules && \
         sudo systemctl restart oca_guider_jk15'
 
+Order matters: `ng build` must run **before** `mv … → symlink`. Node
+resolves modules along the *real path* (not the symlinked one), so
+once `node_modules` is a symlink into `/storage/poweruser/...`, the
+walk-up from `<storage>/.../@angular/cli/lib/init.js` never finds the
+peer `node_modules/semver` directory the CLI needs. Build fails with
+`Cannot find module 'semver'`. Always: clean → npm ci (real
+node_modules in source tree) → ng build → mv → symlink.
+
 `npm ci` (and `npm install`) **deletes** the `node_modules` symlink and
 recreates it as a real directory on `/`, eating ~430 MB of root disk.
-The three-line dance after the build moves it back onto `/storage` and
-re-symlinks. If you skip it, root partition fills within a few updates.
+The dance after the build moves it back to `/storage` and re-symlinks.
+If you skip it, root partition fills within a few updates.
 
 If `pyproject.toml` changed (new/updated dep), run `poetry lock` first
 on services01 — the lockfile committed in the repo may be ahead of /
