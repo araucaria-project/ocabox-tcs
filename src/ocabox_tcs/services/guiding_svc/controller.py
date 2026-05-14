@@ -64,19 +64,30 @@ class Controller:
             coerced["current_exp_time"] = None
         prev_snap = self.pipeline.state.snapshot()
         prev_mode = prev_snap.mode
-        # Guide-anchor lifecycle: snapshot ``acquired_pos`` as the lock
-        # target the moment guiding turns on; clear when leaving guiding.
-        # Operator's mental model "hold star where I locked it" works
-        # without manual setup. ``central_point`` stays free for the
-        # operator's target reticle (eventually drives pulse-slew).
-        # If a caller sets ``guide_anchor`` explicitly in the same patch,
-        # that wins (future pulse-slew use case).
+        # Guide-anchor lifecycle: ``guide_anchor`` is the drift
+        # reference used by the solver to compute correction.dx/dy in
+        # both MONITORING and GUIDING modes. Without it, monitoring
+        # falls back to ``central_point`` (the reticle) and "drift"
+        # is measured from where the operator's *target* is, not
+        # from where the star actually is — confusing on screen
+        # (chart looks fine because it has its own snapshot logic,
+        # but the textual "last Δ" readout doesn't match).
+        #
+        # Semantics:
+        # - mode → GUIDING: snapshot current acquired_pos (operator
+        #   said "hold the star where it is right now").
+        # - mode → MONITORING: same as GUIDING — snapshot if we have
+        #   a lock; otherwise wait for first acquire to do it (see
+        #   ``notify_acquired``).
+        # - mode → OFF: clear (session boundary).
+        # - explicit caller patch (e.g. drop_to_reticle): wins.
         if "mode" in coerced and "guide_anchor" not in coerced:
             new_mode = coerced["mode"]
-            if new_mode == Mode.GUIDING and prev_mode != Mode.GUIDING:
+            if new_mode in (Mode.GUIDING, Mode.MONITORING) \
+                    and prev_mode not in (Mode.GUIDING, Mode.MONITORING):
                 if prev_snap.acquired and prev_snap.acquired_pos is not None:
                     coerced["guide_anchor"] = tuple(prev_snap.acquired_pos)
-            elif new_mode != Mode.GUIDING and prev_mode == Mode.GUIDING:
+            elif new_mode == Mode.OFF and prev_mode != Mode.OFF:
                 coerced["guide_anchor"] = None
         # Mode → OFF is a session boundary — drop the wide-search
         # fingerprint so the next time we light up, we don't try to
@@ -215,7 +226,13 @@ class Controller:
             "last_acquired_pos": (xv, yv),
             "last_acquired_adu": None,
         }
-        if snap.mode == Mode.GUIDING:
+        # Re-anchor in any non-OFF mode. Operator picking a star (left
+        # click) IS the explicit "track from here" signal — applies
+        # whether we're holding the star (guiding) or watching it
+        # drift (monitoring). Without this, monitoring's "last Δ"
+        # readout would jump to a huge value the moment operator
+        # locks a star far from the current reticle.
+        if snap.mode in (Mode.GUIDING, Mode.MONITORING):
             patch["guide_anchor"] = (xv, yv)
         result = await self.set_state(patch)
         await self._publish_event(
@@ -690,17 +707,30 @@ class Controller:
             # transition.
             update_kwargs["predicted_pos"] = None
             update_kwargs["active_pulse"] = None
-        # Wide-search recovery in guiding mode resets ``guide_anchor``
-        # to the new lock position. Safe-failure: if smart-sort picked
-        # a wrong star we won't drag it toward an anchor that no longer
-        # corresponds to a meaningful target. If smart-sort picked the
-        # right star (likely with proximity + ADU match), the operator
-        # interrupted ``drop_to_reticle`` mid-flight and can re-issue.
+        # Wide-search recovery resets ``guide_anchor`` to the new lock
+        # position. Safe-failure: if smart-sort picked a wrong star we
+        # won't drag it toward an anchor that no longer corresponds to
+        # a meaningful target. Applies in GUIDING (operator may need
+        # to re-issue drop_to_reticle) and in MONITORING (drift readout
+        # now reflects the recovered star, not the old one).
         if (
             recovery
             and acquired
             and position is not None
-            and prev.mode == Mode.GUIDING
+            and prev.mode in (Mode.GUIDING, Mode.MONITORING)
+        ):
+            update_kwargs["guide_anchor"] = (float(position[0]), float(position[1]))
+        # First acquire of the session — set ``guide_anchor`` if it's
+        # still unset (mode→MONITORING from OFF without an existing
+        # lock leaves it None; the lock that just happened IS the
+        # operator's drift baseline). No-op in GUIDING since that
+        # path always pre-populates guide_anchor at mode-change.
+        if (
+            acquired
+            and position is not None
+            and not prev.acquired
+            and prev.mode == Mode.MONITORING
+            and prev.guide_anchor is None
         ):
             update_kwargs["guide_anchor"] = (float(position[0]), float(position[1]))
         if candidates is not None:
