@@ -314,8 +314,6 @@ async def test_publishers_return_none_without_messenger():
     assert conn.state_publisher("cam_test", "mon") is None
     assert conn.events_publisher("cam_test", "mon") is None
     assert conn.journal_publisher("cam_test", "mon") is None
-    assert conn.correction_publisher("cam_test", "mon") is None
-    assert conn.camera_active_correction_publisher("cam_test") is None
     assert conn.thumbnail_notification_publisher("cam_test") is None
 
 
@@ -334,9 +332,6 @@ def test_subject_builders_follow_naming_convention():
     )
     assert conn.publish_subject("guiding", "state") == (
         "svc.publish.guider.jk15.guider_beso.pipeline.guiding.state"
-    )
-    assert conn.telemetry_subject("guiding", "correction") == (
-        "svc.telemetry.guider.jk15.guider_beso.pipeline.guiding.correction"
     )
 
 

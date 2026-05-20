@@ -142,4 +142,17 @@ config/services.yaml
 # Local test FITS artifacts (produced by ad-hoc smoke probes)
 /guider_beso_*.fits
 
+# Housekeeping — local-only working docs and ephemeral artifacts.
+# - local/: working notes, drafts, things the operator wants to keep
+#   on disk but not publish to git.
+# - tmp/: screenshots, scratch logs, temp dumps; safe to delete.
+# Anything under either tree is invisible to git.
+/local/
+/tmp/
+
+# Stray root-level screenshots from debugging sessions. They belong
+# under tmp/screenshots/ — this catch prevents accidental commits if
+# someone drops one at the repo root again.
+/*.png
+
 

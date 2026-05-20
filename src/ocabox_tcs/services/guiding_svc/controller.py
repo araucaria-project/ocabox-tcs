@@ -64,6 +64,7 @@ class Controller:
             coerced["current_exp_time"] = None
         prev_snap = self.pipeline.state.snapshot()
         prev_mode = prev_snap.mode
+        prev_method = prev_snap.method
         # Guide-anchor lifecycle: ``guide_anchor`` is the drift
         # reference used by the solver to compute correction.dx/dy in
         # both MONITORING and GUIDING modes. Without it, monitoring
@@ -113,6 +114,33 @@ class Controller:
                 "mode_changed",
                 {"from": prev_mode.value, "to": new_mode_obj.value},
             )
+        # Method switch — only take action when the *method name* actually
+        # changed; ``method_params`` re-publishes touch the field but
+        # don't warrant an instance swap. Pipeline.swap_method
+        # instantiates the new method from the registry and hot-swaps it
+        # on the live Solver; the operator's ``set_state({"method":...})``
+        # therefore takes effect on the very next frame.
+        if "method" in coerced and coerced["method"] != prev_method:
+            try:
+                self.pipeline.swap_method(
+                    coerced["method"],
+                    coerced.get(
+                        "method_params",
+                        self.pipeline.state.snapshot().method_params,
+                    ),
+                )
+                await self._publish_event(
+                    "method_changed",
+                    {"from": prev_method, "to": coerced["method"]},
+                )
+                await self._publish_journal(
+                    f"method changed: {prev_method} → {coerced['method']}"
+                )
+            except ValueError as e:
+                logger.warning("method swap failed: %s", e)
+                await self._publish_journal(
+                    f"method swap failed: {e}", level="warning"
+                )
         return new_state
 
     async def set_mode(self, mode: Mode | str) -> dict[str, Any]:

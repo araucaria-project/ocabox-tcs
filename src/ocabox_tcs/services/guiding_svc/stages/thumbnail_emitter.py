@@ -107,10 +107,22 @@ class ThumbnailEmitter:
                 continue
 
             try:
-                path, dims = await asyncio.to_thread(self._write_thumbnail, frame)
+                path, thumb_dims = await asyncio.to_thread(self._write_thumbnail, frame)
             except Exception as e:  # noqa: BLE001
                 logger.exception("thumbnail write failed: %s", e)
                 continue
+
+            # ``dimensions`` is the coordinate domain consumers (UI overlays,
+            # centroid scatter, reticle SVG viewBox) must use — i.e. the
+            # source frame shape, not the rendered JPEG size. When
+            # ``thumbnails.size`` is configured smaller than the sensor
+            # (operator-chosen JPEG downsample), the two diverge by a
+            # constant factor; consumers anchor on the sensor frame and
+            # rescale the bitmap visually via the SVG ``image`` element's
+            # ``naturalWidth``/``Height``. ``thumbnail_shape`` is exposed
+            # for transparency only.
+            h, w = frame.array.shape[:2]
+            sensor_dims = (int(w), int(h))
 
             self._kept_seq += 1
             if self.notification_publisher is not None:
@@ -122,7 +134,8 @@ class ThumbnailEmitter:
                     "frame_ts": frame.timestamp,
                     "exp_time_total": frame.exp_time_total,
                     "n_stacked": frame.n_stacked,
-                    "dimensions": list(dims),
+                    "dimensions": list(sensor_dims),
+                    "thumbnail_shape": list(thumb_dims),
                     "instance": self.instance,
                     "pipeline_id": self.pipeline_id,
                 }

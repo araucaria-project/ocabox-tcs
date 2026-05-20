@@ -22,6 +22,8 @@ from urllib.parse import urlencode
 import aiohttp
 from serverish.base import dt_utcnow_array
 
+from ocaboxapi.exceptions import OcaboxAccessDenied, OcaboxServerError
+
 from ocabox_tcs.services.guiding_svc._borrowed.ofp.alpaca_http import (
     AlpacaFetchError,
     fetch_imagearray,
@@ -95,6 +97,18 @@ class AlpacaProtocol:
         self._txn_counter = 0
         self._session: aiohttp.ClientSession | None = None
 
+        # Last (attempted) driver-side state per parameter. _apply_settings
+        # skips the PUT when the requested value matches the cache,
+        # otherwise pushes and updates the cache regardless of success —
+        # the latter prevents retry-storms at frame rate when the driver
+        # consistently rejects a value (out-of-range gain, wrong binning
+        # mode). A successful apply at a new value will then unblock
+        # subsequent attempts naturally. Cleared on close() so reopening
+        # after a driver restart re-pushes everything.
+        self._applied_gain: int | None = None
+        self._applied_binx: int | None = None
+        self._applied_biny: int | None = None
+
     @property
     def name(self) -> str:
         return f"alpaca({self.url}#camera/{self.device_number})"
@@ -118,6 +132,12 @@ class AlpacaProtocol:
         if self._session is not None:
             await self._session.close()
             self._session = None
+        # Forget cached driver state — a fresh open() may face a
+        # restarted driver whose actual settings differ from what we
+        # last observed.
+        self._applied_gain = None
+        self._applied_binx = None
+        self._applied_biny = None
 
     async def fetch(
         self,
@@ -169,14 +189,55 @@ class AlpacaProtocol:
         binning: int | tuple[int, int],
         gain: int | None,
     ) -> None:
+        """Push gain/binning to the driver only when they actually change.
+
+        Re-pushing every frame is wasteful (a 2 Hz pipeline issues
+        ~6 redundant PUTs/s when settings are stable) and creates a
+        contention window with any other Alpaca client that's reading
+        the same camera.
+
+        Gain vs binning failure handling is deliberately asymmetric:
+
+        - **Gain** is a photometric scaling — a driver rejection (value
+          out of range, mode-index vs numeric mismatch) only affects
+          brightness, not geometry. Soft-fail: log a warning, cache the
+          attempted value to suppress retry storms at frame rate, and
+          let the fetch continue at whatever gain the camera currently
+          has. Operator must change the config (or restart) to force
+          another attempt.
+
+        - **Binning** changes the coordinate domain of every downstream
+          consumer (centroid, ``central_point``, ``guide_anchor``, the
+          jacobian). A silent bin mismatch turns ~1 px drift into ~2 px
+          pulse responses — exactly the failure mode where the system
+          looks healthy but corrections diverge. We **must not** soft-
+          fail here; let the exception propagate, fail the fetch, and
+          surface ``degraded`` to the operator so they can intervene.
+        """
         if isinstance(binning, tuple):
             binx, biny = binning
         else:
             binx = biny = binning
-        if gain is not None:
-            await self.ocabox_camera.aput_gain(gain)
-        await self.ocabox_camera.aput_binx(binx)
-        await self.ocabox_camera.aput_biny(biny)
+
+        if gain is not None and gain != self._applied_gain:
+            await self._try_put_gain(gain)
+            self._applied_gain = gain
+        if binx != self._applied_binx:
+            await self.ocabox_camera.aput_binx(binx)
+            self._applied_binx = binx
+        if biny != self._applied_biny:
+            await self.ocabox_camera.aput_biny(biny)
+            self._applied_biny = biny
+
+    async def _try_put_gain(self, value: int) -> None:
+        try:
+            await self.ocabox_camera.aput_gain(value)
+        except (OcaboxServerError, OcaboxAccessDenied) as e:
+            logger.warning(
+                "AlpacaProtocol(%s): driver rejected gain=%s — %s. "
+                "Continuing with current driver gain.",
+                self.instance_id, value, e,
+            )
 
     async def _wait_image_ready(self, exp_time: float) -> None:
         """Poll ``imageready`` or the ``camerastate`` 2 → 0 transition.

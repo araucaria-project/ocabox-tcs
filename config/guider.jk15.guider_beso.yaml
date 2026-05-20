@@ -144,6 +144,19 @@ services:
               # aperture_radius: 6     # default = round(2 * fwhm); 6 px
                                        # for fwhm=3 → 13×13 box.
 
+            # Method-specific param sets. The Controller swaps the method
+            # at runtime via set_state({"method": "fiber_photocentroid",
+            # "method_params": {...}}) — UI dispatches when the operator
+            # picks a method in the radio. Keep these blocks here so the
+            # UI (or a future "preset" picker) can load the right defaults
+            # when switching. Not consumed automatically; informational.
+            fiber_method_params:
+              fiber_radius_px: 5.0           # geometric hole radius (px)
+              analysis_radius_px: 15.0       # window half-size around reticle
+              adu_sigma_threshold: 3.0       # detection gate (σ above bg)
+              hole_zone_factor: 2.0          # ramp ends at fib_r·factor
+              saturation_adu: 62000.0        # same as single_star — clip plateau
+
             # Pulse-guide model — calibrated 2026-05-07 on jk15 BESO.
             #
             # Method: scripts/calibration_session.py runs N/S/E/W probes

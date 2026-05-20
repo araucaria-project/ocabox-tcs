@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from ocaboxapi.exceptions import OcaboxServerError
+
 from ocabox_tcs.services.guiding_svc._borrowed.ofp.alpaca_http import (
     AlpacaFetchError,
 )
@@ -195,6 +197,107 @@ async def test_apply_settings_handles_tuple_binning():
     await p._apply_settings(binning=(2, 3), gain=None)
     cam.aput_binx.assert_awaited_once_with(2)
     cam.aput_biny.assert_awaited_once_with(3)
+
+
+@pytest.mark.asyncio
+async def test_apply_settings_skips_unchanged_values():
+    """A 2 Hz pipeline must not re-push static gain/binning every frame —
+    that's six redundant PUTs per second and an open window for a sister
+    Alpaca client to collide with us mid-config."""
+    cam = _make_ocabox_camera()
+    p = AlpacaProtocol(
+        instance_id="x", url="http://x", device_number=0, ocabox_camera=cam
+    )
+    await p._apply_settings(binning=1, gain=100)
+    await p._apply_settings(binning=1, gain=100)
+    await p._apply_settings(binning=1, gain=100)
+    cam.aput_gain.assert_awaited_once_with(100)
+    cam.aput_binx.assert_awaited_once_with(1)
+    cam.aput_biny.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_apply_settings_pushes_changed_values():
+    cam = _make_ocabox_camera()
+    p = AlpacaProtocol(
+        instance_id="x", url="http://x", device_number=0, ocabox_camera=cam
+    )
+    await p._apply_settings(binning=1, gain=100)
+    await p._apply_settings(binning=2, gain=200)
+    assert cam.aput_gain.await_count == 2
+    cam.aput_gain.assert_any_await(100)
+    cam.aput_gain.assert_any_await(200)
+    cam.aput_binx.assert_any_await(1)
+    cam.aput_binx.assert_any_await(2)
+
+
+@pytest.mark.asyncio
+async def test_apply_settings_soft_fails_on_driver_rejection(caplog):
+    """The BESO scenario: driver rejects ``gain=200`` with Alpaca 2002.
+    The fetch shouldn't die — solver should still see a frame at the
+    camera's current gain rather than starve for cycles."""
+    cam = _make_ocabox_camera()
+    cam.aput_gain = AsyncMock(side_effect=OcaboxServerError("PUT gain: 2002"))
+    p = AlpacaProtocol(
+        instance_id="jk15-beso", url="http://x", device_number=0, ocabox_camera=cam
+    )
+    import logging
+    with caplog.at_level(logging.WARNING, logger="alpaca"):
+        await p._apply_settings(binning=1, gain=200)
+    cam.aput_binx.assert_awaited_once_with(1)
+    assert any("driver rejected gain=200" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_apply_settings_binning_failure_propagates():
+    """Asymmetric to gain: a bin mismatch silently halves the jacobian
+    (centroid in array-px, but jacobian calibrated for sensor-px). We
+    deliberately do NOT swallow this — the fetch must die so the
+    pipeline goes ``degraded`` and the operator sees something is off."""
+    cam = _make_ocabox_camera()
+    cam.aput_binx = AsyncMock(side_effect=OcaboxServerError("PUT binx: 1004"))
+    p = AlpacaProtocol(
+        instance_id="x", url="http://x", device_number=0, ocabox_camera=cam
+    )
+    with pytest.raises(OcaboxServerError):
+        await p._apply_settings(binning=1, gain=None)
+
+
+@pytest.mark.asyncio
+async def test_apply_settings_caches_failed_value_to_avoid_retry_storm():
+    """Same rejected value at frame rate must NOT keep hitting the driver
+    — operator's config is wrong, retrying 2 Hz is just log spam and
+    contention. Cache is cleared only by a value change or close()."""
+    cam = _make_ocabox_camera()
+    cam.aput_gain = AsyncMock(side_effect=OcaboxServerError("PUT gain: 2002"))
+    p = AlpacaProtocol(
+        instance_id="x", url="http://x", device_number=0, ocabox_camera=cam
+    )
+    for _ in range(5):
+        await p._apply_settings(binning=1, gain=200)
+    cam.aput_gain.assert_awaited_once_with(200)
+
+
+@pytest.mark.asyncio
+async def test_close_resets_settings_cache():
+    """A driver restart between sessions may forget our gain/bin —
+    next open() must re-apply rather than trust the cached state."""
+    cam = _make_ocabox_camera()
+    p = AlpacaProtocol(
+        instance_id="x", url="http://x", device_number=0, ocabox_camera=cam
+    )
+    await p.open()
+    await p._apply_settings(binning=1, gain=100)
+    await p.close()
+    cam.aput_gain.reset_mock()
+    cam.aput_binx.reset_mock()
+    cam.aput_biny.reset_mock()
+    await p.open()
+    await p._apply_settings(binning=1, gain=100)
+    cam.aput_gain.assert_awaited_once_with(100)
+    cam.aput_binx.assert_awaited_once_with(1)
+    cam.aput_biny.assert_awaited_once_with(1)
+    await p.close()
 
 
 @pytest.mark.asyncio

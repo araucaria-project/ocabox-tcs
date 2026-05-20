@@ -4,11 +4,10 @@ Subject scheme (configurable prefix; default ``svc``):
 
     <prefix>.rpc.<service>.<instance>.pipeline.<pipe>.v1.<cmd>
     <prefix>.publish.<service>.<instance>.pipeline.<pipe>.{state,events,journal}
-    <prefix>.telemetry.<service>.<instance>.pipeline.<pipe>.correction
-    <prefix>.telemetry.<service>.<instance>.active.correction
+    <prefix>.publish.<service>.<instance>.frame.thumbnail.ready
 
-The ``<kind>`` segment (``rpc`` / ``publish`` / ``telemetry`` / ``heartbeat``)
-is placed early so JetStream streams can be configured per kind.
+The ``<kind>`` segment (``rpc`` / ``publish`` / ``heartbeat``) is placed
+early so JetStream streams can be configured per kind.
 """
 
 from __future__ import annotations
@@ -85,9 +84,99 @@ class NatsConn:
             self.svc_logger.warning(
                 "NatsConn: Messenger not open — RPCs and publishing unavailable"
             )
+            return
         self.svc_logger.debug(
             "NatsConn opened (root=%s.<kind>.%s.%s)",
             self.subject_prefix, self.service, self.instance,
+        )
+        await self._verify_streams()
+
+    async def _verify_streams(self) -> None:
+        """Verify each subject we'll publish to is covered by a JetStream
+        stream — fail loudly at startup if it isn't.
+
+        Why this is a hard startup check, not a runtime warning:
+        ``serverish.MsgPublisher`` catches ``NoStreamResponseError`` and
+        ``NoRespondersError`` at DEBUG level (the "no subscribers yet, ok
+        for non-jetstream" path). For our service every publish IS meant
+        for a JetStream stream — losing them is data loss, not a polite
+        no-op. A service that runs and silently drops state / journal /
+        telemetry is *worse* than one that fails to start: the operator
+        thinks the system works, the UI shows zero updates, the dashboards
+        stay blank. Catch this at the configuration boundary, not at
+        runtime — fail to start, with the exact subject + remedy in the
+        error message.
+
+        Implementation: NATS' ``$JS.API.STREAM.NAMES`` API takes a
+        ``subject`` filter and returns the streams covering it. We use
+        the camera_id of the *first* configured camera as a representative
+        instance for subject probing — the wildcard semantics mean the
+        same coverage applies to siblings.
+        """
+        from nats.aio.client import Client as NATS  # noqa: PLC0415
+        import json  # noqa: PLC0415
+
+        # Pick a representative instance suffix. The actual instance varies
+        # per camera, but JetStream-stream coverage is wildcarded
+        # (svc.publish.> etc.) so the suffix doesn't matter for the check.
+        probe_suffix = f"{self.instance}.probe"
+        probes = [
+            ("state", f"{self.subject_prefix}.publish.{self.service}."
+                      f"{probe_suffix}.pipeline.x.state"),
+            ("events", f"{self.subject_prefix}.publish.{self.service}."
+                       f"{probe_suffix}.pipeline.x.events"),
+            ("journal", f"{self.subject_prefix}.publish.{self.service}."
+                        f"{probe_suffix}.pipeline.x.journal"),
+            ("thumbnail_ready", f"{self.subject_prefix}.publish.{self.service}."
+                                f"{probe_suffix}.frame.thumbnail.ready"),
+        ]
+
+        # Borrow the open NATS connection from the singleton Messenger so
+        # we don't open a second one just for this probe.
+        nc: NATS = Messenger().connection.nc
+        missing: list[tuple[str, str]] = []
+        for label, subj in probes:
+            try:
+                resp = await nc.request(
+                    "$JS.API.STREAM.NAMES",
+                    json.dumps({"subject": subj}).encode(),
+                    timeout=2.0,
+                )
+                data = json.loads(resp.data.decode())
+                if not data.get("streams"):
+                    missing.append((label, subj))
+            except Exception as e:  # noqa: BLE001
+                # Network blip or JetStream not enabled — treat as missing
+                # so the operator sees something rather than a "service
+                # started, where's my data?" puzzle.
+                self.svc_logger.error(
+                    "NatsConn: stream-coverage probe failed for %s (%s): %s",
+                    label, subj, e,
+                )
+                missing.append((label, subj))
+
+        if missing:
+            details = "\n".join(
+                f"  - {label!r}: {subj}" for label, subj in missing
+            )
+            raise RuntimeError(
+                "NatsConn: required JetStream streams are missing — the "
+                "service refuses to start because messages published to "
+                "these subjects would be silently dropped, leaving the UI "
+                "and downstream consumers with no data.\n\n"
+                f"Uncovered subjects ({len(missing)}):\n{details}\n\n"
+                "Fix: run the oca_nats_config streams updater against this "
+                "NATS server. From the oca_nats_config checkout:\n"
+                "  poetry run build\n"
+                "(adjust NATS host/port via that repo's config.yaml if "
+                "needed). For the dev docker NATS image the file storage "
+                "is reset on container restart — re-run the updater after "
+                "any nats container recreate."
+            )
+
+        self.svc_logger.info(
+            "NatsConn: verified JetStream coverage for %d publish subjects",
+            len(probes),
         )
 
     async def close(self) -> None:
@@ -110,9 +199,6 @@ class NatsConn:
 
     def publish_subject(self, pipe_id: str, leaf: str) -> str:
         return f"{self._root('publish')}.pipeline.{pipe_id}.{leaf}"
-
-    def telemetry_subject(self, pipe_id: str, leaf: str) -> str:
-        return f"{self._root('telemetry')}.pipeline.{pipe_id}.{leaf}"
 
     # ------------------------------------------------------------------
     # RPC registration
@@ -209,17 +295,6 @@ class NatsConn:
         if not self.is_available:
             return None
         return get_publisher(self.publish_subject(pipe_id, "state"))
-
-    def correction_publisher(self, cam_id: str, pipe_id: str) -> Any | None:
-        if not self.is_available:
-            return None
-        return get_publisher(self.telemetry_subject(pipe_id, "correction"))
-
-    def camera_active_correction_publisher(self, cam_id: str) -> Any | None:
-        """Per-camera active correction (decision #6)."""
-        if not self.is_available:
-            return None
-        return get_publisher(f"{self._root('telemetry')}.active.correction")
 
     def thumbnail_notification_publisher(self, cam_id: str) -> Any | None:
         """Notifies that a new thumbnail is available on the NFS share.

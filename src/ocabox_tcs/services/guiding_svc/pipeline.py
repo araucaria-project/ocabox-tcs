@@ -111,6 +111,40 @@ class Pipeline:
     def pipeline_id(self) -> str:
         return self.state.snapshot().pipeline_id
 
+    def swap_method(self, method_name: str, method_params: dict[str, Any]) -> None:
+        """Replace the active solver method at runtime.
+
+        Used when the operator toggles between methods in the UI (e.g.
+        ``single_star`` ↔ ``fiber_photocentroid``). The Solver task keeps
+        running on the same queues; only the per-frame algorithm changes.
+
+        Lookups + instantiation use the global ``METHODS`` registry. The
+        new method receives the same controller hook as the old one, so
+        ``notify_acquired`` continues to flow.
+
+        Side effects:
+        - Solver task continues processing whatever frame it's already
+          mid-flight on with the OLD method (~one frame of lag).
+        - Method-internal state is gone (no transfer); the new method
+          treats the very next frame as a cold start. Acceptable —
+          fiber/single share PipelineState (acquired/anchor/etc.) and
+          method-internal state was tiny (narrow-miss counter etc.).
+        """
+        from ocabox_tcs.services.guiding_svc.stages.solver.methods import METHODS  # noqa: PLC0415
+        cls = METHODS.get(method_name)
+        if cls is None:
+            raise ValueError(f"Unknown solver method {method_name!r}")
+        new_method = cls(**(method_params or {}))
+        self.method = new_method
+        if hasattr(self._solver, "method"):
+            self._solver.method = new_method
+        if hasattr(self._solver, "_controller") and hasattr(new_method, "controller"):
+            new_method.controller = self._solver._controller
+        logger.info(
+            "Pipeline %s method swapped → %s (params keys: %s)",
+            self.pipeline_id, method_name, list((method_params or {}).keys()),
+        )
+
     async def start(self) -> None:
         if self._started:
             return

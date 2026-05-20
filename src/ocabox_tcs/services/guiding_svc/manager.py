@@ -545,7 +545,6 @@ class GuiderManager:
                     "state": nc.publish_subject(pipe_id, "state"),
                     "events": nc.publish_subject(pipe_id, "events"),
                     "journal": nc.publish_subject(pipe_id, "journal"),
-                    "correction": nc.telemetry_subject(pipe_id, "correction"),
                 },
                 "rpcs": list(RPC_COMMANDS),
             })
@@ -559,7 +558,6 @@ class GuiderManager:
                 "started_at": self._started_at,
                 "subjects": {
                     "thumbnail_ready": f"{nc._root('publish')}.frame.thumbnail.ready",
-                    "active_correction": f"{nc._root('telemetry')}.active.correction",
                 },
                 "pipelines": pipelines,
             }
