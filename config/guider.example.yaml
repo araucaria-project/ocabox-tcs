@@ -49,7 +49,7 @@ services:
             queue_depth: 4
 
           - id: guide_off
-            mode: off                  # operator opts in via RPC set_mode
+            mode: "off"                # quoted — bare ``off`` is YAML boolean False; operator opts in via RPC set_mode
             method: dummy
             exp_time: 0.5
             stacking_count: 1

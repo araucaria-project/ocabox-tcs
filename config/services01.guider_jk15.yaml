@@ -51,7 +51,16 @@ services:
             transpose: true
         pipelines:
           - id: mon
-            mode: monitoring
+            # Default on service restart is `off` — the camera idles, no
+            # frames flow, no corrections issued. The operator switches
+            # to `monitoring` (frames + solver, no pulses) and then
+            # `guiding` from the UI. Rationale: a service restart is
+            # rarely intended; if it happens mid-night, the operator
+            # discovers the situation by status panel rather than by
+            # the mount suddenly executing pulses against a stale
+            # anchor. Also frees the camera for a second observer if
+            # the guider was restarted opportunistically.
+            mode: "off"   # quoted — YAML 1.1 maps bare ``off`` to boolean False
             method: single_star
             selection_policy: closest_excluding_zone
 
