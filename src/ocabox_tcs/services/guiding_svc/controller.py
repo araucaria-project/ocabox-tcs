@@ -805,8 +805,24 @@ class Controller:
             # TRACKING phase. Keeping them in lock-step avoids any
             # consumer reading half-stale state during the Phase 2
             # transition.
-            update_kwargs["predicted_pos"] = None
-            update_kwargs["active_pulse"] = None
+            #
+            # Don't clear during IN_FLIGHT / SETTLING: in those phases
+            # the solver calls ``notify_acquired`` with the previous
+            # frame's ``acquired/position`` snapshot purely to keep the
+            # UI's last-known marker visible and swap the phase pill —
+            # not because we actually re-acquired. Clearing
+            # ``active_pulse`` here would prematurely end the trajectory
+            # phase before the ACQUIRING frame arrives, which then
+            # cannot log the jacobian residual (no source pulse data
+            # left to diff against) and the UI loses the predicted-pos
+            # arrow mid-flight. Only TRACKING and ACQUIRING are real
+            # measurements; only they should clear.
+            if frame_phase not in (
+                FramePhase.IN_FLIGHT.value,
+                FramePhase.SETTLING.value,
+            ):
+                update_kwargs["predicted_pos"] = None
+                update_kwargs["active_pulse"] = None
         # Wide-search recovery anchor logic — distance gate.
         #
         # Smart-sort biases toward the same star (proximity + ADU),
