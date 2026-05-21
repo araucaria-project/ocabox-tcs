@@ -148,6 +148,81 @@ async def test_wide_search_returns_none_on_empty_frame() -> None:
     assert correction is None
 
 
+@pytest.mark.asyncio
+async def test_wide_search_suppresses_pulse_on_far_recovery() -> None:
+    """When wide finds the star far from the expected position
+    (``predicted_pos`` / ``last_acquired_pos``), the controller will
+    reset ``guide_anchor`` to the recovered location in the same
+    state update. Emitting a normal ``pos - old_anchor`` correction
+    would race the controller and pulse the mount toward the stale
+    anchor — root cause of the "fiber spiral" / "drop loses star"
+    pattern (journal 2026-05-20 23:04 onwards). The method must
+    return a zero-magnitude Correction in that case so the enforcer
+    skips the pulse; the next TRACKING cycle then computes drift
+    cleanly against the fresh anchor.
+    """
+    method = SingleStarMethod(fwhm=3.0, threshold=5.0)
+    method.controller = AsyncMock()
+
+    # Star recovered at (160, 160); state thought it should be near
+    # (80, 80). dist ~113 px > 2*search_reg_px (20 px) → recovery branch.
+    stars = [((160.0, 160.0), 8_000.0)]
+    frame = _frame_with_stars((220, 220), stars)
+    state = _state(
+        central_point=(150.0, 150.0),
+        wide_search_radius_px=80,
+        search_reg_px=10,
+        last_acquired_pos=(80.0, 80.0),
+        last_acquired_adu=8_000.0,
+        predicted_pos=(80.0, 80.0),
+        guide_anchor=(100.0, 100.0),
+    )
+
+    correction = await method.solve(frame, state)
+    assert correction is not None
+    assert correction.metadata.get("recovery_no_pulse") is True
+    assert correction.dx_px == 0.0
+    assert correction.dy_px == 0.0
+    # The recovered position still travels to the controller for
+    # anchor reset — solver only suppresses the *correction*, not the
+    # lock notification.
+    px, py = correction.metadata["star_pos"]
+    assert abs(px - 160.0) < 2.0
+    assert abs(py - 160.0) < 2.0
+
+
+@pytest.mark.asyncio
+async def test_wide_search_normal_pulse_when_recovery_is_close() -> None:
+    """Opposite scenario: wide finds the star close to the expected
+    position (within ``2·search_reg_px``). The controller keeps
+    ``guide_anchor`` unchanged, so the standard
+    ``pos - guide_anchor`` correction is the right thing to emit.
+    Regression guard: the recovery-suppression path must not fire
+    on normal post-loss reacquires where mount and star are still
+    in agreement.
+    """
+    method = SingleStarMethod(fwhm=3.0, threshold=5.0)
+    method.controller = AsyncMock()
+
+    stars = [((105.0, 105.0), 8_000.0)]
+    frame = _frame_with_stars((200, 200), stars)
+    state = _state(
+        central_point=(100.0, 100.0),
+        wide_search_radius_px=50,
+        search_reg_px=10,
+        last_acquired_pos=(100.0, 100.0),
+        last_acquired_adu=8_000.0,
+        predicted_pos=(100.0, 100.0),
+        guide_anchor=(95.0, 95.0),
+    )
+
+    correction = await method.solve(frame, state)
+    assert correction is not None
+    assert correction.metadata.get("recovery_no_pulse") is None
+    assert abs(correction.dx_px - (105.0 - 95.0)) < 2.0
+    assert abs(correction.dy_px - (105.0 - 95.0)) < 2.0
+
+
 # ---------------------------------------------------------------------------
 # Narrow re-acquisition
 # ---------------------------------------------------------------------------

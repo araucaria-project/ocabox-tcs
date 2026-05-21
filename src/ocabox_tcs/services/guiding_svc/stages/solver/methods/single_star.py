@@ -393,6 +393,56 @@ class SingleStarMethod:
             frame_phase=phase,
         )
 
+        # Recovery race-guard. When wide finds the star far from where
+        # it was last expected, the controller will reset
+        # ``guide_anchor`` to the recovered position in the *same*
+        # state update (see Controller._handle_acquired_position,
+        # ``wide-recovery: ... resetting anchor`` branch). If we emit
+        # a normal correction here, the pulse goes through the queue
+        # *before* the controller writes the new anchor: the enforcer
+        # computes ``(pos - old_anchor)`` and pulses the mount toward
+        # the stale target. Next frame the star is somewhere between
+        # the old expected position and the recovered one, but
+        # ``guide_anchor`` is already pointing at ``pos`` from this
+        # frame — so the new drift is *opposite-signed* and roughly
+        # the same magnitude. Result: each wide-recovery seeds a
+        # back-and-forth pulse chain that walks the star monotonically
+        # away from any sensible target (the "fiber spiral" /
+        # "drop loses star" pattern observed in journal 2026-05-20
+        # 23:04 onwards). Suppress the pulse this frame and let the
+        # next TRACKING cycle compute drift against the fresh anchor.
+        search_reg = float(state.get("search_reg_px", 25))
+        recovery_threshold = 2.0 * search_reg
+        expected = _xy(state.get("predicted_pos")) or _xy(state.get("last_acquired_pos"))
+        if (
+            last_pos is not None
+            and expected is not None
+            and ((pos[0] - expected[0]) ** 2 + (pos[1] - expected[1]) ** 2)
+            > recovery_threshold ** 2
+        ):
+            logger.info(
+                "wide-recovery: suppressing pulse this frame "
+                "(pos=(%.1f, %.1f), expected=(%.1f, %.1f), dist > %.0f px — "
+                "controller will reset anchor; next frame computes drift "
+                "against the fresh anchor)",
+                pos[0], pos[1], expected[0], expected[1], recovery_threshold,
+            )
+            return Correction(
+                dx_px=0.0,
+                dy_px=0.0,
+                method=self.name,
+                confidence=_confidence(chosen_adu, self.saturation_adu),
+                timestamp=dt_utcnow_array(),
+                metadata={
+                    "phase": "wide_search",
+                    "star_pos": list(pos),
+                    "star_adu": chosen_adu,
+                    "n_candidates": int(coords.shape[0]),
+                    "n_in_range": int(idxs.size),
+                    "recovery_no_pulse": True,
+                },
+            )
+
         # Correction reference: ``guide_anchor`` (where guiding holds
         # the star) wins over ``central_point`` (operator's target
         # reticle). Wide-search runs in monitoring/cold-start when
