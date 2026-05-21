@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from typing import Any
 
@@ -67,6 +68,7 @@ class Enforcer:
         damping: DampingGuard | None = None,
         saturation_ms: SaturationGuard | None = None,
         min_pulse_ms: float = 20.0,
+        min_pulse_policy: str = "stochastic",
         post_pulse_settle_ms: float = 1000.0,
         event_publisher: Any | None = None,
     ) -> None:
@@ -77,6 +79,39 @@ class Enforcer:
         self.damping = damping or DampingGuard(alpha_min=0.5, alpha_max=0.5)
         self.saturation_ms = saturation_ms or SaturationGuard(lo=-1500.0, hi=1500.0)
         self.min_pulse_ms = float(min_pulse_ms)
+        # Below-min policy. Mount can't track sub-min_pulse pulses
+        # exactly, so we have three options for what to do when the
+        # damped/clipped command lands below ``min_pulse_ms``:
+        #
+        #   - ``skip`` (legacy): zero out the axis. Simple, but
+        #     systematically biases small drifts: any drift that never
+        #     accumulates past ~2× the threshold sits there forever.
+        #     This is the source of the "fiber chart points clustered
+        #     on one side of zero" symptom — drift exists, solver sees
+        #     it, but enforcer can't fire small enough pulses to chase
+        #     it, so the camera locks at a fixed offset from the fibre.
+        #
+        #   - ``snap_half``: deterministic round-up. If
+        #     ``|calc| > min_pulse_ms / 2``, fire ``min_pulse_ms``
+        #     (preserving sign); else skip. Cuts the bias band in half
+        #     but still drops every drift below half-min — same class
+        #     of artefact, just smaller.
+        #
+        #   - ``stochastic`` (default): probabilistic. With
+        #     ``p = |calc| / min_pulse_ms``, fire ``min_pulse_ms`` with
+        #     probability ``p``, else skip. ``E[motion] = p · min·J = calc·J``
+        #     by construction → unbiased over many frames. Adds visible
+        #     jitter but the long-run mean tracks the operator's
+        #     intent. Right default when ``calc << min`` is common.
+        self.min_pulse_policy = str(min_pulse_policy).lower()
+        if self.min_pulse_policy not in {"skip", "snap_half", "stochastic"}:
+            raise ValueError(
+                f"Unknown min_pulse_policy={self.min_pulse_policy!r}; "
+                "expected one of: skip | snap_half | stochastic"
+            )
+        # Dedicated RNG so test/calibration can seed it without
+        # touching the module-level random state used elsewhere.
+        self._min_pulse_rng = random.Random()
         # Optional callback for chart-annotation events (UI sees each
         # auto pulse). Async coroutine ``async (event_name, payload)
         # -> None``. None = sim/dev path or pre-NATS bootstrap; we
@@ -157,6 +192,35 @@ class Enforcer:
 
             await self._apply(correction)
 
+    def _apply_min_pulse_policy(self, duration_ms: float) -> tuple[float, bool]:
+        """Resolve a sub-``min_pulse_ms`` magnitude into the actually-issued
+        duration. See ``__init__`` for policy semantics.
+
+        Args:
+            duration_ms: post-damping, post-clipping ``|t|`` magnitude
+                for one axis. Always non-negative; sign already lives
+                in the direction code computed by the caller.
+
+        Returns:
+            ``(effective_duration, skip)``. ``skip=True`` means the
+            axis is dropped entirely (mount call skipped); the
+            caller should treat that axis as contributing zero motion
+            to ``predicted_pos`` and to the cooldown window.
+        """
+        if duration_ms >= self.min_pulse_ms:
+            return duration_ms, False
+        if self.min_pulse_policy == "skip":
+            return 0.0, True
+        if self.min_pulse_policy == "snap_half":
+            if duration_ms > self.min_pulse_ms / 2.0:
+                return self.min_pulse_ms, False
+            return 0.0, True
+        # stochastic
+        p = duration_ms / self.min_pulse_ms  # in [0, 1)
+        if self._min_pulse_rng.random() < p:
+            return self.min_pulse_ms, False
+        return 0.0, True
+
     async def _apply(self, correction: Correction) -> None:
         """Translate a Correction into pulse-guide commands and issue them."""
         # 1. Translate (dx_px, dy_px) → (t_N_ms, t_E_ms) via the model.
@@ -182,9 +246,13 @@ class Enforcer:
         n_dir, n_dur = (DIR_N, t_N_ms) if t_N_ms >= 0 else (DIR_S, -t_N_ms)
         e_dir, e_dur = (DIR_E, t_E_ms) if t_E_ms >= 0 else (DIR_W, -t_E_ms)
 
-        # 5. Skip below min_pulse_ms (mount can't track such tiny moves).
-        n_skip = n_dur < self.min_pulse_ms
-        e_skip = e_dur < self.min_pulse_ms
+        # 5. Apply ``min_pulse_policy`` below ``min_pulse_ms``. See
+        # ``__init__`` for the rationale of each policy. Output is
+        # ``(effective_duration, skip_flag)`` — duration may be snapped
+        # up to ``min_pulse_ms`` (snap_half / stochastic-fired) or
+        # left as 0 with skip=True.
+        n_dur, n_skip = self._apply_min_pulse_policy(n_dur)
+        e_dur, e_skip = self._apply_min_pulse_policy(e_dur)
 
         if self.mount is None:
             logger.info(

@@ -115,6 +115,15 @@ services:
               # in fewer cycles instead of N×damping_alpha geometric crawl.
               duration_max_ms: 5000
               duration_min_ms: 20
+              # Below-min handling: ``stochastic`` (default) fires a
+              # ``min_pulse_ms`` pulse with probability ``calc/min``,
+              # so on average the mount sees ``calc·J`` motion even when
+              # individual frames want sub-min pulses. Cures the fiber
+              # "windrose chart points clustered on one side of zero"
+              # symptom that ``skip`` produces by silently dropping
+              # every small drift. Alternatives: ``skip`` (legacy,
+              # always-drop) or ``snap_half`` (deterministic round-up).
+              min_pulse_policy: stochastic
               post_pulse_settle_ms: 600
 
             save_raw_fits: false

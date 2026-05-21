@@ -386,11 +386,13 @@ class GuiderManager:
         alpha = float(pg_cfg.get("damping_alpha", 0.5))
         max_ms = float(pg_cfg.get("duration_max_ms", 1500.0))
         min_ms = float(pg_cfg.get("duration_min_ms", 20.0))
+        min_policy = str(pg_cfg.get("min_pulse_policy", "stochastic")).lower()
         settle_ms = float(pg_cfg.get("post_pulse_settle_ms", 1000.0))
         kwargs: dict[str, Any] = {
             "damping": DampingGuard(alpha_min=alpha, alpha_max=alpha),
             "saturation_ms": SaturationGuard(lo=-max_ms, hi=max_ms),
             "min_pulse_ms": min_ms,
+            "min_pulse_policy": min_policy,
             "post_pulse_settle_ms": settle_ms,
         }
         return model, kwargs
