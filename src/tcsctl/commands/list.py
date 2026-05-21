@@ -25,12 +25,16 @@ async def _list_services_async(
     host: str = "localhost",
     port: int = 4222,
     subject_prefix: str = "svc",
-    timeout: float = 5.0
+    timeout: float = 30.0
 ):
     """Async implementation of list_services with timeout.
 
     Args:
-        timeout: Connection timeout in seconds (default: 5.0)
+        timeout: Total deadline for connect + 4 last_per_subject reads.
+            Default 30 s. Tuned for slow links (VPN / tailnet), where
+            each ``last_per_subject + no_wait`` reader in serverish
+            sits the full ``fetch_available`` budget (~2 s) before
+            yielding. LAN traffic finishes in 1-3 s and is unaffected.
     """
     messenger = Messenger()
 
@@ -52,6 +56,7 @@ def _run_list(
     all: bool,
     detailed: bool,
     service: str | None,
+    timeout: float,
 ):
     """Open NATS using resolved settings and dispatch to display."""
     try:
@@ -62,11 +67,19 @@ def _run_list(
             host=nats_settings.host,
             port=nats_settings.port,
             subject_prefix=nats_settings.subject_prefix,
+            timeout=timeout,
         ))
     except TimeoutError:
+        # Distinguish connect-failure from collection-failure: the
+        # JetStream "connected" line in --verbose proves the socket is
+        # alive, so a TimeoutError after that point is about the
+        # ``last_per_subject`` reads running long on a high-latency
+        # link, not the server being down.
         typer.secho(
-            f"Timeout connecting to NATS at {nats_settings.host}:{nats_settings.port}. "
-            "Is NATS server running?",
+            f"NATS at {nats_settings.host}:{nats_settings.port} did not deliver "
+            f"the snapshot within {timeout:.0f}s. Try `--timeout {timeout * 2:.0f}` "
+            "if you're on a slow link (VPN / tailnet); if the server is unreachable "
+            "you'd see a connection error before this.",
             fg=typer.colors.RED, err=True
         )
         raise typer.Exit(1)
@@ -85,6 +98,7 @@ def list_services_cmd(
     host: Annotated[str | None, typer.Option("--host", help="NATS server host (overrides config)")] = None,
     port: Annotated[int | None, typer.Option("--port", help="NATS server port (overrides config)")] = None,
     subject_prefix: Annotated[str | None, typer.Option("--prefix", help="NATS subject prefix (overrides config)")] = None,
+    timeout: Annotated[float, typer.Option("--timeout", help="Total deadline (s) for connect + snapshot reads. Increase on slow links.")] = 30.0,
 ):
     """List TCS services with their current status.
 
@@ -131,4 +145,5 @@ def list_services_cmd(
         all=all,
         detailed=detailed,
         service=service,
+        timeout=timeout,
     )

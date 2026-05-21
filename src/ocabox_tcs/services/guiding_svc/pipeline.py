@@ -230,14 +230,26 @@ class Pipeline:
         any second observer sharing the device gets relief. Any
         non-OFF mode → resume (idempotent if already active). The
         subscription stays registered across the toggle so we don't
-        churn collector state on mode flips."""
+        churn collector state on mode flips.
+
+        On resume we wipe ``_last_cycle_ts`` so the healthcheck doesn't
+        see a stale "last frame was 7 minutes ago" timestamp from the
+        previous active session and immediately flag DEGRADED. The
+        next solver iteration repopulates it; until then
+        ``runtime_snapshot.last_cycle_age_s`` returns ``None`` and the
+        manager treats that as "no data yet, not a stall".
+        """
         if self._subscription is None:
             return
-        self._subscription.set_active(mode != Mode.OFF)
+        was_active = self._subscription.active
+        want_active = mode != Mode.OFF
+        self._subscription.set_active(want_active)
+        if want_active and not was_active:
+            self._last_cycle_ts = 0.0
         logger.info(
             "Pipeline %s subscription %s (mode=%s)",
             self.pipeline_id,
-            "active" if mode != Mode.OFF else "paused",
+            "active" if want_active else "paused",
             mode.value,
         )
 
