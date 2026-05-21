@@ -15,7 +15,7 @@ from typing import Any
 from serverish.base import dt_utcnow_array
 
 from ocabox_tcs.services.guiding_svc.pipeline import Pipeline
-from ocabox_tcs.services.guiding_svc.state import Mode
+from ocabox_tcs.services.guiding_svc.state import FramePhase, Mode
 
 
 logger = logging.getLogger(__name__.rsplit(".", maxsplit=1)[-1])
@@ -759,6 +759,45 @@ class Controller:
             update_kwargs["last_acquired_pos"] = position
             if adu is not None:
                 update_kwargs["last_acquired_adu"] = float(adu)
+            # Jacobian-fidelity sample. The first ACQUIRING-phase frame
+            # after a pulse settles is the only one that gives an
+            # unbiased read on jacobian accuracy: the mount has stopped
+            # moving, sidereal drift over the settle window is small
+            # compared to the commanded motion, and we have both the
+            # pre-pulse position (``active_pulse.src_pos``) and the
+            # forward-Jacobian prediction (``active_pulse.predicted_pos``)
+            # to compare with the freshly measured ``position``. Log
+            # once per pulse — operator can scrape these out of the
+            # journal and roll up per-axis residual stats without
+            # running a dedicated calibration probe.
+            if (
+                frame_phase == FramePhase.ACQUIRING.value
+                and prev.active_pulse is not None
+            ):
+                ap = prev.active_pulse
+                src = getattr(ap, "src_pos", None) if not isinstance(ap, dict) else ap.get("src_pos")
+                pred = getattr(ap, "predicted_pos", None) if not isinstance(ap, dict) else ap.get("predicted_pos")
+                t_n = getattr(ap, "pulse_t_n_ms", None) if not isinstance(ap, dict) else ap.get("pulse_t_n_ms")
+                t_e = getattr(ap, "pulse_t_e_ms", None) if not isinstance(ap, dict) else ap.get("pulse_t_e_ms")
+                if src is not None and pred is not None and t_n is not None and t_e is not None:
+                    exp_dx = pred[0] - src[0]
+                    exp_dy = pred[1] - src[1]
+                    act_dx = position[0] - src[0]
+                    act_dy = position[1] - src[1]
+                    res_dx = act_dx - exp_dx
+                    res_dy = act_dy - exp_dy
+                    def _pct(num: float, den: float) -> str:
+                        return f"{abs(num / den) * 100:.1f}%" if abs(den) > 0.5 else "—"
+                    logger.info(
+                        "[acquiring] jacobian residual: pulse t_N=%+.0fms t_E=%+.0fms "
+                        "src=(%.1f,%.1f) predicted=(%.1f,%.1f) actual=(%.1f,%.1f) "
+                        "motion exp=(%+.2f,%+.2f) act=(%+.2f,%+.2f) "
+                        "residual=(%+.2f,%+.2f)px (%s X, %s Y)",
+                        t_n, t_e,
+                        src[0], src[1], pred[0], pred[1], position[0], position[1],
+                        exp_dx, exp_dy, act_dx, act_dy, res_dx, res_dy,
+                        _pct(res_dx, exp_dx), _pct(res_dy, exp_dy),
+                    )
             # Prediction served its purpose — narrow search latched onto
             # the star at (or near) the predicted spot. Clear both the
             # legacy ``predicted_pos`` handle and the first-class
