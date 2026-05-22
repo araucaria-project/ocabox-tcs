@@ -62,6 +62,20 @@ class Controller:
         # explicitly sets ``current_exp_time`` in the same patch wins.
         if "exp_time" in coerced and "current_exp_time" not in coerced:
             coerced["current_exp_time"] = None
+        # Exp_time change invalidates ADU baselines. The narrow-loop's
+        # ADU-tolerance gate compares fresh detections against
+        # ``acquired_adu``, and the wide-loop scoring uses
+        # ``last_acquired_adu`` as a brightness prior. Both samples
+        # were captured at the old exposure scale, so a 2× exp_time
+        # change moves every fresh star's ADU outside the stale band
+        # — the symptom is a continuous "no candidate matches ADU
+        # tolerance" cascade until mode is recycled. Clear both
+        # baselines on exp_time patch (unless the caller explicitly
+        # provides them in the same patch — operator re-locks own
+        # value wins). Next acquire refills them at the new scale.
+        if "exp_time" in coerced:
+            coerced.setdefault("acquired_adu", None)
+            coerced.setdefault("last_acquired_adu", None)
         prev_snap = self.pipeline.state.snapshot()
         prev_mode = prev_snap.mode
         prev_method = prev_snap.method

@@ -206,6 +206,49 @@ async def test_set_state_preserves_explicit_current_exp_time(make_pipeline):
     assert snap.current_exp_time == 0.3
 
 
+@pytest.mark.asyncio
+async def test_set_state_exp_time_clears_acquired_adu(make_pipeline):
+    """Changing exp_time invalidates ADU baselines. Regression test for
+    the 2026-05-22 incident: operator changed exp_time mid-session while
+    a star was locked; the narrow-loop's ADU-tolerance gate kept
+    comparing fresh detections (at the new exposure scale) against the
+    stale acquired_adu (captured at the old scale), and every candidate
+    was rejected with 'no candidate matches ADU tolerance' until mode
+    was recycled. Both acquired_adu (narrow gate) and last_acquired_adu
+    (wide scoring prior) must be cleared so the next acquire refills
+    them at the new exposure scale."""
+    pipe = make_pipeline()
+    ctrl = Controller(pipe)
+    # Simulate a successful prior lock at the old exposure.
+    await pipe.state.update(acquired_adu=50_000.0, last_acquired_adu=50_000.0)
+    snap = pipe.state.snapshot()
+    assert snap.acquired_adu == 50_000.0
+    assert snap.last_acquired_adu == 50_000.0
+
+    await ctrl.set_state({"exp_time": 0.2})
+    snap = pipe.state.snapshot()
+    assert snap.exp_time == 0.2
+    assert snap.acquired_adu is None
+    assert snap.last_acquired_adu is None
+
+
+@pytest.mark.asyncio
+async def test_set_state_exp_time_with_explicit_adu_wins(make_pipeline):
+    """If the caller explicitly provides acquired_adu in the same patch
+    as exp_time (operator re-lock at new exposure), the explicit value
+    must win — the convenience reset must not clobber it."""
+    pipe = make_pipeline()
+    ctrl = Controller(pipe)
+    await pipe.state.update(acquired_adu=50_000.0, last_acquired_adu=50_000.0)
+
+    await ctrl.set_state({"exp_time": 0.2, "acquired_adu": 20_000.0})
+    snap = pipe.state.snapshot()
+    assert snap.exp_time == 0.2
+    assert snap.acquired_adu == 20_000.0
+    # last_acquired_adu was not provided → still gets the reset.
+    assert snap.last_acquired_adu is None
+
+
 def test_build_exposure_job_uses_baseline_when_no_override(make_pipeline):
     pipe = make_pipeline()
     asyncio.run(pipe.state.update(exp_time=0.4, current_exp_time=None))
