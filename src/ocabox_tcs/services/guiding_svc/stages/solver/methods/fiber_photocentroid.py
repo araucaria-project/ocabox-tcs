@@ -42,6 +42,7 @@ threshold (i.e. star detectable on the detector at all).
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -167,47 +168,73 @@ class FiberPhotocentroidMethod:
             return None
         window = frame.array[y0:y1, x0:x1].astype(np.float64)
 
-        # Robust background from the window edges. Using just the
-        # 1-pixel-wide border avoids the central region where the star
-        # contributes. MAD-based sigma falls back to std if MAD
-        # collapses (near-uniform edge).
-        edge = np.concatenate([
-            window[0, :].ravel(), window[-1, :].ravel(),
-            window[1:-1, 0].ravel(), window[1:-1, -1].ravel(),
-        ])
-        bg = float(np.median(edge))
-        edge_mad = float(np.median(np.abs(edge - bg)))
-        noise = 1.4826 * edge_mad
-        if noise <= 0:
-            noise = float(np.std(edge)) or 1.0
-
-        # Saturation mask + background subtraction + non-negative clip.
-        # Saturated pixels contribute zero — see SingleStar._subpixel_centroid
-        # for the explanation of why a saturated PSF plateau quantises
-        # the centroid to integer pixels.
+        # Saturation mask — saturated pixels are excluded from every
+        # statistic and contribute zero flux. See
+        # SingleStar._subpixel_centroid for why a saturated PSF plateau
+        # quantises the centroid to integer pixels.
         unsat = window < self.saturation_adu
-        residual = np.where(unsat, window - bg, 0.0)
+
+        # Background removal by DE-STRIPING (per-row, then per-column
+        # median subtraction) instead of a scalar edge median. The
+        # guider sensor shows line-correlated readout structure
+        # (horizontal banding, clearly visible on thumbnails); a smooth
+        # illumination gradient is possible too. Both violate the
+        # iid assumption behind the √n gate below: bands make whole
+        # rows move together, so the effective number of independent
+        # samples is ~rows, not pixels, and a scalar-background
+        # residual sum passes the gate on pure background structure
+        # (observed live 2026-07-30: "acquired" at ~40 ADU on a dark
+        # region). Row/column medians remove bands and gradients while
+        # leaving a compact star intact (the star occupies a minority
+        # of any row/column of the window, so medians ignore it).
+        # Saturated pixels are NaN during destriping so they can't
+        # bias the medians; all-NaN lines produce NaN medians which
+        # collapse to zero contribution below.
+        work = np.where(unsat, window, np.nan)
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN slices
+            row_med = np.nanmedian(work, axis=1, keepdims=True)
+            work = work - row_med
+            col_med = np.nanmedian(work, axis=0, keepdims=True)
+            work = work - col_med
+        residual = np.nan_to_num(work, nan=0.0)
+        bg = float(np.nanmedian(row_med)) if np.isfinite(row_med).any() else 0.0
+
+        # Robust per-pixel noise from the MAD of the destriped residual.
+        # After destriping the residual is zero-median by construction,
+        # so the whole window (minus the star's minority of pixels,
+        # which the median ignores) is a valid noise sample — no need
+        # to restrict to the border.
+        valid = residual[unsat]
+        mad = float(np.median(np.abs(valid - np.median(valid)))) if valid.size else 0.0
+        noise = 1.4826 * mad
+        if noise <= 0:
+            noise = float(np.std(valid)) if valid.size else 1.0
+            noise = noise or 1.0
+
         net = np.clip(residual, 0.0, None)
         total_flux = float(net.sum())
-        n_pix = int(net.size)
+        n_pix = int(unsat.sum())
 
-        # ADU gate — computed on the UNCLIPPED residual sum, which is
-        # zero-mean under pure noise, so the standard "noise grows like
-        # √N when summed over independent pixels" argument holds and
-        # ``adu_sigma_threshold · noise · √n_pix`` is a valid threshold.
+        # ADU gate — computed on the UNCLIPPED destriped residual sum,
+        # which is zero-mean under pure noise, so the standard "noise
+        # grows like √N when summed over independent pixels" argument
+        # holds and ``adu_sigma_threshold · noise · √n_pix`` is a valid
+        # threshold.
         #
-        # It must NOT be computed on ``total_flux`` (the clipped sum):
-        # clipping negatives to zero makes every pixel's contribution
-        # non-negative, so pure noise sums to ≈ 0.4·n·σ (half-normal
-        # expectation) — for a 31×31 window that's ~384σ against a gate
-        # of ~93σ, i.e. empty sky passes 4× over threshold. That is
-        # exactly the bug observed on sky 2026-07-29: the method
-        # reported ``acquired=yes`` at ~5 ADU mean, the UI's lock circle
-        # wandered over background, and (in guiding) pulses were issued
-        # against a noise photocentroid. See
-        # ``doc/guider/NIGHT_REPORT_2026-07-29_stefan.md`` §2.2.
+        # Two historical traps, both regression-locked in
+        # ``tests/unit/test_fiber_photocentroid.py``:
+        # 1. The gate must NOT use ``total_flux`` (the clipped sum):
+        #    clipping negatives makes pure noise sum to ≈ 0.4·n·σ vs a
+        #    gate of 3σ√n — empty sky passes 4× over threshold. That is
+        #    the 2026-07-29 "acquired at 5 ADU" noise-lock
+        #    (``NIGHT_REPORT_2026-07-29_stefan.md`` §2.2).
+        # 2. The residual must be DE-STRIPED first (see above):
+        #    line-correlated banding passes a scalar-background gate on
+        #    structure alone (observed live 2026-07-30, "acquired" at
+        #    ~40 ADU on a dark region).
         signal = float(residual.sum())
-        gate = self.adu_sigma_threshold * noise * float(np.sqrt(n_pix))
+        gate = self.adu_sigma_threshold * noise * float(np.sqrt(max(n_pix, 1)))
         if signal < gate:
             # No usable signal — star is in the hole, behind a cloud,
             # or not there at all. Don't emit a correction; let the
