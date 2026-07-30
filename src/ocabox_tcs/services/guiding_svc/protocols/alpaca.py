@@ -239,12 +239,30 @@ class AlpacaProtocol:
                 self.instance_id, value, e,
             )
 
+    # Fraction of the exposure time that must elapse before we trust
+    # ``imageready``. The ZWO/ASCOM-Remote stack does not reliably clear
+    # the flag on ``startexposure`` — polled immediately, it still
+    # reports ``true`` from the *previous* readout, and fetching then
+    # returns the previous buffer (observed live 2026-07-30: perfectly
+    # alternating fresh/duplicate frames ~180 ms apart, halving the
+    # effective frame rate — the FrameDeduplicator caught every one).
+    # A frame physically cannot be ready before its exposure has run,
+    # so refusing to trust the flag earlier costs nothing; 0.75 leaves
+    # margin for camera-side duration rounding.
+    _IMAGEREADY_TRUST_FRACTION = 0.75
+
     async def _wait_image_ready(self, exp_time: float) -> None:
         """Poll ``imageready`` or the ``camerastate`` 2 → 0 transition.
 
-        Some Alpaca clients drain ``imageready`` for themselves; the
-        camerastate fallback keeps us working under that contention.
+        Called immediately after ``startexposure``. Sleeps out the
+        no-trust window (see ``_IMAGEREADY_TRUST_FRACTION``) before the
+        first ``imageready`` poll. Some Alpaca clients drain
+        ``imageready`` for themselves; the camerastate fallback keeps
+        us working under that contention.
         """
+        trust_after = self._IMAGEREADY_TRUST_FRACTION * exp_time
+        if trust_after > 0:
+            await asyncio.sleep(trust_after)
         deadline = time.monotonic() + exp_time + max(10.0, exp_time)
         saw_exposing = False
         first_loss_logged = False

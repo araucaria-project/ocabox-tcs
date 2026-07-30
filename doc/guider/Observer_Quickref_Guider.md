@@ -30,12 +30,14 @@ Its scope is deliberately narrow:
   the fibre;
 - it continues holding it there.
 
-It takes no decisions on its own. In particular, switching to
-`guiding` does **not** move the star to the fibre — it holds the star
-**where it currently is**. Placing it on the fibre is the separate
-`drop → reticle` step (§5). A guider left in `guiding` without
-`drop → reticle` will correctly hold the star at its original
-position, delivering no light to the spectrograph.
+It takes no decisions on its own. In particular, in the `single`
+method switching to `guiding` does **not** move the star to the
+fibre — it holds the star **where it currently is**. Placing it on
+the fibre is the separate `drop → reticle` step (§5). A guider left
+in `guiding` without `drop → reticle` will correctly hold the star at
+its original position, delivering no light to the spectrograph.
+(The `fiber` method is the one exception: there the hold target *is*
+the fibre entrance itself — see §5.)
 
 The guider has no knowledge of the science target — it operates purely
 on guider-camera pixels.
@@ -103,10 +105,17 @@ The link is also available from the OCM landing page:
    target slewed and **tracking**.
 2. Open the guider UI and confirm in the top bar:
     - green connection dot;
-    - the `jk15 / guider_beso` row exists, status `OK`;
-    - live thumbnails arriving (≈ 2 Hz).
-3. The pipeline starts in mode **`monitoring`** — frames flow, the
-   solver runs, drift is plotted, **no pulses are sent**.
+    - the `jk15 / guider_beso` row exists, status `OK`.
+3. The mode is whatever it was left at (it is service state, §2) —
+   typically `off`. Set it to **`monitoring`** and confirm live
+   thumbnails start arriving (≈ 2 Hz). In `monitoring` frames flow,
+   the solver runs, drift is plotted, **no pulses are sent**.
+
+!!! info "When you are not using the guider, leave it in `off`"
+    In `off` the service does not touch the camera at all — no
+    exposures, no load on the shared Alpaca stack. `monitoring` and
+    `guiding` both keep the camera busy. End of session or a longer
+    pause: switch to `off`.
 
 ---
 
@@ -114,10 +123,14 @@ The link is also available from the OCM landing page:
 
 Method **`single`** (default), starting in `monitoring`:
 
-1. **Left-click the target star** in the frame view. The solver
-   refines the click to the star's centroid — this becomes the
-   **anchor**, the position the loop will hold. Selecting a star does
-   not move the mount.
+1. **Left-click the target star** in the frame view — the click must
+   land **inside the wide-search circle** (the large circle around
+   the reticle); clicks outside it do not select. The circle's radius
+   is adjustable (*wide search r* slider) — enlarge it to reach a
+   star further out, shrink it to exclude neighbouring stars from
+   automatic re-acquisition. The solver refines the click to the
+   star's centroid — this becomes the **anchor**, the position the
+   loop will hold. Selecting a star does not move the mount.
 2. Switch mode to **`guiding`** (++g++). The loop now holds the star
    at the anchor — at its current position, not at the fibre.
 3. Press **`drop → reticle`**. The loop moves the held star onto the
@@ -134,10 +147,30 @@ This sequence covers a standard observing night.
 ??? question "A click on a star does not select it — why?"
     The star is outside the **wide-search circle** (drawn around the
     reticle; radius set by the *wide search r* slider). Selection
-    works only inside it. Bring the star into the circle with manual
-    pulses, or move the telescope (in `monitoring`), and selection
-    will engage. The limit exists so that re-acquisition after a
-    cloud passage can never silently jump to a distant star.
+    works only inside it. Either enlarge the circle with the slider,
+    or bring the star into it with manual pulses / a telescope move
+    (in `monitoring`) — selection then engages. The limit exists so
+    that re-acquisition after a cloud passage can never silently jump
+    to a distant star; conversely, in a crowded field you can shrink
+    the circle so a neighbouring star can never be picked up by
+    mistake.
+
+??? tip "Program star in the fibre = weak guide signal? Guide on a neighbour"
+    Once the program star is injected into the fibre, most of its
+    light disappears into the hole and the residual halo can be a
+    poor guide signal. If a suitable field star is visible in the
+    frame, guide on that one instead:
+
+    1. Put the program star on the fibre first (steps 1–3 above).
+    2. **Left-click the neighbouring star** (enlarge the wide-search
+       circle first if it sits outside). Re-selection re-anchors the
+       loop to the new star **at its current position** — nothing
+       moves, the program star stays in the fibre.
+    3. The loop now guides on the bright neighbour; the program star
+       is held on the fibre indirectly (rigid field geometry).
+
+    Do **not** press `drop → reticle` after re-selecting — that would
+    drag the neighbour into the fibre.
 
 ??? question "Frame overlay legend"
     | Marker | Meaning |
@@ -153,13 +186,23 @@ This sequence covers a standard observing night.
 
 ### Method `fiber`
 
-!!! danger "Do not use `fiber` — defective as of 2026-07-30"
-    Live testing on 2026-07-29 confirmed two defects: in `guiding` it
-    drives the star *away* from the fibre, and its lock indicator can
-    latch onto empty-sky noise (green circle wandering at a few ADU).
-    Corrections are implemented and await on-sky validation; this
-    notice will be lifted afterwards. `single` + `drop → reticle`
-    covers all observing scenarios in the meantime.
+In the `fiber` method the solver tracks the photocentroid of all
+light in a window around the reticle, and the hold target is the
+fibre entrance itself (no star selection, no `drop → reticle`).
+Switching to `fiber` also enables the **fibre-entrance magnifier
+inset** — useful as a close-up view of the injection region.
+
+!!! danger "Do not use `fiber` + `guiding` — awaiting on-sky validation"
+    Testing on 2026-07-29 found defects in fiber-mode guiding (the
+    loop drove the star *away* from the fibre; the lock indicator
+    could latch onto noise). Fixes are deployed but not yet validated
+    on sky — until this notice is lifted, **do not engage `guiding`
+    while in `fiber`**.
+
+    `fiber` + **`monitoring`** is safe and allowed: no pulses are
+    sent, and you keep the magnifier inset for visual checks during
+    manual work. `single` + `drop → reticle` covers the actual
+    guiding for all observing scenarios in the meantime.
 
 ### Method `multi`
 
@@ -279,6 +322,12 @@ it** (§2).
     a guider problem takes them all down. If stopping the unit above
     does not resolve the situation, contact the maintainer.
 
+    **Report every use of this procedure**: note it in the night
+    report / control-room log and mail the maintainer (address at the
+    bottom of this page) with the time and what led to it. Needing
+    the last resort means something upstream failed — it can only be
+    fixed if it is known about.
+
 ---
 
 ## 9. Mount control during guiding
@@ -305,9 +354,35 @@ parks, or syncs.
 | No thumbnails in UI | Thumbnail HTTP base in the Connection panel. |
 | `drop → reticle` greyed out | Requires `single` + `guiding` + `acquired = yes`. |
 | No detection candidates | exp_time too low / sparse field — or method is `fiber` (no candidates by design); switch to `single`. |
-| Green circle wanders off the star, ADU reads a few counts | Method is `fiber` (§5 — do not use). Switch to `single`, re-select. |
+| Green circle wanders off the star, ADU reads a few counts | Method is `fiber` (§5 — no `guiding` there until validated). Switch to `single`, re-select. |
 | Star locked but drift grows | Switch to `monitoring`, contact the maintainer (pulse-model calibration). |
 | Camera `unavailable` / NRE / `Camera appears FROZEN` in status | Guider-camera server on `jk15-ccd` needs maintainer attention. Do **not** run any `*@jk15-beso` command (§7 — that is the spectrograph science camera). |
+
+??? note "Fibre-entrance recalibration after the guider camera was moved (maintainer-coordinated)"
+    The reticle position (`central_point`) is a calibrated constant:
+    the pixel where the fibre entrance sits on the guider sensor. Any
+    mechanical work that moves the guider camera (or the fibre head)
+    invalidates it — the guider will then faithfully drop stars onto
+    a spot that is no longer the fibre.
+
+    If you suspect (or know) the camera was moved:
+
+    1. Illuminate the field with the **flat-field lamp** so the fibre
+       hole is visible as a dark spot on a bright background
+       (`monitoring`, adjust exp_time until the background is bright
+       but unsaturated).
+    2. Zoom into the hole region and read off the **pixel coordinates
+       of the hole centre** (cursor position readout in the frame
+       corner); a screenshot of the zoomed hole helps.
+    3. **Send the coordinates + screenshot to the maintainer**
+       (address below) — do not edit the service configuration
+       yourselves. The maintainer updates `central_point`, and the
+       calibrated "home" position of the reticle follows.
+
+    Until the new calibration is applied, the reticle can be dragged
+    to the measured hole position manually (right-click) as a
+    same-night workaround — but report it regardless, otherwise the
+    next observer starts with the stale calibration.
 
 ---
 

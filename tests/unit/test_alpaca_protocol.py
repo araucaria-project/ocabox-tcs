@@ -101,16 +101,20 @@ def test_build_url_includes_clientid_and_txn():
     assert u1 != u2
 
 
-def test_txn_counter_wraps_at_32_bit():
+def test_txn_counter_wraps_within_signed_int32():
+    """The counter deliberately stays in signed-int32 range
+    (``& 0x7FFF_FFFF`` — see ``_next_txn`` / ``_stable_client_id``):
+    some Alpaca servers parse ClientTransactionID as Int32 and reject
+    values above 0x7FFF_FFFF."""
     cam = _make_ocabox_camera()
     p = AlpacaProtocol(
         instance_id="x", url="http://x", device_number=0, ocabox_camera=cam
     )
-    p._txn_counter = 0xFFFF_FFFE
+    p._txn_counter = 0x7FFF_FFFE
     a = p._next_txn()
     b = p._next_txn()
     c = p._next_txn()
-    assert a == 0xFFFF_FFFF
+    assert a == 0x7FFF_FFFF
     assert b == 0
     assert c == 1
 
@@ -316,6 +320,30 @@ async def test_wait_image_ready_polls_until_true():
 
 
 @pytest.mark.asyncio
+async def test_wait_image_ready_distrusts_stale_flag_before_exposure_ran():
+    """Regression (2026-07-30): the ZWO/ASCOM-Remote stack leaves
+    ``imageready=true`` behind after every readout. Trusting it right
+    after ``startexposure`` fetches the PREVIOUS buffer (perfectly
+    alternating fresh/duplicate frames, half the effective rate). The
+    protocol must not even poll before ``0.75 × exp_time`` elapsed."""
+    import time as _time
+
+    cam = _make_ocabox_camera(image_ready_after_calls=1)  # true immediately
+    p = AlpacaProtocol(
+        instance_id="x",
+        url="http://x",
+        device_number=0,
+        ocabox_camera=cam,
+        poll_interval_s=0.001,
+    )
+    exp_time = 0.2
+    t0 = _time.monotonic()
+    await p._wait_image_ready(exp_time=exp_time)
+    elapsed = _time.monotonic() - t0
+    assert elapsed >= p._IMAGEREADY_TRUST_FRACTION * exp_time
+
+
+@pytest.mark.asyncio
 async def test_wait_image_ready_timeout_raises():
     """Stuck on Exposing — neither signal ever clears, hits the deadline."""
     cam = MagicMock()
@@ -353,7 +381,10 @@ async def test_wait_image_ready_falls_back_to_camerastate(caplog):
     import logging
     with caplog.at_level(logging.WARNING, logger="alpaca"):
         await p._wait_image_ready(exp_time=0.05)
-    assert any("stealing the signal" in rec.message for rec in caplog.records)
+    assert any(
+        "Exposing→Idle without imageready" in rec.message
+        for rec in caplog.records
+    )
 
 
 @pytest.mark.asyncio

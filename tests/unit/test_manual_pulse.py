@@ -168,16 +168,29 @@ async def test_manual_pulse_publishes_event():
 
 
 @pytest.mark.asyncio
-async def test_manual_pulse_does_not_mutate_pipeline_state():
-    """The whole point: manual pulses go around the state-mutation path."""
+async def test_manual_pulse_invalidates_hold_target_only():
+    """Manual pulses bypass the Solver/Enforcer chain, but they DO
+    invalidate the hold target: the operator explicitly moved the
+    mount, so the previous ``guide_anchor`` (and any in-flight pulse
+    plan) no longer matches their intent. The anchor bootstrap in
+    ``notify_acquired`` re-seeds it at the next re-acquire. Everything
+    else in the state stays untouched."""
     pipe = _make_pipeline(mount=_make_mount())
     ctrl = Controller(pipe)
-    state_before = pipe.state.snapshot()
+    await pipe.state.update(
+        guide_anchor=(10.0, 20.0),
+        predicted_pos=(11.0, 21.0),
+        acquired=True,
+        acquired_pos=(10.5, 20.5),
+    )
     await ctrl.manual_pulse(direction=0, duration_ms=200)
-    state_after = pipe.state.snapshot()
-    # version should not have advanced — manual_pulse doesn't go through
-    # set_state / Controller mutators.
-    assert state_after.version == state_before.version
+    after = pipe.state.snapshot()
+    assert after.guide_anchor is None
+    assert after.predicted_pos is None
+    assert after.active_pulse is None
+    # The measurement itself is untouched — only the *plan* is dropped.
+    assert after.acquired is True
+    assert after.acquired_pos == (10.5, 20.5)
 
 
 # ---------------------------------------------------------------------------

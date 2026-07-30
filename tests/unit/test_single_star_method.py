@@ -135,8 +135,13 @@ async def test_wide_search_returns_none_when_no_star_in_window() -> None:
 
     correction = await method.solve(frame, state)
     assert correction is None
-    # Should NOT mark as acquired.
-    method.controller.notify_acquired.assert_not_called()
+    # No lock — but the UI still learns what detection saw this frame
+    # (candidates outside the circle), so notify fires with
+    # ``acquired=False``.
+    method.controller.notify_acquired.assert_awaited_once()
+    kwargs = method.controller.notify_acquired.await_args.kwargs
+    assert kwargs["acquired"] is False
+    assert kwargs["position"] is None
 
 
 @pytest.mark.asyncio
@@ -298,10 +303,17 @@ async def test_narrow_reacq_demotes_when_no_star() -> None:
         search_reg_px=10,
     )
 
-    correction = await method.solve(frame, state)
-    assert correction is None
-    # Demotion notification.
-    method.controller.notify_acquired.assert_awaited_once()
+    # A single miss no longer demotes — the narrow-miss budget
+    # (threshold 5) holds the lock through transient bad frames
+    # (second-observer stale frames, seeing dips). Only after
+    # threshold+1 consecutive misses does the method declare lost.
+    for i in range(method._narrow_miss_threshold):
+        assert await method.solve(frame, state) is None
+        kwargs = method.controller.notify_acquired.await_args.kwargs
+        assert kwargs["acquired"] is True, f"lock dropped too early (miss {i+1})"
+        assert kwargs["position"] == (110.0, 95.0)
+
+    assert await method.solve(frame, state) is None
     kwargs = method.controller.notify_acquired.await_args.kwargs
     assert kwargs["acquired"] is False
     assert kwargs["position"] is None
@@ -324,9 +336,14 @@ async def test_narrow_reacq_demotes_when_adu_outside_tolerance() -> None:
         search_reg_px=10,
     )
 
-    correction = await method.solve(frame, state)
-    assert correction is None
-    method.controller.notify_acquired.assert_awaited_once()
+    # ADU mismatch consumes the narrow-miss budget (threshold 5) just
+    # like an empty box — the lock holds through transient mismatches
+    # and demotes only after threshold+1 consecutive misses.
+    for _ in range(method._narrow_miss_threshold):
+        assert await method.solve(frame, state) is None
+        assert method.controller.notify_acquired.await_args.kwargs["acquired"] is True
+
+    assert await method.solve(frame, state) is None
     assert (
         method.controller.notify_acquired.await_args.kwargs["acquired"] is False
     )
