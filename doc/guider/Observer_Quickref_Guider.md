@@ -245,19 +245,27 @@ Mouse:
 
 ## 7. Guider camera exclusivity
 
-!!! danger "One camera, one client"
-    The guider holds an exclusive ASCOM/Alpaca session on
+!!! danger "One camera, one controlling software"
+    The guider **service** holds an exclusive ASCOM/Alpaca session on
     `jk15.guider_beso` (a small CMOS served from the `jk15-ccd`
-    Windows host — **not** the BESO science camera). Any other
-    Alpaca/ASCOM client pointed at it while the guider runs will
-    collide: frames stutter, freeze or corrupt; the driver can wedge
-    (`Object reference not set…`, or silently serving one frozen
-    frame) until its camera server is restarted — a maintainer
-    action; the guider log fills with `OCABOX error 2002`.
+    Windows host — **not** the BESO science camera). Pointing **any
+    other camera software** at the same camera while the guider is
+    not in `off` — ASI Studio, MaxIm, SharpCap, ASCOM diagnostic
+    tools, a second guider instance, anything that takes exposures —
+    will collide with it: frames stutter, freeze or corrupt; the
+    driver can wedge (`Object reference not set…`, or silently
+    serving one frozen frame) until its camera server is restarted —
+    a maintainer action; the guider log fills with
+    `OCABOX error 2002`.
 
-    During science observations the **only** consumer of the guider
-    camera is the guider service. For a hand-driven preview, set the
-    guider to `off` first (§8), do the work, then bring it back.
+    This has **nothing to do with the guider web UI**: browser pages
+    are thin clients of the service (§2), they never touch the camera
+    directly — open as many as you like.
+
+    During science observations the **only** software operating the
+    guider camera is the guider service. For a hand-driven session in
+    ASI Studio or similar, set the guider to `off` first (§8), do the
+    work, then bring it back.
 
 !!! danger "Do not confuse the two BESO cameras"
     The ssh commands `server_restart@jk15-beso`,

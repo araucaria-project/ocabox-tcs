@@ -276,6 +276,25 @@ camera use only).
   the on-sky positive validation of fiber (sign + acquisition)
   remains for the next clear evening.
 
+**P0.7 + final deploy (2026-07-30 evening)**
+- After the host reboot the healthy camera exposed a fencepost race:
+  the driver does not clear ``imageready`` on ``startexposure``, so the
+  protocol trusted the stale flag ~180 ms after each fresh frame and
+  re-fetched the previous buffer — perfectly alternating
+  fresh/duplicate frames, dedup absorbing 50% of exposures. Fix
+  (v1.3.5): don't trust ``imageready`` before 0.75×exp_time.
+  Live result: 60 s monitoring → **0 duplicates, 0 fallbacks,
+  0 errors, full cadence** (50 cycles/60 s @ 0.5 s exp).
+- Branch test debt cleared: all 5 stale tests updated to current
+  contracts (int32 txn wrap, fallback log wording, narrow-miss budget
+  ×2, manual-pulse anchor invalidation) — guider suite 129/129.
+- Manual iteration 3 (operator's review notes): fiber allowed in
+  monitoring (magnifier inset), single-vs-fiber hold-target semantics,
+  wide-search adjustability at the click step, neighbour-star guiding
+  recipe, fibre-entrance recalibration procedure (flat lamp →
+  coordinates → maintainer), last-resort incident reporting, "leave it
+  in off" note.
+
 **Done 2026-07-30**
 - [x] Log analysis, this report
 - [x] P0 service fixes implemented + tested (fiber sign & gate,
