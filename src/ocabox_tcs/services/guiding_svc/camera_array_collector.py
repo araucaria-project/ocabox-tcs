@@ -9,14 +9,95 @@ are deferred until a second pipeline-on-camera scenario lands.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
+
+import numpy as np
 
 from ocabox_tcs.services.guiding_svc.backends.base import CollectorBackend
 from ocabox_tcs.services.guiding_svc.stages.base import RawFrame
 
 
 logger = logging.getLogger(__name__.rsplit(".", maxsplit=1)[-1])
+
+
+class FrameDeduplicator:
+    """Detects a frozen camera buffer by frame-content digest.
+
+    A real sensor never produces two byte-identical frames — photon and
+    read noise differ everywhere — so *consecutive identical content* has
+    exactly one meaning: the acquisition chain is re-serving a stale
+    buffer (driver contention with a second Alpaca client, firmware
+    hiccup, transport replay). Feeding such frames downstream is
+    dangerous: the solver detects the frozen star at a frozen offset and
+    the enforcer "corrects" it forever — on 2026-07-29 this walked the
+    jk15 mount blindly for 10.5 h (~7 000 identical pulses). See
+    ``doc/guider/NIGHT_REPORT_2026-07-29_stefan.md`` §2.3.
+
+    Digest covers a strided subsample (fast, ~30 k px on a 2 MPix frame)
+    plus shape/dtype. Subsampling is safe for the "identical buffer"
+    question: any genuinely new exposure differs in essentially every
+    pixel, so collisions on the subsample require the full buffer to be
+    identical too — which is the very condition we're detecting.
+
+    Args:
+        stride: Subsample step in both axes for the digest.
+        alert_after: Consecutive duplicates that escalate the
+            once-per-run warning to an error (camera declared frozen).
+    """
+
+    def __init__(self, *, stride: int = 8, alert_after: int = 10) -> None:
+        self.stride = int(stride)
+        self.alert_after = int(alert_after)
+        self._last_digest: bytes | None = None
+        self.duplicate_run = 0
+        """Length of the current consecutive-duplicate run (0 = healthy)."""
+        self.duplicates_total = 0
+        """All duplicate frames seen since startup (diagnostics)."""
+
+    def is_duplicate(self, array: np.ndarray) -> bool:
+        """Digest ``array`` and report whether it repeats the previous frame.
+
+        Updates run/total counters and emits rate-limited logs: WARNING
+        on the first duplicate of a run, ERROR once when the run reaches
+        ``alert_after``, INFO on recovery (fresh frame after a run).
+        """
+        h = hashlib.blake2b(digest_size=16)
+        h.update(str(array.shape).encode())
+        h.update(str(array.dtype).encode())
+        sub = array[:: self.stride, :: self.stride] if array.ndim == 2 else array
+        h.update(np.ascontiguousarray(sub).tobytes())
+        digest = h.digest()
+
+        if digest == self._last_digest:
+            self.duplicate_run += 1
+            self.duplicates_total += 1
+            if self.duplicate_run == 1:
+                logger.warning(
+                    "Duplicate frame content detected — camera served a "
+                    "stale buffer (driver contention / firmware quirk). "
+                    "Dropping frame; solver sees nothing this cycle."
+                )
+            elif self.duplicate_run == self.alert_after:
+                logger.error(
+                    "Camera appears FROZEN: %d consecutive identical "
+                    "frames. No corrections are being produced; guiding "
+                    "is effectively suspended until fresh frames arrive "
+                    "(check for a second Alpaca client, restart the "
+                    "camera if it persists).",
+                    self.duplicate_run,
+                )
+            return True
+
+        if self.duplicate_run > 0:
+            logger.info(
+                "Fresh frame after %d duplicate(s) — camera recovered.",
+                self.duplicate_run,
+            )
+        self.duplicate_run = 0
+        self._last_digest = digest
+        return False
 
 
 @dataclass
@@ -64,6 +145,10 @@ class CameraArrayCollector:
         self._open = False
         self._streams: list[_StreamSubscription] = []
         self._driver_task: asyncio.Task[None] | None = None
+        # Frozen-buffer guard on the streaming path. One-shot fetches
+        # (``submit_one`` callers: calibration builds, snapshots) bypass
+        # it — they have no "previous frame" semantics.
+        self.dedup = FrameDeduplicator()
         # Wake signal for the drive loop. Set when at least one
         # subscriber is active (or one resumes); cleared by the loop
         # when it observes "all paused" so it can park until something
@@ -195,6 +280,15 @@ class CameraArrayCollector:
                 except Exception as e:  # noqa: BLE001
                     logger.exception("backend submit_one failed: %s", e)
                     await asyncio.sleep(1.0)
+                    continue
+                # Frozen-buffer guard: a byte-identical repeat of the
+                # previous frame is a stale buffer, not a new exposure —
+                # dropping it here starves the solver (correct: no new
+                # information) instead of letting it re-derive the same
+                # correction forever. Brief sleep so a wedged driver
+                # doesn't turn this loop into a busy poll.
+                if self.dedup.is_duplicate(raw.array):
+                    await asyncio.sleep(0.5)
                     continue
                 try:
                     sub.out_queue.put_nowait(raw)

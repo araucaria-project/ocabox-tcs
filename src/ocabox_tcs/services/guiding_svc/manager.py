@@ -492,6 +492,13 @@ class GuiderManager:
         if hasattr(pipeline, "_solver") and hasattr(pipeline._solver, "set_controller"):
             pipeline._solver.set_controller(controller)
 
+        # Wire the Enforcer's safety guards to the controller's demote
+        # action (guiding → monitoring on frozen-correction repetition or
+        # a pulse-failure storm). Unconditional — safety must not depend
+        # on NATS being up.
+        if pipeline._enforcer is not None:
+            pipeline._enforcer.safety_demote = controller.safety_demote
+
         # Register RPCs and wire publishers (no-op when Messenger isn't open).
         if self.nats_conn is not None:
             await self.nats_conn.register_pipeline_rpcs(cam_id, pipe_id, controller)

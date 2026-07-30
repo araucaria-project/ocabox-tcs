@@ -56,7 +56,39 @@ class Enforcer:
             symmetric ``±max``).
         min_pulse_ms: Below this, the axis is skipped entirely (mount
             doesn't reliably move on micro-pulses).
+
+    Safety attributes (wired post-construction by the Manager):
+        safety_demote: Optional async callback ``(reason: str) -> None``
+            that drops the pipeline out of ``guiding``. Invoked when the
+            Enforcer detects it is doing harm rather than guiding:
+
+            - **Repetition guard** — the same correction vector issued
+              ``_REPEAT_LIMIT`` times in a row (within
+              ``_REPEAT_EPSILON_PX``). Real measurements carry photon-
+              noise scatter ≥ 0.1 px; bit-identical repeats mean the
+              measurement is frozen while the mount walks away (the
+              2026-07-29 incident: one stale correction re-issued ~7 000
+              times over 10.5 h). Frame dedup upstream catches the
+              frozen-buffer cause; this guard is the defence-in-depth
+              backstop for any other stuck-measurement path.
+            - **Failure latch** — ``_FAIL_LIMIT`` consecutive
+              ``aput_pulseguide`` failures. A mount that refuses pulses
+              (parked, light path reconfigured, TIC error storm) will
+              not start accepting them because we hammer it at frame
+              rate; stop, alarm, let the operator sort it out.
     """
+
+    # Repetition guard: how close two corrections must be (per axis, px)
+    # to count as "the same", and how many consecutive sames trip the
+    # demote. 0.01 px is far below any real measurement scatter.
+    _REPEAT_EPSILON_PX = 0.01
+    _REPEAT_LIMIT = 8
+    # Deadband: corrections smaller than this (both axes) are excluded
+    # from repetition tracking — a well-centred star legitimately
+    # produces near-zero corrections all night.
+    _REPEAT_DEADBAND_PX = 0.02
+    # Failure latch: consecutive pulse-command failures before demote.
+    _FAIL_LIMIT = 5
 
     def __init__(
         self,
@@ -133,6 +165,13 @@ class Enforcer:
         self._pulse_end_monotonic: float = 0.0
         self._task: asyncio.Task[None] | None = None
         self._running = False
+        # Safety plumbing — see class docstring. ``safety_demote`` is
+        # wired by the Manager (Controller.safety_demote); None in
+        # sim/unit contexts (guards still count, demote is a no-op).
+        self.safety_demote: Any | None = None
+        self._repeat_last: tuple[float, float] | None = None
+        self._repeat_count = 0
+        self._fail_count = 0
 
     async def start(self) -> None:
         if self._task is not None:
@@ -220,6 +259,59 @@ class Enforcer:
         if self._min_pulse_rng.random() < p:
             return self.min_pulse_ms, False
         return 0.0, True
+
+    async def _register_pulse_failure(self, error: str) -> None:
+        """Count a failed pulse command; trip the failure latch at
+        ``_FAIL_LIMIT`` consecutive failures. Reset on any success."""
+        self._fail_count += 1
+        if self._fail_count >= self._FAIL_LIMIT:
+            await self._trip_safety(
+                f"{self._fail_count} consecutive pulse-guide failures "
+                f"(last: {error}) — mount is not accepting corrections "
+                "(parked? light path reconfigured? TIC fault?)"
+            )
+            self._fail_count = 0
+
+    async def _check_repetition(self, correction: Correction, *, issued: bool) -> None:
+        """Track consecutive identical correction vectors; trip the
+        repetition guard at ``_REPEAT_LIMIT``. See class docstring."""
+        if not issued:
+            return
+        dx, dy = float(correction.dx_px), float(correction.dy_px)
+        if abs(dx) < self._REPEAT_DEADBAND_PX and abs(dy) < self._REPEAT_DEADBAND_PX:
+            self._repeat_last = None
+            self._repeat_count = 0
+            return
+        if (
+            self._repeat_last is not None
+            and abs(dx - self._repeat_last[0]) < self._REPEAT_EPSILON_PX
+            and abs(dy - self._repeat_last[1]) < self._REPEAT_EPSILON_PX
+        ):
+            self._repeat_count += 1
+            if self._repeat_count >= self._REPEAT_LIMIT:
+                await self._trip_safety(
+                    f"correction frozen at dx={dx:+.2f} dy={dy:+.2f} px for "
+                    f"{self._repeat_count} consecutive pulses — measurement "
+                    "is stuck (stale frames?) while the mount keeps moving"
+                )
+                self._repeat_last = None
+                self._repeat_count = 0
+        else:
+            self._repeat_last = (dx, dy)
+            self._repeat_count = 1
+
+    async def _trip_safety(self, reason: str) -> None:
+        """Invoke the wired safety-demote callback (if any). The callback
+        drops mode to ``monitoring``; our run-loop then stops applying
+        corrections on its own. Never raises — a safety path that can
+        take down the enforcer task would be worse than the disease."""
+        logger.error("Enforcer safety trip: %s", reason)
+        if self.safety_demote is None:
+            return
+        try:
+            await self.safety_demote(reason)
+        except Exception:  # noqa: BLE001
+            logger.exception("safety_demote callback failed")
 
     async def _apply(self, correction: Correction) -> None:
         """Translate a Correction into pulse-guide commands and issue them."""
@@ -316,10 +408,14 @@ class Enforcer:
                 "issued but unconfirmed; skipping cooldown update so the "
                 "next cycle can re-attempt rather than wait blind",
             )
+            await self._register_pulse_failure("aput_pulseguide timeout (5 s)")
             return
         except Exception as e:  # noqa: BLE001
             logger.exception("aput_pulseguide failed: %s", e)
+            await self._register_pulse_failure(str(e))
             return
+        self._fail_count = 0
+        await self._check_repetition(correction, issued=not (n_skip and e_skip))
         wire_ms = (time.monotonic() - wire_t0) * 1000.0
         logger.info(
             "Enforcer pulse: dx=%+.2f dy=%+.2f → N(%d)=%.0fms%s E(%d)=%.0fms%s "

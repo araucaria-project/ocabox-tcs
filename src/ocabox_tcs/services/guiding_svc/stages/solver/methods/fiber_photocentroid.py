@@ -186,25 +186,35 @@ class FiberPhotocentroidMethod:
         # for the explanation of why a saturated PSF plateau quantises
         # the centroid to integer pixels.
         unsat = window < self.saturation_adu
-        net = np.where(unsat, np.clip(window - bg, 0.0, None), 0.0)
+        residual = np.where(unsat, window - bg, 0.0)
+        net = np.clip(residual, 0.0, None)
         total_flux = float(net.sum())
         n_pix = int(net.size)
 
-        # ADU gate — total excess flux must exceed
-        # ``adu_sigma_threshold · noise · √n_pix``. The √n factor is the
-        # standard "noise grows like √N when summed over independent
-        # pixels" argument: a 15×15 window has 225 px, so even a flat
-        # background contributes 15·noise of summed standard deviation
-        # at sigma=1. Anything below this is statistically indistinguishable
-        # from "no star".
+        # ADU gate — computed on the UNCLIPPED residual sum, which is
+        # zero-mean under pure noise, so the standard "noise grows like
+        # √N when summed over independent pixels" argument holds and
+        # ``adu_sigma_threshold · noise · √n_pix`` is a valid threshold.
+        #
+        # It must NOT be computed on ``total_flux`` (the clipped sum):
+        # clipping negatives to zero makes every pixel's contribution
+        # non-negative, so pure noise sums to ≈ 0.4·n·σ (half-normal
+        # expectation) — for a 31×31 window that's ~384σ against a gate
+        # of ~93σ, i.e. empty sky passes 4× over threshold. That is
+        # exactly the bug observed on sky 2026-07-29: the method
+        # reported ``acquired=yes`` at ~5 ADU mean, the UI's lock circle
+        # wandered over background, and (in guiding) pulses were issued
+        # against a noise photocentroid. See
+        # ``doc/guider/NIGHT_REPORT_2026-07-29_stefan.md`` §2.2.
+        signal = float(residual.sum())
         gate = self.adu_sigma_threshold * noise * float(np.sqrt(n_pix))
-        if total_flux < gate:
+        if signal < gate:
             # No usable signal — star is in the hole, behind a cloud,
             # or not there at all. Don't emit a correction; let the
             # mount track sidereally until flux returns.
             logger.debug(
-                "fiber gate: total_flux=%.0f < gate=%.0f (bg=%.1f noise=%.1f n=%d)",
-                total_flux, gate, bg, noise, n_pix,
+                "fiber gate: signal=%.0f < gate=%.0f (bg=%.1f noise=%.1f n=%d)",
+                signal, gate, bg, noise, n_pix,
             )
             await self._notify_acquired(False, None, None, frame_phase=phase.value)
             return None
@@ -239,14 +249,24 @@ class FiberPhotocentroidMethod:
             d_corrected = t * full_at
 
         # Scale the photocentroid vector to the corrected magnitude.
-        # Sign convention: ``correction.dx_px`` is "by how many pixels
-        # do we need to nudge the star to bring it back to anchor".
-        # The photocentroid points *from anchor toward where the star
-        # is*, so we negate to push the star *back to* anchor.
+        #
+        # Sign convention (see ``Correction`` docstring): ``dx_px`` is
+        # the MEASURED ERROR, ``star − target`` — where the light is
+        # relative to where it should be. The pulse-guide model's
+        # ``predict()`` computes the cancelling pulse itself
+        # (``motion = −error``, see ``pulse_guide.py``), so the solver
+        # must NOT pre-negate. ``(pc_x, pc_y)`` already is
+        # ``photocentroid − reticle`` = the error — pass it through.
+        #
+        # History: until 2026-07-30 this was negated ("push the star
+        # back"), double-negating with the model and turning the loop
+        # into positive feedback — on sky the star was driven *away*
+        # from the fibre, error growing 0.3 → 12 px in ~11 s. See
+        # ``doc/guider/NIGHT_REPORT_2026-07-29_stefan.md`` §2.1.
         if d_apparent > 1e-3 and d_corrected > 0:
             scale = d_corrected / d_apparent
-            dx_corr = -pc_x * scale
-            dy_corr = -pc_y * scale
+            dx_corr = pc_x * scale
+            dy_corr = pc_y * scale
         else:
             # Inside dead zone — emit a zero-magnitude correction so
             # the pipeline still produces a journal/event entry (operator

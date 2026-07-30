@@ -327,6 +327,135 @@ def test_min_pulse_policy_rejects_unknown_name():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Safety guards — repetition guard + pulse-failure latch
+# (regression for the 2026-07-29 frozen-correction incident, see
+#  doc/guider/NIGHT_REPORT_2026-07-29_stefan.md §2.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_guarded_enforcer(mount):
+    model = build_fixed_jacobian_pulse_guide(
+        kN_px_per_ms=0.02, kE_px_per_ms=0.01
+    )
+    enf = _make_enforcer(
+        mount=mount,
+        pulse_guide_model=model,
+        damping=DampingGuard(alpha_min=1.0, alpha_max=1.0),
+    )
+    enf.safety_demote = AsyncMock()
+    return enf
+
+
+@pytest.mark.asyncio
+async def test_frozen_correction_trips_repetition_guard():
+    """The same correction vector issued ``_REPEAT_LIMIT`` times in a
+    row means the measurement is stuck while the mount walks — demote."""
+    mount = _make_mount()
+    enf = _make_guarded_enforcer(mount)
+
+    for _ in range(Enforcer._REPEAT_LIMIT):
+        await enf._apply(_correction(17.92, 4.63))
+
+    enf.safety_demote.assert_awaited_once()
+    reason = enf.safety_demote.await_args.args[0]
+    assert "frozen" in reason
+
+
+@pytest.mark.asyncio
+async def test_varying_corrections_do_not_trip_repetition_guard():
+    """Real guiding: corrections scatter with photon noise — no trip."""
+    mount = _make_mount()
+    enf = _make_guarded_enforcer(mount)
+
+    for i in range(3 * Enforcer._REPEAT_LIMIT):
+        await enf._apply(_correction(5.0 + 0.1 * (i % 5), 3.0 - 0.1 * (i % 3)))
+
+    enf.safety_demote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repetition_counter_resets_on_change():
+    """N−1 identical + one different + N−1 identical again → no trip."""
+    mount = _make_mount()
+    enf = _make_guarded_enforcer(mount)
+
+    for _ in range(Enforcer._REPEAT_LIMIT - 1):
+        await enf._apply(_correction(5.0, 3.0))
+    await enf._apply(_correction(6.0, 2.0))
+    for _ in range(Enforcer._REPEAT_LIMIT - 1):
+        await enf._apply(_correction(5.0, 3.0))
+
+    enf.safety_demote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deadband_corrections_exempt_from_repetition_guard():
+    """A well-centred star produces near-zero corrections all night —
+    that is healthy, not frozen."""
+    enf = _make_guarded_enforcer(_make_mount())
+
+    for _ in range(3 * Enforcer._REPEAT_LIMIT):
+        await enf._check_repetition(_correction(0.01, -0.01), issued=True)
+
+    enf.safety_demote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pulse_failure_storm_trips_latch():
+    """``_FAIL_LIMIT`` consecutive mount refusals (e.g. the 05:20 UT
+    error-2002 storm) demote instead of hammering forever."""
+    mount = _make_mount()
+    mount.aput_pulseguide.side_effect = RuntimeError("(2002) Error creating value")
+    enf = _make_guarded_enforcer(mount)
+
+    for _ in range(Enforcer._FAIL_LIMIT):
+        await enf._apply(_correction(5.0, 3.0))
+
+    enf.safety_demote.assert_awaited_once()
+    reason = enf.safety_demote.await_args.args[0]
+    assert "consecutive pulse-guide failures" in reason
+
+
+@pytest.mark.asyncio
+async def test_success_resets_failure_latch():
+    """Transient failures interleaved with successes never trip."""
+    mount = _make_mount()
+    enf = _make_guarded_enforcer(mount)
+
+    fail = RuntimeError("(2002) Error creating value")
+    # _FAIL_LIMIT−1 failures, one success, _FAIL_LIMIT−1 failures.
+    script = (
+        [fail] * (Enforcer._FAIL_LIMIT - 1)
+        + [None, None]  # one success = both axis calls succeed
+        + [fail] * (Enforcer._FAIL_LIMIT - 1)
+    )
+    mount.aput_pulseguide.side_effect = script
+    for _ in range(2 * Enforcer._FAIL_LIMIT - 1):
+        await enf._apply(_correction(5.0, 3.0))
+
+    enf.safety_demote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safety_trip_survives_broken_callback(caplog):
+    """A raising demote callback must never take down the enforcer."""
+    mount = _make_mount()
+    enf = _make_guarded_enforcer(mount)
+    enf.safety_demote = AsyncMock(side_effect=RuntimeError("NATS down"))
+
+    with caplog.at_level(logging.ERROR, logger="enforcer"):
+        for _ in range(Enforcer._REPEAT_LIMIT):
+            await enf._apply(_correction(17.92, 4.63))
+
+    assert any("safety_demote callback failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Mode gating (only emit pulses when mode == GUIDING)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_run_loop_skips_when_mode_is_monitoring():
     """The dispatch in `_run` shouldn't call `_apply` outside guiding mode."""

@@ -13,7 +13,17 @@ class Correction:
     """A single guiding correction produced by a Solver method.
 
     Attributes:
-        dx_px, dy_px: Translation correction in pixel space.
+        dx_px, dy_px: **Measured error vector in sensor pixels:**
+            ``star − target`` (where the light IS minus where it SHOULD
+            be; target = ``guide_anchor`` for single-star hold,
+            ``central_point`` for fiber). Solver methods report the raw
+            error and never pre-negate: the pulse-guide model's
+            ``predict()`` computes the cancelling pulse itself
+            (``motion = −error`` — see ``pulse_guide.py``). A method
+            that emits ``target − star`` double-negates and turns the
+            guide loop into positive feedback (the 2026-07-29 fiber
+            runaway, ``NIGHT_REPORT_2026-07-29_stefan.md`` §2.1).
+            Regression-locked by ``tests/unit/test_correction_sign_convention.py``.
         drot_rad: Field rotation observed (None if method doesn't measure
             it). Reported but typically not enforced by Enforcer (no
             rotator on most OCM mounts).

@@ -263,9 +263,13 @@ class AlpacaProtocol:
                         "firmware quirk, transient network glitch during "
                         "exposure, or another Alpaca client reading the "
                         "frame first). Proceeding to fetch the buffer "
-                        "anyway — if bytes are stale or missing, the "
-                        "downstream solver will simply produce no "
-                        "detection this cycle.",
+                        "anyway. NOTE: the buffer may be a STALE repeat "
+                        "of the previous frame — stale bytes contain a "
+                        "perfectly detectable (old) star, so the "
+                        "collector's FrameDeduplicator drops content-"
+                        "identical frames before they reach the solver "
+                        "(the 2026-07-29 frozen-buffer incident guided "
+                        "blind on one for 10.5 h).",
                     )
                     first_loss_logged = True
                 return

@@ -354,6 +354,33 @@ class Controller:
         )
         return {"status": "ok", "guide_anchor": list(new_anchor)}
 
+    async def safety_demote(self, reason: str) -> None:
+        """Autonomous safety action — drop ``guiding`` to ``monitoring``.
+
+        Called by the Enforcer's safety guards (repetition guard,
+        pulse-failure latch — see ``Enforcer`` docstring) when continuing
+        to pulse would harm the observation. ``monitoring`` (not ``off``)
+        is the right landing spot: frames keep flowing so the operator
+        sees the field and the journal entry explaining what happened,
+        but the mount is no longer touched.
+
+        Idempotent and race-tolerant: a no-op unless the pipeline is
+        currently in ``guiding``.
+        """
+        snap = self.pipeline.state.snapshot()
+        if snap.mode != Mode.GUIDING:
+            return
+        logger.error(
+            "Controller(%s) SAFETY DEMOTE guiding → monitoring: %s",
+            self.pipeline.pipeline_id, reason,
+        )
+        await self.set_mode(Mode.MONITORING)
+        await self._publish_event("safety_demote", {"reason": reason})
+        await self._publish_journal(
+            f"⚠ SAFETY: guiding demoted to monitoring — {reason}",
+            level="error",
+        )
+
     async def request_auto_state(self, **suggested: Any) -> dict[str, Any]:
         """Apply an auto-* policy state change requested by Solver.
 
