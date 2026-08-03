@@ -15,7 +15,9 @@ Port 8090 (not 8080) — the host's 8080 is taken by the long-running
 ## Layout
 
     /home/poweruser/src/
-      ocabox-tcs/                 (this repo, branch feat/guider_svc)
+      ocabox-tcs/                 (this repo, branch master — switched
+                                   from feat/guider_svc on 2026-07-30
+                                   after the mainline merge)
       ocabox-guider-ui/           (Angular dashboard, branch master)
 
 Private deps (`araucaria-project/{ocabox,ocabox-common,pyaraucaria,ctc}`)
