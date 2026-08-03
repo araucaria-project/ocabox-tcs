@@ -68,7 +68,11 @@ services:
             gain: 200
             binning: 1
 
-            central_point: [938.87, 575.75]   # fibre entrance pixel
+            # Fibre entrance pixel. History: [938.87, 575.75] (FL2 first
+            # calibration) → [945.76, 572.90] measured by S. Kimeswenger
+            # 2026-08-03 (post camera-service work); keep in sync with
+            # config/guider.jk15.guider_beso.yaml.
+            central_point: [945.76, 572.90]
             wide_search_radius_px: 600
             search_reg_px: 30
             stacking_count: 1

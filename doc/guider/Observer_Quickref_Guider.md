@@ -42,6 +42,19 @@ the fibre entrance itself — see §5.)
 The guider has no knowledge of the science target — it operates purely
 on guider-camera pixels.
 
+??? note "Field of view and magnitude reach (measured 2026-08-02)"
+    - The **usable field is only ~1′ in radius** around the centre —
+      the outer field suffers strong vignetting and distorted stellar
+      images from reflections near the wall. Plan guide-star choices
+      (and the neighbour-star trick from §5) within that inner circle.
+    - Magnitude reach, for orientation: a G ≈ 14.4 star is detectable
+      at 2 s exposure, gain 100; the longest exposure preset is 10 s.
+      In sparse fields (high galactic latitude) the program star may
+      be the only usable source.
+    - The displayed image is flipped and rotated ~90° with respect to
+      the sky — when matching against a sky atlas, mind the
+      orientation (an in-UI compass is on the roadmap).
+
 ---
 
 ## 2. Architecture: the service and its clients
@@ -146,8 +159,9 @@ This sequence covers a standard observing night.
 
 ??? question "A click on a star does not select it — why?"
     The star is outside the **wide-search circle** (drawn around the
-    reticle; radius set by the *wide search r* slider). Selection
-    works only inside it. Either enlarge the circle with the slider,
+    reticle; radius set by the *wide search r* slider) — the UI
+    rejects the click, flashes the circle red and shows a short
+    notice. Selection works only inside the circle. Either enlarge the circle with the slider,
     or bring the star into it with manual pulses / a telescope move
     (in `monitoring`) — selection then engages. The limit exists so
     that re-acquisition after a cloud passage can never silently jump
@@ -177,32 +191,62 @@ This sequence covers a standard observing night.
     | --- | --- |
     | Cross-hair reticle | The fibre entrance (`central_point`). Fixed; the destination. |
     | Green circle + ADU label | The current lock — what the solver is holding this frame. |
-    | Amber broken cross | The **anchor** — where the loop keeps the locked star. |
+    | Amber broken cross (labelled "anchor") | The **anchor** — where the loop keeps the locked star. Shown only in `guiding`, and only while the anchor differs from the reticle. |
+    | Green line | Drawn only in `guiding`, from the star to its actual target (anchor or reticle) — when merely holding position it collapses to nothing. |
     | Large circle around reticle | Wide-search limit — clicks and re-acquisition work only inside. |
     | Small squares (key ++d++) | All candidates the detector found this frame. |
 
     If the green circle is not on the intended star, the loop is not
     guiding on that star — re-select before proceeding.
 
+    **Reticle style** is selectable in the top bar (style picker).
+    The styles differ in how much they cover the pixels at the very
+    centre: *Classic* and *Tank* draw through it, while *SciFi* and
+    *Fighter* leave a wide open centre (*Finder*/*Sniper* a small
+    gap). For fine fibre-injection work pick an open-centre style —
+    watching the star disappear into the hole is the whole point.
+
 ### Method `fiber`
 
-In the `fiber` method the solver tracks the photocentroid of all
-light in a window around the reticle, and the hold target is the
-fibre entrance itself (no star selection, no `drop → reticle`).
-Switching to `fiber` also enables the **fibre-entrance magnifier
-inset** — useful as a close-up view of the injection region.
+Validated on sky 2026-08-01/03 (guiding converged from ~6 px to the
+fibre centre and held) — cleared for regular use.
 
-!!! danger "Do not use `fiber` + `guiding` — awaiting on-sky validation"
-    Testing on 2026-07-29 found defects in fiber-mode guiding (the
-    loop drove the star *away* from the fibre; the lock indicator
-    could latch onto noise). Fixes are deployed but not yet validated
-    on sky — until this notice is lifted, **do not engage `guiding`
-    while in `fiber`**.
+The `fiber` method works on a **different principle** than `single`,
+and the controls change meaning accordingly:
 
-    `fiber` + **`monitoring`** is safe and allowed: no pulses are
-    sent, and you keep the magnifier inset for visual checks during
-    manual work. `single` + `drop → reticle` covers the actual
-    guiding for all observing scenarios in the meantime.
+- There is **no star detection and no star selection**. The solver
+  integrates *all* light in a small analysis window around the
+  reticle and computes its photocentroid. Left-click selection,
+  candidate squares and ++tab++ cycling do nothing here.
+- The hold target **is the fibre entrance itself** (the reticle).
+  Switching to `guiding` immediately pulls the light toward the
+  fibre — there is no anchor and no `drop → reticle` step (the
+  button stays disabled by design).
+- "Acquired" means *"there is usable light in the window"*, not
+  *"a star is locked"*. The green circle marks the photocentroid of
+  the residual light (the halo around the hole), which legitimately
+  sits near the hole rim — do not expect it to sit on a stellar core.
+- Light that falls **into** the hole disappears from the detector —
+  a well-injected star shows only a faint ring. Corrections inside
+  the hole radius are suppressed (dead zone), so a centred star is
+  left alone.
+- The **reticle magnifier inset** (close-up of the injection region)
+  has its own toggle button in the zoom-control stack and works in
+  every method; it switches on automatically the first time you enter
+  `fiber` (until you use the toggle yourself). The MANUAL PULSE pad
+  stays visible in fiber mode; the fiber tuning knobs sit in a
+  collapsed "fiber config" section below it.
+
+Intended use: first park the star on the fibre with `single` +
+`drop → reticle`, then switch to `fiber` to track the integrated
+light. Fine-tuning of the hole-compensation parameters
+(`hole zone factor`) is still ongoing — if convergence looks odd on
+your night, note the conditions (seeing!) and report.
+
+!!! tip "Close-up view during manual work"
+    The reticle magnifier works in any method and any mode — toggle
+    it from the zoom controls whenever you need the injection-region
+    close-up (no need to switch methods just for the view).
 
 ### Method `multi`
 
@@ -220,18 +264,21 @@ Keys act when the UI window has focus and no text input is active.
 | ++r++ | re-acquire — force wide-search around target |
 | ++tab++ / ++shift+tab++ | (single) cycle lock through detected candidates |
 | ++arrow-up++ ++arrow-down++ ++arrow-left++ ++arrow-right++ | manual pulse, image-axis pixels (current step) |
-| ++1++ / ++2++ / ++3++ / ++4++ | pulse duration preset → 200 / 500 / 1000 / 2000 ms |
+| ++1++ / ++2++ / ++3++ / ++4++ | arrow step → 1 / 5 / 10 / 30 px (the MANUAL PULSE pad highlights the active one) |
 | ++plus++ / ++minus++ / ++0++ | frame zoom |
 | ++d++ | toggle detection-candidates overlay |
 | ++h++ | reticle home — restore the calibrated fibre position (see Mouse notes below) |
 | ++question++ | full shortcut panel |
 
-!!! warning "Pulse scale on jk15: the smallest duration preset moves ~8 px"
-    The mount responds ≈ 26 ms per pixel, so preset ++1++ (200 ms)
-    moves the star ≈ 8 px — more than the fibre hole radius (5 px).
-    For fine centring use the smallest **pixel** step in the MANUAL
-    PULSE panel (down to 1 px), not the duration presets. Finer
-    keyboard steps are planned.
+!!! info "Manual pulses are pixel-denominated"
+    Arrows and the MANUAL PULSE pad move the star by a chosen number
+    of **image pixels** (the service translates through the calibrated
+    mount model); keys ++1++–++4++ pick the step. The 1 px step is the
+    tool for fine fibre-injection work (hole radius = 5 px). Note: a
+    single 1 px request may be skipped or rounded by the mount-side
+    minimum-pulse policy — repeated presses average out correctly.
+    The pad's ms-mode (raw pulse durations) remains available for
+    calibration-style work.
 
 Mouse:
 
@@ -378,7 +425,7 @@ parks, or syncs.
 | No thumbnails in UI | Thumbnail HTTP base in the Connection panel. |
 | `drop → reticle` greyed out | Requires `single` + `guiding` + `acquired = yes`. |
 | No detection candidates | exp_time too low / sparse field — or method is `fiber` (no candidates by design); switch to `single`. |
-| Green circle wanders off the star, ADU reads a few counts | Method is `fiber` (§5 — no `guiding` there until validated). Switch to `single`, re-select. |
+| In `fiber`, green circle sits near the hole rim, not on the star | Normal — it marks the photocentroid of the residual halo (§5), not a stellar core. Low ADU (a few counts) with **no star near the fibre** means the gate sees noise-level light — check the field. |
 | Star locked but drift grows | Switch to `monitoring`, contact the maintainer (pulse-model calibration). |
 | Camera `unavailable` / NRE / `Camera appears FROZEN` in status | Guider-camera server on `jk15-ccd` needs maintainer attention. Do **not** run any `*@jk15-beso` command (§7 — that is the spectrograph science camera). |
 
@@ -424,8 +471,9 @@ parks, or syncs.
 - **Client** — a browser session of the web UI; displays service
   state and sends commands; has no state of its own worth preserving.
 - **Method** — the solver strategy: `single` (default; holds one star
-  selected by the operator) or `fiber` (photocentroid around the
-  reticle — currently disabled, §5).
+  selected by the operator) or `fiber` (tracks the photocentroid of
+  all light around the reticle; the fibre entrance itself is the
+  target — §5).
 - **Mode** — the service's operating state: `off` (camera idle),
   `monitoring` (frames + solver, **no pulses**), `guiding` (active
   corrections).
