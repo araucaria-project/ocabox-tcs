@@ -64,10 +64,18 @@ services:
             binning: 1
 
             # Where the star should sit on the sensor — the fibre entrance
-            # pixel for BESO. Measured 2026-05-07 from live frame after
-            # operator dragged the reticle into the visible fibre hole and
-            # confirmed alignment. UI "home" key restores to this value.
-            central_point: [938.87, 575.75]
+            # pixel for BESO. UI "home" key restores to this value.
+            #
+            # 2026-08-03: [945.76, 572.90] — re-measured by S. Kimeswenger
+            #   after the M5 maintenance shifted the fibre image on the
+            #   sensor (guider camera itself untouched); see
+            #   doc/guider/BESO_quick_status_report.pdf. Note: dome
+            #   temperature changes can move this within a night — the
+            #   operator may fine-adjust the runtime reticle (right-click);
+            #   this value is the calibrated "home".
+            # 2026-05-07: [938.87, 575.75] — original measurement from live
+            #   frame (operator dragged reticle into the visible fibre hole).
+            central_point: [945.76, 572.90]
 
             wide_search_radius_px: 600   # cold-start search circle radius
             search_reg_px: 30            # narrow re-acquisition half-window

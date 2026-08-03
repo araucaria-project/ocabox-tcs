@@ -223,7 +223,7 @@ Keys act when the UI window has focus and no text input is active.
 | ++1++ / ++2++ / ++3++ / ++4++ | pulse duration preset → 200 / 500 / 1000 / 2000 ms |
 | ++plus++ / ++minus++ / ++0++ | frame zoom |
 | ++d++ | toggle detection-candidates overlay |
-| ++h++ | reticle home — restore calibrated default (admin; rare) |
+| ++h++ | reticle home — restore the calibrated fibre position (see Mouse notes below) |
 | ++question++ | full shortcut panel |
 
 !!! warning "Pulse scale on jk15: the smallest duration preset moves ~8 px"
@@ -237,9 +237,25 @@ Mouse:
 
 - **Left-click** *(single)* — lock onto a star near the click. The
   mount is not moved until `guiding` is engaged.
-- **Right-click** — move the target reticle (**administrative
-  operation**; do not use during normal observing).
+- **Right-click** — move the target reticle to the clicked position.
+  This is the sanctioned in-night adjustment for when the fibre image
+  has shifted on the sensor (dome temperature changes can move it,
+  even within a night): place the reticle on the actual fibre
+  position, then work normally. In `guiding` the current lock is
+  kept — the new reticle position takes effect as target on the next
+  `drop → reticle`. If the shift is persistent, report the new
+  coordinates so the calibrated home gets updated (see the
+  recalibration note in §10).
 - **Wheel** — zoom around cursor.
+
+!!! info "++h++ (home) returns the reticle to the *calibrated* position"
+    ++h++ restores the reticle to the calibrated default from the
+    service configuration — useful after an accidental right-click.
+    Mind the flip side: if the fibre genuinely moved and you adjusted
+    the reticle deliberately, ++h++ throws that adjustment away. And
+    if the calibration itself is stale (fibre moved, maintainer not
+    yet informed), home restores a *wrong* position — report shifts
+    promptly.
 
 ---
 
@@ -379,18 +395,25 @@ parks, or syncs.
        hole is visible as a dark spot on a bright background
        (`monitoring`, adjust exp_time until the background is bright
        but unsaturated).
-    2. Zoom into the hole region and read off the **pixel coordinates
-       of the hole centre** (cursor position readout in the frame
-       corner); a screenshot of the zoomed hole helps.
+    2. Zoom into the hole region and **right-click the hole centre** —
+       this is the recommended way to determine the new position: it
+       places the reticle exactly where you clicked, and the reticle
+       readout in the status bar then shows the measured coordinates
+       (more reliable than reading the cursor position by eye). A
+       screenshot of the zoomed hole with the reticle on it helps.
     3. **Send the coordinates + screenshot to the maintainer**
        (address below) — do not edit the service configuration
        yourselves. The maintainer updates `central_point`, and the
        calibrated "home" position of the reticle follows.
 
-    Until the new calibration is applied, the reticle can be dragged
-    to the measured hole position manually (right-click) as a
-    same-night workaround — but report it regardless, otherwise the
-    next observer starts with the stale calibration.
+    The same right-click doubles as the **temporary fix**: with the
+    reticle on the true hole position you can simply continue
+    observing — `drop → reticle` and the fiber view now target the
+    correct spot for the rest of the night. Two things to remember
+    until the calibrated default is updated: do **not** press ++h++
+    (it would restore the stale position), and report the shift
+    regardless — otherwise the next observer starts with the stale
+    calibration.
 
 ---
 
