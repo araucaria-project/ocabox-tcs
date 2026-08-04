@@ -78,6 +78,7 @@ class ThumbnailEmitter:
         if self._task is not None:
             return
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._kept_seq = self._highest_existing_seq()
         self._running = True
         self._task = asyncio.create_task(self._run(), name="thumbnail_emitter")
         logger.info(
@@ -179,6 +180,27 @@ class ThumbnailEmitter:
         self._prune_old(keep_latest=path)
         return path, pil.size
 
+    def _highest_existing_seq(self) -> int:
+        """Resume numbering after the newest file already on disk.
+
+        Without this the counter restarts at zero on every service start,
+        so a restart overwrites the oldest frames still in the ring —
+        negligible when the ring holds minutes, destructive once it is
+        sized to hold a whole observing night.
+        """
+        best = 0
+        try:
+            for p in self.output_dir.glob("*.jpg"):
+                if p.name == "latest.jpg":
+                    continue
+                try:
+                    best = max(best, int(p.stem))
+                except ValueError:
+                    continue  # foreign filename — ignore, don't crash boot
+        except OSError:
+            return 0
+        return best
+
     def _prune_old(self, *, keep_latest: Path) -> None:
         """Drop oldest sequence files when more than ``max_files`` are present.
 
@@ -187,9 +209,14 @@ class ThumbnailEmitter:
         to the newest remaining file before returning.
         """
         try:
+            # Sort by NAME, not mtime: names are zero-padded monotonic
+            # sequence numbers, so the orderings agree — and sorting by
+            # name avoids one ``stat()`` per file per frame. That matters
+            # once ``max_files`` is large enough to hold a whole night
+            # (40 000 files ⇒ 40 000 stat() calls per thumbnail, ~0.1 s
+            # of pointless work in the emitter thread every frame).
             files = sorted(
-                (p for p in self.output_dir.glob("*.jpg") if p.name != "latest.jpg"),
-                key=lambda p: p.stat().st_mtime,
+                p for p in self.output_dir.glob("*.jpg") if p.name != "latest.jpg"
             )
         except OSError:
             return
