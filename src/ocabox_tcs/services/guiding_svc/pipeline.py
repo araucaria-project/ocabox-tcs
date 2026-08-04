@@ -59,12 +59,17 @@ class Pipeline:
         pulse_guide_model: Any | None = None,
         enforcer_kwargs: dict[str, Any] | None = None,
         thumbnail_emitter: Any | None = None,
+        method_param_defaults: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.state = PipelineStateHolder(initial_state)
         self.collector = collector
         self.method = method
         self.queue_depth = queue_depth
         self.mount = mount
+        # Per-method parameter defaults from the installation config,
+        # keyed by method name. Merged under caller-supplied params on
+        # every ``swap_method`` — see there for why.
+        self._method_param_defaults = method_param_defaults or {}
 
         # Inter-stage queues
         self._raw_q: asyncio.Queue[RawFrame] = asyncio.Queue(maxsize=queue_depth)
@@ -111,12 +116,24 @@ class Pipeline:
     def pipeline_id(self) -> str:
         return self.state.snapshot().pipeline_id
 
-    def swap_method(self, method_name: str, method_params: dict[str, Any]) -> None:
+    def swap_method(
+        self, method_name: str, method_params: dict[str, Any]
+    ) -> dict[str, Any]:
         """Replace the active solver method at runtime.
 
         Used when the operator toggles between methods in the UI (e.g.
         ``single_star`` ↔ ``fiber_photocentroid``). The Solver task keeps
         running on the same queues; only the per-frame algorithm changes.
+
+        The caller's params are merged **on top of** the installation
+        config's per-method defaults (``method_param_defaults``), and the
+        merged dict is returned so the caller can record what actually
+        took effect. Rationale: UI clients ship their own snapshot of
+        the parameter vocabulary, so a parameter added in config after
+        the UI was built would otherwise be silently dropped on every
+        method switch — the config would claim one behaviour and the
+        running method would have another. Per-key, an explicit caller
+        value still wins (the operator's panel edit beats the config).
 
         Lookups + instantiation use the global ``METHODS`` registry. The
         new method receives the same controller hook as the old one, so
@@ -134,16 +151,21 @@ class Pipeline:
         cls = METHODS.get(method_name)
         if cls is None:
             raise ValueError(f"Unknown solver method {method_name!r}")
-        new_method = cls(**(method_params or {}))
+        defaults = self._method_param_defaults.get(method_name, {})
+        merged = {**defaults, **(method_params or {})}
+        new_method = cls(**merged)
         self.method = new_method
         if hasattr(self._solver, "method"):
             self._solver.method = new_method
         if hasattr(self._solver, "_controller") and hasattr(new_method, "controller"):
             new_method.controller = self._solver._controller
+        filled = sorted(set(defaults) - set(method_params or {}))
         logger.info(
-            "Pipeline %s method swapped → %s (params keys: %s)",
-            self.pipeline_id, method_name, list((method_params or {}).keys()),
+            "Pipeline %s method swapped → %s (params keys: %s%s)",
+            self.pipeline_id, method_name, sorted(merged),
+            f"; from config defaults: {filled}" if filled else "",
         )
+        return merged
 
     async def start(self) -> None:
         if self._started:

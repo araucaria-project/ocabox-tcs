@@ -139,13 +139,21 @@ class Controller:
         # therefore takes effect on the very next frame.
         if "method" in coerced and coerced["method"] != prev_method:
             try:
-                self.pipeline.swap_method(
+                effective_params = self.pipeline.swap_method(
                     coerced["method"],
                     coerced.get(
                         "method_params",
                         self.pipeline.state.snapshot().method_params,
                     ),
                 )
+                # The swap may have filled parameters from the config's
+                # per-method defaults; the published state must report
+                # what the method actually runs with, not the caller's
+                # (possibly incomplete) request.
+                if effective_params != self.pipeline.state.snapshot().method_params:
+                    await self.pipeline.state.update(method_params=effective_params)
+                    new_state = self._snapshot_dict()
+                    await self._publish_state(new_state)
                 await self._publish_event(
                     "method_changed",
                     {"from": prev_method, "to": coerced["method"]},

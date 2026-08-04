@@ -421,3 +421,60 @@ def test_serialise_passes_primitives():
     assert _serialise(3.14) == 3.14
     assert _serialise("x") == "x"
     assert _serialise([1, Mode.OFF]) == [1, "off"]
+
+
+# ---------------------------------------------------------------------------
+# Method swap: config defaults merge (stale-UI protection)
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_with_defaults(defaults: dict) -> Pipeline:
+    state = PipelineState(pipeline_id="mon", camera_id="cam-A", mode=Mode.OFF)
+    return Pipeline(
+        initial_state=state,
+        collector=MagicMock(),
+        method=DummyMethod(),
+        queue_depth=2,
+        mount=None,
+        method_param_defaults=defaults,
+    )
+
+
+def test_swap_method_fills_params_from_config_defaults():
+    """A UI ships its own snapshot of the parameter vocabulary — a
+    parameter added in config after the UI was built must still reach
+    the method on swap, or the config claims one behaviour while the
+    running method has another."""
+    pipeline = _pipeline_with_defaults(
+        {"fiber_photocentroid": {"fiber_radius_px": 5.0, "dead_zone_px": 2.0}}
+    )
+    # Caller (stale UI) knows nothing about dead_zone_px.
+    merged = pipeline.swap_method(
+        "fiber_photocentroid",
+        {"fiber_radius_px": 5.0, "analysis_radius_px": 15.0},
+    )
+    assert merged["dead_zone_px"] == 2.0
+    assert pipeline.method.dead_zone_px == 2.0
+
+
+def test_swap_method_caller_value_beats_config_default():
+    """The operator's explicit panel edit wins over the config default,
+    key by key."""
+    pipeline = _pipeline_with_defaults(
+        {"fiber_photocentroid": {"dead_zone_px": 2.0, "fiber_radius_px": 5.0}}
+    )
+    merged = pipeline.swap_method(
+        "fiber_photocentroid", {"dead_zone_px": 1.0}
+    )
+    assert merged["dead_zone_px"] == 1.0
+    assert pipeline.method.dead_zone_px == 1.0
+    assert merged["fiber_radius_px"] == 5.0  # gap still filled
+
+
+def test_swap_method_without_defaults_unchanged():
+    """No defaults configured for the target method → caller params pass
+    through verbatim (legacy behaviour)."""
+    pipeline = _pipeline_with_defaults({})
+    merged = pipeline.swap_method("fiber_photocentroid", {"fiber_radius_px": 4.0})
+    assert merged == {"fiber_radius_px": 4.0}
+    assert pipeline.method.dead_zone_px is None

@@ -90,13 +90,11 @@ services:
               max_concentration: 0.5
               rank_by: aperture
 
-            # Method-specific param sets. The Controller swaps the method
-            # at runtime via set_state({"method": "fiber_photocentroid",
-            # "method_params": {...}}) — UI dispatches when operator picks
-            # a method in the radio. Keep these blocks here so the UI
-            # (or a future "preset" picker) can load the right defaults
-            # when switching. Not consumed automatically; informational
-            # for now.
+            # Method-specific param sets, consumed as DEFAULTS on every
+            # runtime method swap: the server merges the caller's
+            # method_params on top of this block, so a parameter declared
+            # here reaches the method even when the UI predates it.
+            # Per-key, an explicit caller value wins.
             fiber_method_params:
               fiber_radius_px: 5.0           # geometric hole radius (px)
               analysis_radius_px: 15.0       # window half-size around reticle

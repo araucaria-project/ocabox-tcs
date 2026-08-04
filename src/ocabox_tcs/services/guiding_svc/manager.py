@@ -481,6 +481,17 @@ class GuiderManager:
         thumbnail_emitter = self._build_thumbnail_emitter(
             cam_id, pipe_id, pipe_cfg.get("thumbnails") or {}
         )
+        # Per-method parameter defaults for runtime method swaps. The
+        # boot method's block is ``method_params``; the fibre method has
+        # its own dedicated block. Without this map, a UI switching
+        # methods with its built-in parameter snapshot silently drops
+        # any parameter the config declares but the UI predates.
+        method_param_defaults: dict[str, dict[str, Any]] = {
+            "fiber_photocentroid": dict(pipe_cfg.get("fiber_method_params") or {}),
+        }
+        method_param_defaults.setdefault(
+            method_name, dict(pipe_cfg.get("method_params") or {})
+        )
         pipeline = Pipeline(
             initial_state=state,
             collector=collector,
@@ -490,6 +501,7 @@ class GuiderManager:
             pulse_guide_model=pulse_guide_model,
             enforcer_kwargs=enforcer_kwargs,
             thumbnail_emitter=thumbnail_emitter,
+            method_param_defaults=method_param_defaults,
         )
         controller = Controller(pipeline)
 
