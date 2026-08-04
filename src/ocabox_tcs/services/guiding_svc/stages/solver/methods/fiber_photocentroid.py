@@ -8,7 +8,25 @@ the hole, more flux escapes onto the wings; the *photocentroid* of that
 escaping flux points away from the fiber, toward where the star
 geometrically is.
 
-A pure 1:1 correction from that photocentroid systematically *under*-shoots
+.. warning::
+
+   **The premise of the compensation below is wrong.** The hole removes
+   the light nearest its own centre, so the photocentroid of what escapes
+   is pushed *outward*: it **over**-shoots the true star offset by a
+   factor of roughly 1.3–2.5 near the hole. It does not under-shoot, as
+   the original rationale (kept below, because the code still implements
+   it) assumed. The ramp therefore compensates in the wrong direction,
+   and its dead zone suppresses corrections for offsets that matter.
+
+   Deliberately left in place: this is on-sky-validated behaviour, and
+   replacing it changes guiding, which needs its own on-sky test. Note
+   that a correct target position and a narrower dead zone have to land
+   together — a wide dead zone around a correct target is still wide, and
+   a narrow one around a stale target still chases the wrong place. See
+   ``doc/guider/reticle-target-detection.md``.
+
+Original rationale, superseded but describing the implemented code:
+a pure 1:1 correction from that photocentroid systematically *under*-shoots
 the real offset: when the star is half-in / half-out of the hole, the
 apparent photocentroid sits between the hole rim and the star centre,
 not at the star itself. So we apply a geometric piecewise-linear
@@ -26,7 +44,6 @@ compensation:
           as d_apparent goes from ``fiber_radius_px`` to
           ``fiber_radius_px · hole_zone_factor``.
 
-Operator-confirmed (2026-05-15) — see ``doc/guider/SESSION_HANDOFF_2026-05-15.md``.
 The tuning knob is ``hole_zone_factor`` (default 2.0). Lower = more
 aggressive (correction kicks in sooner, more overshoot risk). Higher =
 more conservative (more undershoot, slower convergence, fewer oscillations).
@@ -93,6 +110,7 @@ class FiberPhotocentroidMethod:
         adu_sigma_threshold: float = 3.0,
         hole_zone_factor: float = 2.0,
         saturation_adu: float = 62_000.0,
+        dead_zone_px: float | None = None,
         **params: Any,
     ) -> None:
         if hole_zone_factor <= 1.0:
@@ -101,11 +119,30 @@ class FiberPhotocentroidMethod:
                 "(needs strictly larger than 1 for the linear ramp to exist; "
                 "use a value like 2.0)"
             )
+        if dead_zone_px is not None and dead_zone_px < 0:
+            raise ValueError(f"dead_zone_px must be >= 0, got {dead_zone_px!r}")
         self.fiber_radius_px = float(fiber_radius_px)
         self.analysis_radius_px = float(analysis_radius_px)
         self.adu_sigma_threshold = float(adu_sigma_threshold)
         self.hole_zone_factor = float(hole_zone_factor)
         self.saturation_adu = float(saturation_adu)
+        # Dead-zone width decoupled from the hole radius. ``None``
+        # selects the legacy behaviour (dead zone spans the full
+        # ``fiber_radius_px``, then the ramp). When set, the piecewise
+        # ramp is replaced by a plain threshold: below → zero, above →
+        # 1:1 on the apparent offset, with the Enforcer's damping and
+        # min-pulse policy handling overshoot and sub-threshold pulses.
+        #
+        # Why this exists: apparent offsets under-report nothing — the
+        # photocentroid *over*-shoots (see module warning) — so a dead
+        # zone equal to the hole radius (5 px apparent ≈ 3.4 px real)
+        # silences the loop over offsets that already cost real
+        # coupling. Stability of the 1:1 branch: with overshoot ≤ 2.5×
+        # and damping 0.5 the per-cycle error ratio is ≤ |1 − 1.25| =
+        # 0.25, i.e. convergent; the repetition guard and safety demote
+        # bound the pathological cases. Runtime-reversible via a
+        # ``method_params`` patch (no restart).
+        self.dead_zone_px = None if dead_zone_px is None else float(dead_zone_px)
         self.params = params
         self.controller: Any | None = None
 
@@ -182,9 +219,9 @@ class FiberPhotocentroidMethod:
         # iid assumption behind the √n gate below: bands make whole
         # rows move together, so the effective number of independent
         # samples is ~rows, not pixels, and a scalar-background
-        # residual sum passes the gate on pure background structure
-        # (observed live 2026-07-30: "acquired" at ~40 ADU on a dark
-        # region). Row/column medians remove bands and gradients while
+        # residual sum passes the gate on pure background structure —
+        # observed on hardware as a lock declared at ~40 ADU on a dark
+        # region. Row/column medians remove bands and gradients while
         # leaving a compact star intact (the star occupies a minority
         # of any row/column of the window, so medians ignore it).
         # Saturated pixels are NaN during destriping so they can't
@@ -222,25 +259,27 @@ class FiberPhotocentroidMethod:
         # holds and ``adu_sigma_threshold · noise · √n_pix`` is a valid
         # threshold.
         #
-        # Two historical traps, both regression-locked in
-        # ``tests/unit/test_fiber_photocentroid.py``:
+        # Two ways to get this wrong, both regression-locked in
+        # ``tests/unit/test_fiber_photocentroid.py`` because both were
+        # observed on sky as a lock onto empty background:
         # 1. The gate must NOT use ``total_flux`` (the clipped sum):
         #    clipping negatives makes pure noise sum to ≈ 0.4·n·σ vs a
-        #    gate of 3σ√n — empty sky passes 4× over threshold. That is
-        #    the 2026-07-29 "acquired at 5 ADU" noise-lock
-        #    (``NIGHT_REPORT_2026-07-29_stefan.md`` §2.2).
+        #    gate of 3σ√n, so empty sky passes 4× over threshold.
         # 2. The residual must be DE-STRIPED first (see above):
         #    line-correlated banding passes a scalar-background gate on
-        #    structure alone (observed live 2026-07-30, "acquired" at
-        #    ~40 ADU on a dark region).
+        #    structure alone.
         signal = float(residual.sum())
         gate = self.adu_sigma_threshold * noise * float(np.sqrt(max(n_pix, 1)))
         if signal < gate:
             # No usable signal — star is in the hole, behind a cloud,
             # or not there at all. Don't emit a correction; let the
             # mount track sidereally until flux returns.
-            logger.debug(
-                "fiber gate: signal=%.0f < gate=%.0f (bg=%.1f noise=%.1f n=%d)",
+            # INFO, not DEBUG: "no light reached the detector" and "light
+            # is centred, nothing to do" are the two explanations for a
+            # quiet mount, and both otherwise emit dx=dy=0 — the log is
+            # the only place they can be told apart afterwards.
+            logger.info(
+                "fiber: NO SIGNAL — signal=%.0f < gate=%.0f (bg=%.1f noise=%.1f n=%d)",
                 signal, gate, bg, noise, n_pix,
             )
             await self._notify_acquired(False, None, None, frame_phase=phase.value)
@@ -262,18 +301,27 @@ class FiberPhotocentroidMethod:
         pc_y = float((net * y_off).sum() / total_flux)
         d_apparent = float(np.hypot(pc_x, pc_y))
 
-        # Piecewise-linear hole-bias compensation. See module docstring
-        # for the geometric rationale.
-        fib_r = self.fiber_radius_px
-        full_at = fib_r * self.hole_zone_factor
-        if d_apparent <= fib_r:
-            d_corrected = 0.0
-        elif d_apparent >= full_at:
-            d_corrected = d_apparent
+        if self.dead_zone_px is not None:
+            # Decoupled dead zone: plain threshold + 1:1. See __init__
+            # for the rationale and the stability argument. The apparent
+            # offset over-reports the real one (module warning), so the
+            # 1:1 branch is an over-correction that the Enforcer's
+            # damping turns into fast, convergent settling.
+            d_corrected = 0.0 if d_apparent <= self.dead_zone_px else d_apparent
         else:
-            # Linear ramp from 0 at d=fib_r to full_at at d=full_at.
-            t = (d_apparent - fib_r) / (full_at - fib_r)
-            d_corrected = t * full_at
+            # Legacy piecewise-linear ramp. Kept as the default until the
+            # decoupled dead zone is validated on sky; see the module
+            # warning for why its premise is inverted.
+            fib_r = self.fiber_radius_px
+            full_at = fib_r * self.hole_zone_factor
+            if d_apparent <= fib_r:
+                d_corrected = 0.0
+            elif d_apparent >= full_at:
+                d_corrected = d_apparent
+            else:
+                # Linear ramp from 0 at d=fib_r to full_at at d=full_at.
+                t = (d_apparent - fib_r) / (full_at - fib_r)
+                d_corrected = t * full_at
 
         # Scale the photocentroid vector to the corrected magnitude.
         #
@@ -285,11 +333,10 @@ class FiberPhotocentroidMethod:
         # must NOT pre-negate. ``(pc_x, pc_y)`` already is
         # ``photocentroid − reticle`` = the error — pass it through.
         #
-        # History: until 2026-07-30 this was negated ("push the star
-        # back"), double-negating with the model and turning the loop
-        # into positive feedback — on sky the star was driven *away*
-        # from the fibre, error growing 0.3 → 12 px in ~11 s. See
-        # ``doc/guider/NIGHT_REPORT_2026-07-29_stefan.md`` §2.1.
+        # Do not "helpfully" negate here to push the star back: that
+        # double-negates with the model and turns the loop into positive
+        # feedback, driving the star away from the fibre (measured on sky:
+        # error growing 0.3 → 12 px in ~11 s).
         if d_apparent > 1e-3 and d_corrected > 0:
             scale = d_corrected / d_apparent
             dx_corr = pc_x * scale
@@ -302,6 +349,19 @@ class FiberPhotocentroidMethod:
             # pulse since the magnitude is 0.
             dx_corr = 0.0
             dy_corr = 0.0
+
+        # Per-frame diagnostics at INFO. The ``metadata`` assembled below
+        # is not published anywhere, so without this line the method's
+        # decision is unobservable: a dead-zone verdict and a gate failure
+        # both reach the mount as dx=dy=0. Volume is ~1 line per frame,
+        # the same order as the controller and enforcer already emit.
+        logger.info(
+            "fiber: pc=(%+.2f,%+.2f) d_app=%.2f → d_corr=%.2f%s "
+            "flux=%.0f gate=%.0f noise=%.1f n=%d",
+            pc_x, pc_y, d_apparent, d_corrected,
+            " [DEAD ZONE]" if d_corrected <= 0 else "",
+            total_flux, gate, noise, n_pix,
+        )
 
         # Lock-state update. ``acquired_pos`` = where the photocentroid
         # currently sits in the sensor frame, so the UI can plot a

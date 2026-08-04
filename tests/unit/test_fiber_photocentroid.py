@@ -267,3 +267,68 @@ async def test_ramp_zone_shrinks_correction_magnitude() -> None:
     assert correction is not None
     assert 0 < correction.dx_px < 6.0 + 1.0
     assert 0 < correction.dy_px < 4.0 + 1.0
+
+
+# ---------------------------------------------------------------------------
+# Decoupled dead zone (``dead_zone_px``)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decoupled_dead_zone_reacts_to_small_offsets() -> None:
+    """The failure the parameter exists to fix: an offset well inside the
+    hole radius (apparent ~4 px < fiber_radius 5) is silenced by the
+    legacy ramp but must produce a real correction once ``dead_zone_px``
+    is set below it. Without this, re-referencing the reticle onto a
+    freshly measured entrance changes nothing for few-px drifts — the
+    loop stays convinced it is centred."""
+    legacy = _fiber_method()
+    decoupled = _fiber_method(dead_zone_px=1.5)
+    frame = _frame([((CENTRAL[0] + 3.0, CENTRAL[1]), 8_000.0)])
+
+    silenced = await legacy.solve(frame, _state())
+    corrected = await decoupled.solve(frame, _state())
+
+    assert silenced is not None
+    assert silenced.dx_px == pytest.approx(0.0)
+    assert corrected is not None
+    assert corrected.dx_px > 1.5  # 1:1 on the apparent offset, sign preserved
+    assert corrected.dy_px == pytest.approx(0.0, abs=1.0)
+
+
+@pytest.mark.asyncio
+async def test_decoupled_dead_zone_still_silences_noise_at_centre() -> None:
+    """Centred star: apparent offset below ``dead_zone_px`` must stay a
+    zero-magnitude correction — the threshold still exists, it is just
+    no longer as wide as the hole."""
+    method = _fiber_method(dead_zone_px=1.5)
+    frame = _frame([(CENTRAL, 8_000.0)])
+
+    correction = await method.solve(frame, _state())
+
+    assert correction is not None
+    assert correction.dx_px == pytest.approx(0.0)
+    assert correction.dy_px == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_unset_dead_zone_px_preserves_legacy_ramp() -> None:
+    """``dead_zone_px=None`` (the default) must reproduce the legacy
+    piecewise behaviour exactly — the parameter is opt-in and a config
+    rollback (or a ``method_params`` patch) restores tonight's flight-
+    proven behaviour without a restart."""
+    legacy = _fiber_method()
+    explicit_none = _fiber_method(dead_zone_px=None)
+    frame = _frame([((CENTRAL[0] + 6.0, CENTRAL[1] + 4.0), 8_000.0)])
+
+    a = await legacy.solve(frame, _state())
+    b = await explicit_none.solve(frame, _state())
+
+    assert a is not None and b is not None
+    assert a.dx_px == pytest.approx(b.dx_px)
+    assert a.dy_px == pytest.approx(b.dy_px)
+
+
+def test_negative_dead_zone_rejected() -> None:
+    with pytest.raises(ValueError, match="dead_zone_px"):
+        _fiber_method(dead_zone_px=-1.0)
