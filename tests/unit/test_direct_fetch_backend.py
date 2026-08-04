@@ -15,10 +15,21 @@ from serverish.base import dt_utcnow_array
 from ocabox_tcs.services.guiding_svc._borrowed.ofp.alpaca_http import (
     AlpacaFetchError,
 )
+from ocabox_tcs.services.guiding_svc.backends import direct_fetch
 from ocabox_tcs.services.guiding_svc.backends.direct_fetch import (
     DirectFetchBackend,
 )
 from ocabox_tcs.services.guiding_svc.protocols.base import FetchedFrame
+from tests.helpers.virtual_time import VirtualClock
+
+
+@pytest.fixture
+def clock(monkeypatch) -> VirtualClock:
+    """Virtual time for the retry back-off — the delay stays asserted
+    (see the retry tests) but costs no wall clock."""
+    vclock = VirtualClock()
+    vclock.install(monkeypatch, direct_fetch)
+    return vclock
 
 
 def _make_frame(seed: int = 0) -> FetchedFrame:
@@ -70,7 +81,7 @@ async def test_submit_one_passes_params_to_protocol():
 
 
 @pytest.mark.asyncio
-async def test_submit_one_retries_once_on_transient_error():
+async def test_submit_one_retries_once_on_transient_error(clock):
     expected = _make_frame(seed=7)
     proto = _make_protocol(
         fetch_side_effect=[AlpacaFetchError("hiccup"), expected]
@@ -79,10 +90,11 @@ async def test_submit_one_retries_once_on_transient_error():
     out = await be.submit_one(exp_time=0.1)
     assert out is expected
     assert proto.fetch.await_count == 2
+    assert clock.sleeps == [direct_fetch._RETRY_BACKOFF_S]
 
 
 @pytest.mark.asyncio
-async def test_submit_one_bubbles_after_second_failure():
+async def test_submit_one_bubbles_after_second_failure(clock):
     proto = _make_protocol(
         fetch_side_effect=[AlpacaFetchError("first"), AlpacaFetchError("second")]
     )
@@ -90,6 +102,7 @@ async def test_submit_one_bubbles_after_second_failure():
     with pytest.raises(AlpacaFetchError, match="second"):
         await be.submit_one(exp_time=0.1)
     assert proto.fetch.await_count == 2
+    assert clock.sleeps == [direct_fetch._RETRY_BACKOFF_S]
 
 
 @pytest.mark.asyncio

@@ -468,9 +468,22 @@ async def test_run_loop_skips_when_mode_is_monitoring():
     )
     await enf.in_queue.put(_correction(0.0, 10.0))
 
+    # The run loop snapshots the state immediately after dequeuing, with
+    # no await before the mode branch resolves — waiting on that call
+    # proves the correction was seen and dispatched, where a sleep could
+    # only guess at it.
+    dispatched = asyncio.Event()
+    snapshot = enf.state.snapshot
+
+    def snapshot_and_signal():
+        state = snapshot()
+        dispatched.set()
+        return state
+
+    enf.state.snapshot = snapshot_and_signal
+
     await enf.start()
-    # Give the run loop a moment to consume the queue.
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(dispatched.wait(), timeout=5.0)
     await enf.stop()
 
     mount.aput_pulseguide.assert_not_awaited()

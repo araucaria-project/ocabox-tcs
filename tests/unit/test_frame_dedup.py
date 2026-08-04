@@ -15,12 +15,14 @@ import numpy as np
 import pytest
 from serverish.base import dt_utcnow_array
 
+from ocabox_tcs.services.guiding_svc import camera_array_collector
 from ocabox_tcs.services.guiding_svc.camera_array_collector import (
     CameraArrayCollector,
     ExposureJob,
     FrameDeduplicator,
 )
 from ocabox_tcs.services.guiding_svc.protocols.base import FetchedFrame
+from tests.helpers.virtual_time import VirtualClock
 
 
 def _noise(seed: int) -> np.ndarray:
@@ -94,13 +96,20 @@ def test_shape_change_is_not_duplicate() -> None:
 
 
 class _ScriptedBackend:
-    """Backend stub replaying a scripted list of arrays."""
+    """Backend stub replaying a scripted list of arrays.
+
+    Signals ``exhausted`` once the script runs out and then parks, so the
+    test can await "the whole script has been through the drive loop"
+    instead of guessing a duration.
+    """
 
     name = "scripted"
 
     def __init__(self, arrays: list[np.ndarray]) -> None:
         self._arrays = list(arrays)
         self.fetches = 0
+        self.exhausted = asyncio.Event()
+        self._parked = asyncio.Event()  # never set — the test cancels us
 
     async def open(self) -> None: ...
 
@@ -108,8 +117,8 @@ class _ScriptedBackend:
 
     async def submit_one(self, exp_time, roi=None, binning=1, gain=None) -> FetchedFrame:
         if not self._arrays:
-            # Script exhausted — park forever; the test cancels us.
-            await asyncio.sleep(3600)
+            self.exhausted.set()
+            await self._parked.wait()
         self.fetches += 1
         return FetchedFrame(
             array=self._arrays.pop(0),
@@ -119,7 +128,13 @@ class _ScriptedBackend:
 
 
 @pytest.mark.asyncio
-async def test_drive_loop_drops_duplicate_frames() -> None:
+async def test_drive_loop_drops_duplicate_frames(monkeypatch) -> None:
+    # The drive loop's anti-busy-poll sleep after a dropped duplicate is
+    # real seconds of production behaviour; virtual time exercises it
+    # without paying for it (and lets us assert it happened).
+    clock = VirtualClock()
+    clock.install(monkeypatch, camera_array_collector)
+
     frozen = _noise(0)
     backend = _ScriptedBackend([frozen, frozen.copy(), frozen.copy(), _noise(1)])
     collector = CameraArrayCollector("cam", backend)
@@ -129,8 +144,7 @@ async def test_drive_loop_drops_duplicate_frames() -> None:
     job = ExposureJob(pipeline_id="mon", exp_time=0.01)
     collector.subscribe_stream("mon", out_q, get_params=lambda: job)
     try:
-        # 4 scripted frames; dedup sleeps 0.5 s per duplicate.
-        await asyncio.sleep(1.5)
+        await asyncio.wait_for(backend.exhausted.wait(), timeout=5.0)
     finally:
         await collector.close()
 
@@ -140,3 +154,7 @@ async def test_drive_loop_drops_duplicate_frames() -> None:
     # First frozen frame + the fresh one; the two stale repeats dropped.
     assert len(delivered) == 2
     assert collector.dedup.duplicates_total == 2
+    assert backend.fetches == 4
+    # One back-off per dropped duplicate, so a wedged camera can't turn
+    # the drive loop into a busy poll.
+    assert [d for d in clock.sleeps if d > 0] == [0.5, 0.5]

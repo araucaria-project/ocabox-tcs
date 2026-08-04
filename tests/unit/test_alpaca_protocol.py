@@ -26,10 +26,27 @@ from ocaboxapi.exceptions import OcaboxServerError
 from ocabox_tcs.services.guiding_svc._borrowed.ofp.alpaca_http import (
     AlpacaFetchError,
 )
+from ocabox_tcs.services.guiding_svc.protocols import alpaca as alpaca_module
 from ocabox_tcs.services.guiding_svc.protocols.alpaca import (
     AlpacaProtocol,
     _stable_client_id,
 )
+from tests.helpers.virtual_time import VirtualClock
+
+
+@pytest.fixture
+def clock(monkeypatch) -> VirtualClock:
+    """Virtual time for ``_wait_image_ready``.
+
+    Its budget is ``exp_time + max(10 s, exp_time)`` of real waiting —
+    a deliberate production value, but two of the tests below drive it
+    to the deadline on purpose. Advancing a fake monotonic clock from
+    the protocol's own sleeps reproduces the timing logic exactly at
+    zero wall-clock cost, and makes poll counts deterministic.
+    """
+    vclock = VirtualClock()
+    vclock.install(monkeypatch, alpaca_module)
+    return vclock
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +322,7 @@ async def test_close_resets_settings_cache():
 
 
 @pytest.mark.asyncio
-async def test_wait_image_ready_polls_until_true():
+async def test_wait_image_ready_polls_until_true(clock):
     cam = _make_ocabox_camera(image_ready_after_calls=3)
     p = AlpacaProtocol(
         instance_id="x",
@@ -315,20 +332,29 @@ async def test_wait_image_ready_polls_until_true():
         poll_interval_s=0.001,
     )
     await p._wait_image_ready(exp_time=0.1)
-    # We don't assert the call count tightly — the state-machine mock fires
-    # True on the 3rd call, so 3 polls is what we expect, but allow drift.
+    # The state-machine mock fires True on the 3rd call: trust-window
+    # sleep + 2 poll-interval sleeps, no more.
+    assert clock.sleeps == [
+        p._IMAGEREADY_TRUST_FRACTION * 0.1, 0.001, 0.001,
+    ]
 
 
 @pytest.mark.asyncio
-async def test_wait_image_ready_distrusts_stale_flag_before_exposure_ran():
+async def test_wait_image_ready_distrusts_stale_flag_before_exposure_ran(clock):
     """Regression (2026-07-30): the ZWO/ASCOM-Remote stack leaves
     ``imageready=true`` behind after every readout. Trusting it right
     after ``startexposure`` fetches the PREVIOUS buffer (perfectly
     alternating fresh/duplicate frames, half the effective rate). The
     protocol must not even poll before ``0.75 × exp_time`` elapsed."""
-    import time as _time
-
+    polled_at: list[float] = []
     cam = _make_ocabox_camera(image_ready_after_calls=1)  # true immediately
+    ready = cam.aget_imageready
+
+    async def recording_imageready():
+        polled_at.append(clock.elapsed)
+        return await ready()
+
+    cam.aget_imageready = recording_imageready
     p = AlpacaProtocol(
         instance_id="x",
         url="http://x",
@@ -337,14 +363,13 @@ async def test_wait_image_ready_distrusts_stale_flag_before_exposure_ran():
         poll_interval_s=0.001,
     )
     exp_time = 0.2
-    t0 = _time.monotonic()
     await p._wait_image_ready(exp_time=exp_time)
-    elapsed = _time.monotonic() - t0
-    assert elapsed >= p._IMAGEREADY_TRUST_FRACTION * exp_time
+    assert polled_at, "imageready was never polled"
+    assert polled_at[0] >= p._IMAGEREADY_TRUST_FRACTION * exp_time
 
 
 @pytest.mark.asyncio
-async def test_wait_image_ready_timeout_raises():
+async def test_wait_image_ready_timeout_raises(clock):
     """Stuck on Exposing — neither signal ever clears, hits the deadline."""
     cam = MagicMock()
     cam.aget_imageready = AsyncMock(return_value=False)
@@ -354,14 +379,16 @@ async def test_wait_image_ready_timeout_raises():
         url="http://x",
         device_number=0,
         ocabox_camera=cam,
-        poll_interval_s=0.001,
+        poll_interval_s=0.05,
     )
     with pytest.raises(AlpacaFetchError, match="image-not-ready timeout"):
         await p._wait_image_ready(exp_time=0.05)
+    # Full production budget honoured before giving up: exp_time + 10 s floor.
+    assert clock.elapsed >= 0.05 + 10.0
 
 
 @pytest.mark.asyncio
-async def test_wait_image_ready_falls_back_to_camerastate(caplog):
+async def test_wait_image_ready_falls_back_to_camerastate(clock, caplog):
     """Production reality: another Alpaca client steals imageready=True.
 
     ``imageready`` never goes True, but camerastate transitions
@@ -388,7 +415,7 @@ async def test_wait_image_ready_falls_back_to_camerastate(caplog):
 
 
 @pytest.mark.asyncio
-async def test_wait_image_ready_camerastate_fallback_requires_seeing_exposing():
+async def test_wait_image_ready_camerastate_fallback_requires_seeing_exposing(clock):
     """Camerastate=Idle without ever seeing Exposing must NOT short-circuit."""
     cam = MagicMock()
     cam.aget_imageready = AsyncMock(return_value=False)
@@ -398,7 +425,7 @@ async def test_wait_image_ready_camerastate_fallback_requires_seeing_exposing():
         url="http://x",
         device_number=0,
         ocabox_camera=cam,
-        poll_interval_s=0.001,
+        poll_interval_s=0.05,
     )
     with pytest.raises(AlpacaFetchError, match="image-not-ready timeout"):
         await p._wait_image_ready(exp_time=0.05)
@@ -420,7 +447,7 @@ def _make_imagebytes_payload(arr: np.ndarray) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_fetch_full_flow_with_ocabox_camera():
+async def test_fetch_full_flow_with_ocabox_camera(clock):
     """End-to-end fetch: settings → start → wait → bytes → FetchedFrame."""
     cam = _make_ocabox_camera(image_ready_after_calls=1)
 

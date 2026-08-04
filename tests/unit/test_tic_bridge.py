@@ -14,6 +14,7 @@ from obcom.comunication.comunication_error import (
     CommunicationTimeoutError,
 )
 
+from ocabox_tcs.services.tic_bridge_svc import client_pool as client_pool_module
 from ocabox_tcs.services.tic_bridge_svc.bridge import (
     BridgeHandler,
     extract_tic_address,
@@ -23,6 +24,7 @@ from ocabox_tcs.services.tic_bridge_svc.tic_bridge import (
     TicBridgeConfig,
     TicBridgeService,
 )
+from tests.helpers.virtual_time import VirtualClock
 
 
 # --------------------------------------------------------------------- fixtures
@@ -215,12 +217,20 @@ class TestClientAPIPool:
         assert "c2" not in keys
 
     @pytest.mark.asyncio
-    async def test_ttl_eviction(self, fake_client_cls, fake_clientapi_cls, logger):
-        pool = ClientAPIPool(logger=logger, host="h", port=1, client_ttl=0.01)
+    async def test_ttl_eviction(
+        self, fake_client_cls, fake_clientapi_cls, logger, monkeypatch
+    ):
+        # The pool reads time.monotonic() for idle age; advance it instead
+        # of sleeping — TTL expiry is wall-clock-driven, so no amount of
+        # awaiting would make this deterministic.
+        clock = VirtualClock()
+        clock.install(monkeypatch, client_pool_module)
+
+        pool = ClientAPIPool(logger=logger, host="h", port=1, client_ttl=60.0)
         await pool.initialize()
         await pool.get("short-lived")
         assert pool.size == 2
-        await asyncio.sleep(0.02)
+        clock.advance(61.0)
         await pool.get("another")  # triggers TTL sweep
         keys = set(pool._pool.keys())
         assert "short-lived" not in keys
