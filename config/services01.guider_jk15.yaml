@@ -101,8 +101,16 @@ services:
               fiber_radius_px: 5.0           # geometric hole radius (px)
               analysis_radius_px: 15.0       # window half-size around reticle
               adu_sigma_threshold: 3.0       # detection gate (σ above bg)
-              hole_zone_factor: 2.0          # ramp ends at fib_r·factor
+              hole_zone_factor: 2.0          # legacy ramp end (unused while dead_zone_px set)
               saturation_adu: 62000.0        # same as single_star — clip plateau
+              # Dead zone decoupled from the hole radius. The legacy dead
+              # zone spans the full fiber_radius_px (5 px apparent ≈ 3.4 px
+              # real — the photocentroid over-reports offsets ~1.5×), which
+              # silences the loop over offsets that already cost real
+              # coupling AND makes refine-reticle a no-op for few-px
+              # drifts. 2.0 px apparent ≈ 1.3 px real. Rollback without
+              # restart: patch method_params with dead_zone_px: null.
+              dead_zone_px: 2.0
 
             pulse_guide:
               jacobian:
@@ -130,6 +138,32 @@ services:
               min_pulse_policy: stochastic
               post_pulse_settle_ms: 600
 
+            # Reticle-target detector: measures the fibre entrance in the
+            # image (a dark disk inside the halo) so the reticle can be
+            # re-referenced to a measurement via "refine reticle" in the
+            # UI. Runs in every mode and with every method, and only ever
+            # *offers* a refinement — it never moves anything by itself.
+            hole_detect:
+              enabled: true
+              # radius_px inherits fiber_radius_px (5.0) below. Note it is
+              # a precision constant here — 1 px of error costs 1.2–1.9 px
+              # of reported position — unlike its dead-zone role, which
+              # tolerates ~20 %. Worth measuring on an illuminated frame
+              # and setting explicitly.
+              # Search radius sized to the drift actually seen on this
+              # telescope (single-digit px). Widening it raises the rate
+              # of spurious maxima, which appear on the boundary.
+              search_radius_px: 12.0
+              min_snr: 6.0
+              min_samples: 5             # consistent frames before offering
+              max_scatter_px: 1.5
+              refine_max_offset_px: 10.0 # beyond this: refuse, verify by eye
+
+            # These four flags currently have NO EFFECT: they are parsed
+            # into PipelineState and read by nothing, because the pipeline
+            # has no FITS writer (GuiderPaths is never instantiated;
+            # guider_ofp.py is unimported legacy code). Image retention is
+            # governed solely by the ``thumbnails`` block below.
             save_raw_fits: false
             save_stacked_fits: false
             save_raw_thumbnails: false
@@ -150,8 +184,16 @@ services:
               size: [968, 608]
               every_n: 1
               latest_link: true
-              quality: 80
-              max_files: 200
+              # High quality on purpose: JPEG ringing around the fibre-hole
+              # rim is the only compression term in the hole-position error
+              # budget. ~380 KB/frame ≈ 0.3 MB/s to a live viewer at this
+              # cadence, well under what stalls a VPN client.
+              quality: 92
+              # Sized to hold a whole observing night (~14 h at ~0.8 fps),
+              # so frames can be reviewed after the fact; ~15 GB worst
+              # case against ~89 GB free on /storage. A few hundred files
+              # covers only minutes and is effectively no history at all.
+              max_files: 40000
 
   # ──────────────────────────────────────────────────────────────────
   # Thumbnail HTTP server — also serves the Angular UI from the same
