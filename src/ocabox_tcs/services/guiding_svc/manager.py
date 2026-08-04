@@ -49,6 +49,7 @@ from ocabox_tcs.services.guiding_svc.protocols import (
 from ocabox_tcs.services.guiding_svc.pulse_guide import build_pulse_guide_model
 from ocabox_tcs.services.guiding_svc.stages.thumbnail_emitter import ThumbnailEmitter
 from ocabox_tcs.services.guiding_svc.stages.solver.methods import METHODS
+from ocabox_tcs.services.guiding_svc.hole_detect import HoleDetectConfig
 from ocabox_tcs.services.guiding_svc.state import (
     AutoExposureConfig,
     CalibrationConfig,
@@ -458,6 +459,11 @@ class GuiderManager:
             roi=ROIConfig(**pipe_cfg.get("roi", {})),
             calibration=CalibrationConfig(**pipe_cfg.get("calibration", {}) or {}),
             preprocessing=PreprocessingConfig(**pipe_cfg.get("preprocessing", {})),
+            # Reticle-target detector. Defaults to the fibre hole radius
+            # when the pipeline declares one, so an operator who
+            # configured ``fiber_method_params`` gets a sane detector
+            # without a second copy of the number.
+            hole_detect=_build_hole_detect_config(pipe_cfg),
             save_raw_fits=pipe_cfg.get("save_raw_fits", False),
             save_stacked_fits=pipe_cfg.get("save_stacked_fits", False),
             save_raw_thumbnails=pipe_cfg.get("save_raw_thumbnails", False),
@@ -644,3 +650,27 @@ def _config_to_dict(svc_config: Any) -> dict[str, Any]:
         for k in dir(svc_config)
         if not k.startswith("_") and not callable(getattr(svc_config, k))
     }
+
+
+def _build_hole_detect_config(pipe_cfg: dict[str, Any]) -> HoleDetectConfig:
+    """Build the reticle-target detector config for one pipeline.
+
+    ``hole_detect:`` in YAML wins. When it is absent (or omits
+    ``radius_px``) the hole radius falls back to the pipeline's declared
+    fibre geometry — ``fiber_method_params.fiber_radius_px``, or the
+    active ``method_params`` when the fibre method is the configured one
+    — so the number lives in exactly one place per installation.
+    """
+    raw = dict(pipe_cfg.get("hole_detect") or {})
+    if "radius_px" not in raw:
+        fiber_params = (
+            pipe_cfg.get("fiber_method_params")
+            or (pipe_cfg.get("method_params")
+                if str(pipe_cfg.get("method", "")).startswith("fiber")
+                else None)
+            or {}
+        )
+        radius = fiber_params.get("fiber_radius_px")
+        if radius is not None:
+            raw["radius_px"] = float(radius)
+    return HoleDetectConfig(**raw)

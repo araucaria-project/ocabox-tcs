@@ -389,6 +389,7 @@ def test_rpc_commands_set_complete():
         "acquire_at",
         "lock_at",
         "drop_to_reticle",
+        "refine_reticle",
         "snapshot",
         "dark_rebuild",
         "bias_rebuild",

@@ -10,6 +10,7 @@ import logging
 from typing import Any, Protocol
 
 from ocabox_tcs.services.guiding_svc.correction import Correction
+from ocabox_tcs.services.guiding_svc.hole_detect import HoleDetectConfig, HoleTracker
 from ocabox_tcs.services.guiding_svc.stages.base import AnalysisFrame
 from ocabox_tcs.services.guiding_svc.state import PipelineStateHolder
 
@@ -82,6 +83,15 @@ class Solver:
         self._task: asyncio.Task[None] | None = None
         self._running = False
         self._recent_corrections: list[Correction] = []
+        # Reticle-target (fibre-entrance) detector. Deliberately owned by
+        # the Solver rather than by a method: the operator needs it to
+        # work while ``single_star`` is active in monitoring, so that a
+        # reticle refinement can be prepared before switching to fibre
+        # guiding. See hole_detect.py for the rationale.
+        self._hole_tracker = HoleTracker()
+        self._hole_frames = 0
+        self._hole_last_refinable: bool | None = None
+        self._hole_center_ref: tuple[float, float] | None = None
         # Optional Controller reference, wired post-construction by the
         # Manager (see manager.py). Methods that need to mutate state
         # (e.g. SingleStarMethod toggling `acquired`) call through it;
@@ -146,6 +156,14 @@ class Solver:
                 logger.exception("Solver method failed: %s", e)
                 continue
 
+            # Reticle-target detection runs on every frame, whatever the
+            # method decided. Never allowed to break guiding: a detector
+            # failure costs a candidate, not a correction.
+            try:
+                await self._update_hole_candidate(frame, snapshot)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("hole detection failed: %s", e)
+
             if correction is not None:
                 self._recent_corrections.append(correction)
                 # Trim to corrections_avg_no
@@ -171,6 +189,53 @@ class Solver:
                         logger.warning(
                             "correction queue full after drain; dropping",
                         )
+
+    #: Publish cadence for the tracked candidate (frames). The tracked
+    #: value changes slowly (a static feature, median-filtered), so
+    #: pushing it on every frame would only add state churn; a flip of
+    #: ``refinable`` is published immediately regardless.
+    _HOLE_PUBLISH_EVERY_N = 4
+
+    async def _update_hole_candidate(
+        self, frame: AnalysisFrame, snapshot: dict[str, Any]
+    ) -> None:
+        """Run the reticle-target detector and forward the result.
+
+        Skips frames taken while the mount is moving or settling — the
+        image is smeared and the measurement would pollute the tracker's
+        consistency test with real motion.
+        """
+        cfg_raw = snapshot.get("hole_detect") or {}
+        cfg = HoleDetectConfig(**cfg_raw) if isinstance(cfg_raw, dict) else cfg_raw
+        if not cfg.enabled or self._controller is None:
+            return
+        central = snapshot.get("central_point")
+        if central is None:
+            return
+        central = (float(central[0]), float(central[1]))
+
+        # A moved aim point invalidates accumulated evidence: samples
+        # were judged against the previous centre.
+        if self._hole_center_ref != central:
+            self._hole_tracker.reset()
+            self._hole_center_ref = central
+            self._hole_last_refinable = None
+
+        phase = snapshot.get("frame_phase")
+        if phase in ("in_flight", "settling"):
+            return
+
+        candidate = self._hole_tracker.update(frame.array, central, cfg)
+        self._hole_frames += 1
+        refinable = bool(candidate.refinable) if candidate is not None else False
+        due = (self._hole_frames % self._HOLE_PUBLISH_EVERY_N) == 0
+        flipped = refinable != self._hole_last_refinable
+        if not (due or flipped):
+            return
+        self._hole_last_refinable = refinable
+        await self._controller.notify_hole_candidate(
+            candidate.to_dict() if candidate is not None else None
+        )
 
     def averaged_correction(self) -> Correction | None:
         """Compute averaged correction over the rolling window.

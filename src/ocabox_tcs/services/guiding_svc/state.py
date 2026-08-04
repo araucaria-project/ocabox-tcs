@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from ocabox_tcs.services.guiding_svc.hole_detect import HoleDetectConfig
+
 
 class Mode(StrEnum):
     OFF = "off"
@@ -286,6 +288,7 @@ class PipelineState:
     roi: ROIConfig = field(default_factory=ROIConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    hole_detect: HoleDetectConfig = field(default_factory=HoleDetectConfig)
     save_raw_fits: bool = False
     save_stacked_fits: bool = False
     save_raw_thumbnails: bool = False
@@ -357,6 +360,18 @@ class PipelineState:
     last_correction_drot_rad: float | None = None
     fwhm_recent: float | None = None
     rotation_recent: float | None = None
+    hole_candidate: dict[str, Any] | None = None
+    """Latest tracked reticle-target (fibre-entrance) measurement, or
+    None when the detector has nothing to report. Shape:
+    ``{x, y, offset_px, snr, scatter_px, samples, refinable, reason}``
+    (see ``hole_detect.HoleCandidate``).
+
+    Written by Solver via Controller, independently of solver method and
+    mode, so a refinement can be prepared while still in monitoring.
+    ``refinable`` is the authoritative gate for offering the
+    ``refine_reticle`` action; ``reason`` is operator-facing text
+    explaining the current state either way."""
+
     candidates: list[tuple[float, float, float]] | None = None
     """Per-frame detection list: ``[(x, y, adu), …]`` in rank order
     (best-first per the active solver's ``rank_by`` policy). Surfaced

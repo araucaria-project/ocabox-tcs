@@ -38,6 +38,7 @@ RPC_COMMANDS = (
     "acquire_at",
     "lock_at",
     "drop_to_reticle",
+    "refine_reticle",
     "snapshot",
     "dark_rebuild",
     "bias_rebuild",
@@ -241,6 +242,10 @@ class NatsConn:
             "drop_to_reticle": _wrap_handler(
                 sender,
                 lambda _data: controller.drop_to_reticle(),
+            ),
+            "refine_reticle": _wrap_handler(
+                sender,
+                lambda _data: controller.refine_reticle(),
             ),
             "snapshot": _wrap_handler(sender, lambda _data: controller.snapshot()),
             "dark_rebuild": _wrap_handler(

@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
+import numpy as np
 from serverish.base import dt_utcnow_array
 
+from ocabox_tcs.services.guiding_svc.hole_detect import HoleDetectConfig
 from ocabox_tcs.services.guiding_svc.pipeline import Pipeline
 from ocabox_tcs.services.guiding_svc.state import FramePhase, Mode
 
@@ -353,6 +356,118 @@ class Controller:
             f"drop_to_reticle → guide_anchor=({new_anchor[0]:.1f}, {new_anchor[1]:.1f})"
         )
         return {"status": "ok", "guide_anchor": list(new_anchor)}
+
+    async def notify_hole_candidate(self, candidate: dict[str, Any] | None) -> None:
+        """Store the Solver's tracked reticle-target measurement.
+
+        Write-through only when something the operator can see actually
+        changed (position by >0.1 px, or the ``refinable`` gate, or the
+        reason text) — the Solver already rate-limits, and this keeps a
+        static measurement from bumping the state version on a timer.
+        """
+        current = self.pipeline.state.snapshot().hole_candidate
+        if not _hole_candidate_changed(current, candidate):
+            return
+        await self.pipeline.state.update(hole_candidate=candidate)
+        await self._publish_state(self._snapshot_dict())
+
+    async def refine_reticle(self) -> dict[str, Any]:
+        """Move the reticle onto the measured reticle target (fibre
+        entrance) — the operator-triggered calibration refinement.
+
+        Re-validates server-side before acting: the UI enables its button
+        from a state snapshot that may be a few frames old, and the
+        decisive question is what the detector believes *now*. All of
+        these are refusals, with the reason passed back for display:
+
+        - no candidate at all (detector off, or nothing found),
+        - candidate not ``refinable`` (unstable, weak, out of the
+          offset band — see ``HoleTracker._judge``),
+        - candidate is stale (older than ``max_age_s``): evidence
+          gathered before the operator moved on must not be acted on.
+
+        On success ``central_point`` moves, the tracker's evidence is
+        invalidated automatically (Solver notices the changed centre),
+        and a journal line + ``reticle_refined`` event record the
+        measurement. ``central_point_default`` is deliberately NOT
+        touched: it stays the configured calibration, so reticle-home
+        remains a way back and the accumulated drift stays visible.
+
+        The event carries a timestamp, not a temperature. Ambient and
+        dome temperature are already archived on the telemetry stream, so
+        a drift model can join on time instead of the guider duplicating
+        a sensor feed it does not own.
+        """
+        snap = self.pipeline.state.snapshot()
+        cand = snap.hole_candidate
+        if not cand:
+            return {
+                "status": "error",
+                "error": "no reticle-target measurement available — "
+                         "illuminate the entrance or park a star on it",
+            }
+        if not cand.get("refinable"):
+            return {
+                "status": "error",
+                "error": f"measurement not usable: {cand.get('reason', 'unknown')}",
+            }
+        # ``hole_detect`` may arrive as a plain dict after a runtime
+        # ``set_state`` patch; normalise so attribute access below is
+        # safe either way.
+        cfg = snap.hole_detect
+        if isinstance(cfg, dict):
+            cfg = HoleDetectConfig(**cfg)
+        age = None
+        ts = cand.get("ts_monotonic")
+        if ts is not None:
+            age = time.monotonic() - float(ts)
+            if age > float(getattr(cfg, "max_age_s", 20.0)):
+                return {
+                    "status": "error",
+                    "error": f"measurement is stale ({age:.0f}s old) — "
+                             "wait for a fresh one",
+                }
+        try:
+            new_point = (float(cand["x"]), float(cand["y"]))
+        except (KeyError, TypeError, ValueError):
+            return {"status": "error", "error": "malformed measurement"}
+
+        old_point = (float(snap.central_point[0]), float(snap.central_point[1]))
+        offset = float(np.hypot(new_point[0] - old_point[0], new_point[1] - old_point[1]))
+        # Re-check the band against the *current* reticle, not against
+        # the value the tracker computed its offset from.
+        if not (float(cfg.refine_min_offset_px) <= offset
+                <= float(cfg.refine_max_offset_px)):
+            return {
+                "status": "error",
+                "error": (
+                    f"implied move {offset:.2f} px is outside the allowed "
+                    f"{cfg.refine_min_offset_px:.1f}–{cfg.refine_max_offset_px:.0f} px band"
+                ),
+            }
+
+        await self.pipeline.state.update(central_point=new_point, hole_candidate=None)
+        await self._publish_state(self._snapshot_dict())
+        payload = {
+            "from": list(old_point),
+            "to": list(new_point),
+            "offset_px": round(offset, 3),
+            "snr": cand.get("snr"),
+            "scatter_px": cand.get("scatter_px"),
+            "samples": cand.get("samples"),
+            "central_point_default": (
+                list(snap.central_point_default)
+                if snap.central_point_default is not None else None
+            ),
+        }
+        await self._publish_event("reticle_refined", payload)
+        await self._publish_journal(
+            f"reticle refined by {offset:.2f} px → "
+            f"({new_point[0]:.2f}, {new_point[1]:.2f}) "
+            f"[SNR {cand.get('snr')}, {cand.get('samples')} frames, "
+            f"scatter {cand.get('scatter_px')} px]"
+        )
+        return {"status": "ok", "central_point": list(new_point), **payload}
 
     async def safety_demote(self, reason: str) -> None:
         """Autonomous safety action — drop ``guiding`` to ``monitoring``.
@@ -1040,3 +1155,29 @@ def _coerce_patch(patch: dict[str, Any]) -> dict[str, Any]:
         out["mode"] = Mode(out["mode"])
     # `acquired_at_ts` is a 7-int array; pass through.
     return out
+
+
+def _hole_candidate_changed(
+    old: dict[str, Any] | None, new: dict[str, Any] | None
+) -> bool:
+    """Whether a tracked reticle-target measurement differs enough to be
+    worth a state write.
+
+    Position moves below 0.1 px are measurement jitter on a static
+    feature; the gate flag and the operator-facing reason always matter.
+    """
+    if (old is None) != (new is None):
+        return True
+    if old is None or new is None:
+        return False
+    if old.get("refinable") != new.get("refinable"):
+        return True
+    if old.get("reason") != new.get("reason"):
+        return True
+    try:
+        return (
+            abs(float(old["x"]) - float(new["x"])) > 0.1
+            or abs(float(old["y"]) - float(new["y"])) > 0.1
+        )
+    except (KeyError, TypeError, ValueError):
+        return True
