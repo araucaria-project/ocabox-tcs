@@ -1,0 +1,32 @@
+# Sample configuration for the focus-calculation service.
+# Copy the service entry into your services.yaml (or run this file
+# directly: poetry run tcsd --config config/focus_calc.sample.yaml).
+#
+# Protocol and payloads: doc/focus-calc-service.md
+# Requires extras: pip install ocabox-tcs[focus]   (pyaraucaria)
+# JetStream: provision a stream covering `focus.calc.>` first
+# (oca_nats_config).
+
+nats:
+  host: localhost
+  port: 4222
+
+services:
+  - type: focus_calc_svc.focus_calc
+    instance_context: main
+    # All subjects live under this root:
+    #   IN   focus.calc.job.<job.id…>
+    #   OUT  focus.calc.result.<effective_id>
+    #   OUT  focus.calc.state.<effective_id>
+    subject_root: focus.calc
+    # Methods when an `open` message names none. Available:
+    # rms, rms_quad, fwhm, laplacian, lorentzian (pyaraucaria; the
+    # same algorithms TOI uses), dynamic_search (stub).
+    default_methods: [laplacian]
+    # Close a job after this much input silence (client can override
+    # per job in the `open` payload).
+    default_idle_timeout_s: 300
+    # Frame-directory polling cadence; explicit `file` messages work
+    # without waiting for the poll.
+    poll_interval_s: 2.0
+    max_jobs: 16
