@@ -83,7 +83,7 @@ class TestManagerInitialization:
         manager = Manager(service=service_mock, config=service_mock.svc_config)
 
         assert manager.service == service_mock
-        assert manager.config == service_mock.svc_config
+        assert manager.svc_config == service_mock.svc_config
         assert manager.svc_logger == service_mock.svc_logger
         assert manager.follow_on is False
         assert manager.client_name == "CliClient"
@@ -101,10 +101,10 @@ class TestManagerInitialization:
         manager = Manager(service=service_mock, config=config)
 
         # Should be able to access config attributes
-        assert manager.config.variant == "jk15"
-        assert manager.config.dome_speed == 25.0
-        assert manager.config.follow_tolerance == 5.0
-        assert manager.config.settle_time == 2.0
+        assert manager.svc_config.variant == "jk15"
+        assert manager.svc_config.dome_speed == 25.0
+        assert manager.svc_config.follow_tolerance == 5.0
+        assert manager.svc_config.settle_time == 2.0
 
     def test_manager_logger_access(self, service_mock):
         """Test Manager can access service logger."""
@@ -117,7 +117,7 @@ class TestManagerInitialization:
         manager.svc_logger.info.assert_called_once_with("Test log message")
 
     @pytest.mark.asyncio
-    async def test_set_follow_parameters(self, service_mock):
+    async def test_set_follow_params(self, service_mock):
         """Test follow parameters are set from config."""
         config = DomeFollowerServiceConfig(
             type="dome_follower",
@@ -128,7 +128,7 @@ class TestManagerInitialization:
         )
         manager = Manager(service=service_mock, config=config)
 
-        await manager.set_follow_parameters()
+        await manager.set_follow_params()
 
         assert manager.follow_tolerance == 5.0
         assert manager.settle_time == 2.0
@@ -180,9 +180,11 @@ class TestDomeFollowerService:
             interval=1.0,
             turn_on_automatically=False,
         )
-        service.monitor = MagicMock()
+        # ``monitor`` and ``is_running`` are read-only properties
+        # delegating to ``controller`` — the mocked controller below
+        # provides both; assigning them directly raises AttributeError.
         service.controller = MagicMock()
-        service.is_running = True
+        service.controller.is_running = True
 
         return service
 
@@ -196,17 +198,21 @@ class TestDomeFollowerService:
         # Mock Manager methods to avoid actual NATS/TIC connections
         with patch.object(Manager, "start_comm", new_callable=AsyncMock) as mock_start_comm:
             with patch.object(
-                Manager, "set_follow_parameters", new_callable=AsyncMock
+                Manager, "set_follow_params", new_callable=AsyncMock
             ) as mock_set_params:
-                await service_instance.on_start()
+                with patch.object(
+                    Manager, "set_mount_type_params", new_callable=AsyncMock
+                ) as mock_set_mount:
+                    await service_instance.on_start()
 
-                # Verify manager was created
-                assert service_instance.manager is not None
-                assert isinstance(service_instance.manager, Manager)
+                    # Verify manager was created
+                    assert service_instance.manager is not None
+                    assert isinstance(service_instance.manager, Manager)
 
-                # Verify manager methods were called
-                mock_start_comm.assert_called_once()
-                mock_set_params.assert_called_once()
+                    # Verify manager methods were called
+                    mock_start_comm.assert_called_once()
+                    mock_set_params.assert_called_once()
+                    mock_set_mount.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_on_start_with_auto_turn_on(self, service_instance):
@@ -214,8 +220,9 @@ class TestDomeFollowerService:
         service_instance.svc_config.turn_on_automatically = True
 
         with patch.object(Manager, "start_comm", new_callable=AsyncMock):
-            with patch.object(Manager, "set_follow_parameters", new_callable=AsyncMock):
-                await service_instance.on_start()
+            with patch.object(Manager, "set_follow_params", new_callable=AsyncMock):
+                with patch.object(Manager, "set_mount_type_params", new_callable=AsyncMock):
+                    await service_instance.on_start()
 
                 # Verify follow_on was enabled
                 assert service_instance.manager.follow_on is True
@@ -229,8 +236,9 @@ class TestDomeFollowerService:
         service_instance.svc_config.turn_on_automatically = False
 
         with patch.object(Manager, "start_comm", new_callable=AsyncMock):
-            with patch.object(Manager, "set_follow_parameters", new_callable=AsyncMock):
-                await service_instance.on_start()
+            with patch.object(Manager, "set_follow_params", new_callable=AsyncMock):
+                with patch.object(Manager, "set_mount_type_params", new_callable=AsyncMock):
+                    await service_instance.on_start()
 
                 # Verify follow_on remains False
                 assert service_instance.manager.follow_on is False
@@ -240,8 +248,9 @@ class TestDomeFollowerService:
         """Test run_service calls dome_follow in loop."""
         # Create a real manager (with mocked comm methods)
         with patch.object(Manager, "start_comm", new_callable=AsyncMock):
-            with patch.object(Manager, "set_follow_parameters", new_callable=AsyncMock):
-                await service_instance.on_start()
+            with patch.object(Manager, "set_follow_params", new_callable=AsyncMock):
+                with patch.object(Manager, "set_mount_type_params", new_callable=AsyncMock):
+                    await service_instance.on_start()
 
         # Mock dome_follow
         dome_follow_called = 0
@@ -251,7 +260,7 @@ class TestDomeFollowerService:
             dome_follow_called += 1
             # Stop after 3 iterations
             if dome_follow_called >= 3:
-                service_instance.is_running = False
+                service_instance.controller.is_running = False
 
         service_instance.manager.dome_follow = mock_dome_follow
 
@@ -266,8 +275,9 @@ class TestDomeFollowerService:
     async def test_run_service_handles_cancellation(self, service_instance):
         """Test run_service handles asyncio.CancelledError gracefully."""
         with patch.object(Manager, "start_comm", new_callable=AsyncMock):
-            with patch.object(Manager, "set_follow_parameters", new_callable=AsyncMock):
-                await service_instance.on_start()
+            with patch.object(Manager, "set_follow_params", new_callable=AsyncMock):
+                with patch.object(Manager, "set_mount_type_params", new_callable=AsyncMock):
+                    await service_instance.on_start()
 
         # Mock dome_follow to raise CancelledError
         async def mock_dome_follow():
@@ -283,8 +293,9 @@ class TestDomeFollowerService:
         """Test on_stop calls manager.stop_comm."""
         # Initialize manager
         with patch.object(Manager, "start_comm", new_callable=AsyncMock):
-            with patch.object(Manager, "set_follow_parameters", new_callable=AsyncMock):
-                await service_instance.on_start()
+            with patch.object(Manager, "set_follow_params", new_callable=AsyncMock):
+                with patch.object(Manager, "set_mount_type_params", new_callable=AsyncMock):
+                    await service_instance.on_start()
 
         # Mock stop_comm
         service_instance.manager.stop_comm = AsyncMock()

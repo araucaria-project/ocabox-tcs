@@ -1,0 +1,256 @@
+# Guider service — jk15, BESO spectrograph guider (FL1).
+#
+# Run:
+#   poetry run python -m ocabox_tcs.services.guiding_svc.guider \
+#       config/guider.jk15.guider_beso.yaml jk15-guider_beso
+#
+# One service instance = one camera. Telescope + component name uniquely
+# identify the camera in TIC config and in ocaboxapi. The TCS variant is
+# `<telescope>-<component>` (hyphen, single segment — TCS rejects dots);
+# NATS subjects compose ``<telescope>.<component>`` independently for
+# hierarchical wildcard matching.
+#
+# Pipeline starts in `monitoring` mode — frames flow, Solver runs, but
+# Enforcer logs corrections without issuing pulses. Operator switches
+# to `guiding` via RPC after hand-calibrating J (see RUNBOOK_FL1.md §4).
+#
+# The `pulse_guide.jacobian` values below are placeholders. Real values
+# come from the calibration probe on first night — update them and
+# restart, or use `set_state` RPC once hot-reload of J is added (FL2).
+
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+  - type: guiding_svc.guider
+    variant: jk15-guider_beso
+    telescope_id: jk15
+    subject_prefix: svc
+    service_name: guider
+    poll_interval_s: 1.0
+
+    tic_conn:
+      client_name: CliClient        # registered in tic.config.observatory.site.client
+      software_id: guider/jk15.guider_beso
+      enable_observatory: true
+      service_mode: true            # request_special_permission on camera + mount
+
+    cameras:
+      - id: guider_beso
+        # URL + device_number resolved from tic.config.observatory:
+        # jk15.components.guider_beso.address = http://jk15-ccd.oca.lan:11111/api/v1
+        # jk15.components.guider_beso.device_number = 1
+        backend:
+          type: direct_fetch
+          protocol:
+            type: alpaca
+            prefer_binary: true     # imagebytes fast path
+            transpose: true         # BESO downloader returns ASCOM X-major;
+                                    # transpose to numpy (Y, X) so PIL/FFS
+                                    # see the natural landscape orientation
+                                    # and central_point=(968, 608) lands on
+                                    # the actual data, not the letterbox.
+                                    # Sister tcu cameras have downstream
+                                    # compensation already — leave default.
+        pipelines:
+          - id: mon
+            mode: monitoring        # safe default — operator arms guiding via set_mode
+            method: single_star
+            selection_policy: closest_excluding_zone
+
+            exp_time: 0.5            # seconds
+            gain: 200
+            binning: 1
+
+            # Where the star should sit on the sensor — the fibre entrance
+            # pixel for BESO. UI "home" key restores to this value.
+            #
+            # 2026-08-03: [945.76, 572.90] — re-measured by S. Kimeswenger
+            #   after the M5 maintenance shifted the fibre image on the
+            #   sensor (guider camera itself untouched); see
+            #   doc/guider/BESO_quick_status_report.pdf. Note: dome
+            #   temperature changes can move this within a night — the
+            #   operator may fine-adjust the runtime reticle (right-click);
+            #   this value is the calibrated "home".
+            # 2026-05-07: [938.87, 575.75] — original measurement from live
+            #   frame (operator dragged reticle into the visible fibre hole).
+            central_point: [945.76, 572.90]
+
+            wide_search_radius_px: 600   # cold-start search circle radius
+            search_reg_px: 30            # narrow re-acquisition half-window
+
+            stacking_count: 1            # no stacking in FL1
+            corrections_avg_no: 5
+
+            # ADU-tolerance for re-acquisition matching (per-second, scaled
+            # by exp_time at runtime).
+            adu_match_tolerance_per_sec: 200000.0 # ±tol = this × exp_time;
+                                                  # very loose to survive
+                                                  # saturation jitter on
+                                                  # bright stars (60k star
+                                                  # @ 0.1s wobbles ±5k naturally
+                                                  # because peak ADU depends on
+                                                  # sub-pixel centroid position).
+                                                  # Spatial filter (search_reg_px)
+                                                  # plus our shape filters carry
+                                                  # the rejection load now.
+
+            method_params:
+              fwhm: 3.0                # FFS detection PSF
+              threshold: 7.0           # FFS sigma threshold (raised from
+                                       # 5 — fewer mask1 pixels means
+                                       # fewer noise spikes survive
+                                       # min_pixels_above_threshold)
+              saturation_adu: 62000.0  # camera clips at ~65504 (uint16
+                                       # near full); 62000 catches the
+                                       # saturation plateau (whose
+                                       # constant clipped values destroy
+                                       # sub-pixel centroid precision —
+                                       # see _subpixel_centroid docstring)
+                                       # while leaving bright-but-not-
+                                       # maxed pixels in the wings to
+                                       # contribute to the centroid.
+                                       # Also feeds the confidence calc.
+              min_pixels_above_threshold: 5  # PSF spans many pixels
+                                       # above threshold; hot pixel /
+                                       # cosmic ray = 1; tightest
+                                       # invariant we have. Drops ~80%
+                                       # of single-pixel candidates.
+              centroid_radius_px: 10   # box-half for sub-pixel centroid;
+                                       # bigger than FWHM-based default
+                                       # so we capture the *whole*
+                                       # multi-detection cluster that
+                                       # forms around a real star + fiber
+                                       # halo + reflections. Whichever
+                                       # peak the detector picks, the
+                                       # centroid integrates the same
+                                       # cluster → stable across frames.
+              centroid_threshold_sigma: 3.0  # only pixels > sky+3σ
+                                       # contribute to centroid; sky
+                                       # variation gets exactly zero
+                                       # weight (vs current "all pixels,
+                                       # bg-subtracted" which lets noise
+                                       # pull the centroid). Astrometry-
+                                       # grade subpixel stability.
+              min_smoothed_sigma: 3.0  # kernel-matched SNR mask — drops
+                                       # noise spikes that don't match
+                                       # the Gaussian-convolved PSF.
+              max_concentration: 0.5   # reject candidates where >50% of
+                                       # background-subtracted aperture
+                                       # flux is in the central pixel.
+                                       # Real PSF: ~0.2-0.4. Hot pixel /
+                                       # cosmic ray / readout spike: ~1.0.
+                                       # The single most effective single-
+                                       # pixel-artifact filter.
+              rank_by: aperture        # rank by background-subtracted
+                                       # aperture-integrated flux — total
+                                       # PSF energy. Robust against
+                                       # remaining hot-pixel-like spikes
+                                       # because they have no flux beyond
+                                       # the central pixel.
+              # aperture_radius: 6     # default = round(2 * fwhm); 6 px
+                                       # for fwhm=3 → 13×13 box.
+
+            # Method-specific param sets. The Controller swaps the method
+            # at runtime via set_state({"method": "fiber_photocentroid",
+            # "method_params": {...}}) — UI dispatches when the operator
+            # picks a method in the radio. Keep these blocks here so the
+            # UI (or a future "preset" picker) can load the right defaults
+            # when switching. Not consumed automatically; informational.
+            fiber_method_params:
+              fiber_radius_px: 5.0           # geometric hole radius (px)
+              analysis_radius_px: 15.0       # window half-size around reticle
+              adu_sigma_threshold: 3.0       # detection gate (σ above bg)
+              hole_zone_factor: 2.0          # ramp ends at fib_r·factor
+              saturation_adu: 62000.0        # same as single_star — clip plateau
+
+            # Pulse-guide model — calibrated 2026-05-07 on jk15 BESO.
+            #
+            # Method: scripts/calibration_session.py runs N/S/E/W probes
+            # in series. Two artefacts dominate the raw scatter:
+            #
+            #   * **Mount backlash** — first probe after a direction
+            #     reversal moves the star ~25-65% less than steady-state.
+            #     The gearbox eats most of a 1000 ms pulse just taking up
+            #     slack. Solution: discard probe[0] of every direction;
+            #     average probe[1] and onwards. The script does this.
+            #
+            #   * **Mount settle** — at the default ``post_pulse_settle_ms``
+            #     of 1000 ms the mount is still moving when we sample, so
+            #     short-settle σ ≈ 5-10 px. Bumping settle to 2500 ms cuts
+            #     σ to ~2-4 px (3× better). Live calibration runs use the
+            #     long settle; the controller default is also bumped to
+            #     match (controller.py ``_CAL_POST_PULSE_SETTLE_MS``).
+            #
+            # The resulting Jacobian is essentially **orthogonal**:
+            # N drives image-X only, E drives image-Y only — exactly what
+            # we expect for BESO with ``protocol.transpose: true`` (the
+            # raw-sensor row/column swap composed with the optical rotation
+            # gives a clean N→X / E→Y mapping post-transpose). The
+            # off-diagonal terms are below the per-probe noise floor.
+            #
+            # The previous round-1 numbers (kN_x=0.0166, kE_x=-0.0071)
+            # were dominated by backlash and short-settle scatter, which
+            # is why guiding oscillated even with damping=0.5: the
+            # controller was issuing N pulses 2.4× too small AND adding
+            # cross-coupling that wasn't physically there.
+            pulse_guide:
+              jacobian:
+                kE_x_px_per_ms: -0.00043   # ≈ 0 (clean orthogonal axes)
+                kE_y_px_per_ms:  0.03895   # E pulse → motion in image-Y
+                kN_x_px_per_ms:  0.03911   # N pulse → motion in image-X
+                kN_y_px_per_ms:  0.00099   # ≈ 0 (clean orthogonal axes)
+              damping_alpha: 0.5       # 0.5 with pulse-cooldown is stable.
+              duration_max_ms: 1500    # hard cap (saturation guard)
+              duration_min_ms: 20      # mount can't track sub-threshold pulses
+              post_pulse_settle_ms: 600   # cool-down between *guiding*
+                                       # pulses. Distinct from the
+                                       # *calibration probe* settle (RPC
+                                       # ``calibrate_probe`` uses 2500 ms
+                                       # for sub-px σ on a single
+                                       # measurement). Guiding doesn't
+                                       # need pristine per-pulse
+                                       # settling — error averages out
+                                       # across many corrections,
+                                       # damping_alpha smooths overshoot,
+                                       # and a long cool-down just
+                                       # widens the staleness gap
+                                       # between *frame measured at T*
+                                       # and *pulse applied at T+Δ*
+                                       # (sidereal drift + mount-tracking
+                                       # jitter accumulate during Δ).
+                                       # 600 ms covers typical mount
+                                       # mechanical settle without
+                                       # bottlenecking the controller.
+                                       # Tune per-mount if oscillations
+                                       # return.
+
+            # FITS / thumbnail saving — disabled for FL1 (FL2 + NFS layout).
+            save_raw_fits: false
+            save_stacked_fits: false
+            save_raw_thumbnails: false
+            save_stacked_thumbnails: false
+
+            # FL2 thumbnails for the UI viewer. Drop-oldest tap on the
+            # Stacker output; binary content is never sent over NATS —
+            # only the file path on this notification subject. ``max_files``
+            # bounds the on-disk footprint by rotating the oldest out;
+            # ``latest.jpg`` always points at the most recent frame.
+            thumbnails:
+              enabled: true
+              output_dir: /tmp/guider_thumbs
+              # Full sensor resolution — operators look for star *shape*
+              # (focus / coma / trefoil) and the fibre-entrance shadow at
+              # PSF centre during injection. Both require pixel-level
+              # detail; downsampled previews smear them. ``thumbnail()``
+              # is a no-op when the source is ≤ this bound, so 1936×1216
+              # passes through unchanged.
+              size: [1936, 1216]
+              every_n: 1
+              latest_link: true
+              # Higher JPEG quality preserves the faint dip in saturated
+              # PSF cores (the fibre shadow). At quality 80 the
+              # quantisation step around saturation rounds it away.
+              quality: 92
+              max_files: 200

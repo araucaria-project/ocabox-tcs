@@ -1,25 +1,38 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "1.0.3"
+version = "1.3.5"
 description = "Telescope Control Services for OCABOX Astronomical Observatory Server"
 authors = ["Mikolaj et.al.", "Claude Code <noreply@anthropic.com>"]
 readme = "README.md"
 packages = [
     {include = "ocabox_tcs", from = "src"},
-    {include = "tcsctl", from = "src"}
+    {include = "tcsctl", from = "src"},
+    # auto_adjust — universal, application-agnostic toolkit for online
+    # parameter learning. Shipped here for development convenience;
+    # earmarked for extraction to its own public repository when the API
+    # has settled and a second consumer materialises. See
+    # src/auto_adjust/README.md.
+    {include = "auto_adjust", from = "src"},
 ]
 repository = "https://github.com/araucaria-project/ocabox-tcs"
 
 [tool.poetry.dependencies]
-python = "^3.12"
-serverish = {version = "^1.4.3", extras = ["messenger"]}  # for NATS
+python = "^3.10"
+serverish = {version = "^2.0.1", extras = ["messenger"]}  # for NATS
 ocabox = {git = "https://github.com/araucaria-project/ocabox.git", optional = true}
 python-dotenv = "^1.0.0"  # For .env file support
+numpy = "^1.26"  # arrays — needed by guiding_svc and auto_adjust
 # CLI dependencies are optional (install with: pip install ocabox-tcs[cli])
 typer = {version = "^0.19.2", optional = true}  # CLI framework
 rich = {version = "^13.0.0", optional = true}  # For colorful terminal output
 textual = {version = "^0.40.0", optional = true}  # For future monitor mode
 pyyaml = "^6.0.3"
+# Optional extras for specific guider/auto_adjust features
+astropy = {version = "^6.0", optional = true}  # FITS reading in FileSimProtocol; required by Stacker once calibration lands
+aiohttp = {version = "^3.9", optional = true}  # direct Alpaca imagebytes fetch (DirectFetchBackend + AlpacaProtocol)
+pillow = {version = "^10.0", optional = true}  # JPEG encoding for thumbnail_emitter; star-cutout previews in solver methods
+padasip = {version = "^1.2", optional = true}  # auto_adjust RLSAdapter
+scikit-learn = {version = "^1.4", optional = true}  # auto_adjust GPAdapter
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
@@ -39,6 +52,9 @@ tcsctl = "tcsctl.app:main"
 [tool.poetry.extras]
 cli = ["typer", "rich", "textual"]  # CLI tools (tcsctl command)
 oca = ["ocabox"]  # OCABOX integration, running ocabox dependent services
+guider = ["astropy", "aiohttp", "pillow"]  # full guiding_svc dependencies (FITS reading, stacking math, direct Alpaca fetch, JPEG thumbnail encoding)
+adjust-rls = ["padasip"]  # auto_adjust RLSAdapter
+adjust-gp = ["scikit-learn"]  # auto_adjust GPAdapter
 
 [build-system]
 requires = ["poetry-core"]
@@ -55,11 +71,11 @@ markers = [
 
 [tool.black]
 line-length = 100
-target-version = ['py312']
+target-version = ['py310']
 
 [tool.ruff]
-# Target Python 3.12
-target-version = "py312"
+# Target Python 3.10
+target-version = "py310"
 line-length = 100
 
 # Don't check these directories

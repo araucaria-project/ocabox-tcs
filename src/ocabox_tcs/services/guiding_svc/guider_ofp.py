@@ -1,21 +1,20 @@
 import logging
+import math
+import os
 import time
-from typing import Dict, List, Tuple
+
+import cv2
+import numpy as np
+from fits_proc.astro_tools import AstroTools
+from fits_proc.fits_proc_config import FitsProcConfig as cf
+from fits_proc.folders import Folders
+from fits_proc.images_stacking import ImagesStacking
+from fits_proc.iter_async import AsyncListIter
+from fits_proc.modules.abstract_module import AbstractModule
 from pyaraucaria.ffs import FFS
 from pyaraucaria.fits import save_fits_from_array
-import numpy as np
-
-from fits_proc.astro_tools import AstroTools
-from fits_proc.iter_async import AsyncListIter, AsyncRangeIter
-from fits_proc.modules.abstract_module import AbstractModule
-from serverish.messenger.msg_rpc_resp import Rpc
-from fits_proc.fits_proc_config import FitsProcConfig as cf
-import cv2
-import os
-from fits_proc.folders import Folders
-import math
-from fits_proc.images_stacking import ImagesStacking
 from scipy.signal import convolve2d
+from serverish.messenger.msg_rpc_resp import Rpc
 
 
 logger = logging.getLogger(__name__.rsplit('.')[-1])
@@ -24,12 +23,12 @@ logger = logging.getLogger(__name__.rsplit('.')[-1])
 class BaseGuid(AbstractModule):
     def __init__(self, fits_manager: 'FitsManager', module_name: str,
                  module_id: str or None = None) -> None:
-        self.arr_shape: Tuple = ()
+        self.arr_shape: tuple = ()
         self.rpc: Rpc | None = None
         super().__init__(fits_manager=fits_manager, module_name=module_name, module_id=module_id)
 
     @property
-    def guiding_params(self) -> Dict:
+    def guiding_params(self) -> dict:
         return self.fm.telescope.guiding_params
 
     @staticmethod
@@ -43,7 +42,7 @@ class BaseGuid(AbstractModule):
         np_array = convolve2d(np_array, self.gauss_kernel(size=kernel_size, sigma=kernel_sigma), mode='same')
         return np_array
 
-    async def reduction(self, np_array: np.ndarray) -> Tuple[np.ndarray, str]:
+    async def reduction(self, np_array: np.ndarray) -> tuple[np.ndarray, str]:
         master_dark_ok = 'error'
         path = os.path.join(Folders.folder_processed(tel_id=self.telescope.id,
                                                      folder_config_name='guiding'), self.master_dark_file_name)
@@ -82,14 +81,14 @@ class BaseGuid(AbstractModule):
         a, b = math.modf(self.rpc.data["exp_time"])
         return f'guider_dark_{round(b)}_{round(a*10)}_{loop}_{self.rpc.data["nloops"]}.fits'
 
-    def template_guid_data(self) -> Dict:
+    def template_guid_data(self) -> dict:
         return {'guid_star_pos': None, 'guid_star_adu': None, 'guid_corr': [0, 0], 'arr_shape': self.arr_shape}
 
-    async def array_prep(self, array: List) -> np.ndarray:
+    async def array_prep(self, array: list) -> np.ndarray:
         np_array = np.array(array)
         return np_array
 
-    async def find_stars(self, np_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    async def find_stars(self, np_array: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         ti = time.time()
         coo, adu = FFS(image=np_array).find_stars(threshold=self.guiding_params['threshold'],
                                                   kernel_size=self.guiding_params['kernel_size'],
@@ -97,11 +96,11 @@ class BaseGuid(AbstractModule):
         logger.debug(f'Stars pos {coo}')
         logger.debug(f'Stars adu {adu}')
         if len(coo) == 0:
-            logger.info(f'No stars found')
+            logger.info('No stars found')
         logger.debug(f'Find stars process time:{time.time()-ti}s')
         return coo, adu
 
-    async def guid_star_selection(self, coo: np.ndarray, adu: np.ndarray) -> Dict:
+    async def guid_star_selection(self, coo: np.ndarray, adu: np.ndarray) -> dict:
         res = self.template_guid_data()
         try:
             st_sel = self.rpc.data['star_select']
@@ -126,10 +125,10 @@ class BaseGuid(AbstractModule):
                     res['guid_star_adu'] = int(adu[n])
                     logger.info(f'New guiding star coo:{coo[n]} adu:{adu[n]}')
                     return res
-        logger.info(f'Can not find guiding star')
+        logger.info('Can not find guiding star')
         return res
 
-    async def calc_correction(self, np_array: np.ndarray, prev_guid_data: Dict) -> Dict | None:
+    async def calc_correction(self, np_array: np.ndarray, prev_guid_data: dict) -> dict | None:
         res = self.template_guid_data()
         if prev_guid_data['guid_star_pos'] is not None:
             pgs_pos = prev_guid_data['guid_star_pos']
@@ -171,7 +170,7 @@ class BaseGuid(AbstractModule):
         else:
             return None
 
-    async def get_prev_guid_data(self, current_fits_id: str) -> Tuple | None:
+    async def get_prev_guid_data(self, current_fits_id: str) -> tuple | None:
         prev_id = await self.fm.process_fits.get_fits_id_before(fits_id=current_fits_id)
         prev_guid_data = None
         if prev_id:
@@ -191,7 +190,7 @@ class BaseGuid(AbstractModule):
                 logger.debug(f'No guiding data {prev_id}')
         return prev_guid_data, prev_id
 
-    async def find_prev_guid_data(self) -> Dict | None:
+    async def find_prev_guid_data(self) -> dict | None:
         f_id = self.fits_id
         # TODO change to async
         for n in range(0, len(self.fm.process_fits)):
@@ -206,7 +205,7 @@ class BaseGuid(AbstractModule):
                                                            folder_config_name='guiding'), file_name)
         cv2.imwrite(filename=image_path, img=np_array)
 
-    async def save_thumbnails(self, np_array: np.ndarray, guid_data: Dict | None, with_rect: bool = True):
+    async def save_thumbnails(self, np_array: np.ndarray, guid_data: dict | None, with_rect: bool = True):
         f = np.copy(np_array)
         f = await AstroTools.image_stretch_display(f, display_max_factor=self.guiding_params['display_max_factor'])
         await self.save_thumbnail(np_array=f, file_name=f'{self.preview_file_name}.jpg')
@@ -220,7 +219,7 @@ class BaseGuid(AbstractModule):
             f = cv2.rectangle(f, sp, ep, (0, 255, 0), 2)
             await self.save_thumbnail(np_array=f, file_name=self.rect_file_name)
 
-    async def _run(self, array: List):
+    async def _run(self, array: list):
         raise NotImplementedError
 
     async def run(self, fits_id: str, op_id: int, **kwargs) -> None:
@@ -231,7 +230,7 @@ class BaseGuid(AbstractModule):
         self.rpc = await self.fm.process_fits.get_op_attr(fits_id=self.fits_id, op_id=op_id, attr='rpc')
         # self.rpc = self.fm.process_fits[fits_id].sequence[op_id].rpc
 
-        logger.debug(f'Start download array')
+        logger.debug('Start download array')
         array = await self.value_proof_get(name='guider_array_get',
                                            awaitab=self.fm.http_conn.get_response,
                                            expect_type=list)
@@ -270,7 +269,7 @@ class GuidSimple(BaseGuid):
     def search_reg_px(self) -> int:
         return self.guiding_params['search_reg_px']
 
-    async def _run(self, array: List):
+    async def _run(self, array: list):
 
         np_array = await self.array_prep(array=array)
         save_fits_from_array(array=array,
@@ -349,7 +348,7 @@ class GuidDiff(BaseGuid):
 
 class GuidDark(BaseGuid):
 
-    async def _run(self, array: List):
+    async def _run(self, array: list):
         guid_folder_path = Folders.folder_processed(tel_id=self.telescope.id,
                                                     folder_config_name='guiding')
         temp_folder_path = os.path.join(guid_folder_path, self.temp_folder_name)
@@ -412,7 +411,7 @@ class GuidCalib(GuidSimple):
 
 class GuidPreview(BaseGuid):
 
-    async def _run(self, array: List):
+    async def _run(self, array: list):
         np_array = await self.array_prep(array=array)
         save_fits_from_array(array=array,
                              folder=Folders.folder_processed(tel_id=self.telescope.id,
@@ -483,8 +482,8 @@ class Guider(AbstractModule):
             try:
                 req = Guider.REQUESTS[rpc.data['request']]
             except KeyError:
-                logger.error(f'Wrong request type')
-                await self.fm.nats_conn.journ_pub.error(f'Wrong guiding request type')
+                logger.error('Wrong request type')
+                await self.fm.nats_conn.journ_pub.error('Wrong guiding request type')
                 await self.fm.nats_conn.rpc_response(response='wrong_request_type', status='error', rpc=rpc)
 
                 # process_fits Lock
@@ -496,8 +495,8 @@ class Guider(AbstractModule):
             await req(fits_manager=self.fm,
                       module_name=self.module_name).run(fits_id=fits_id, op_id=op_id, **kwargs)
         else:
-            logger.error(f'Wrong msg format')
-            await self.fm.nats_conn.journ_pub.error(f'Wrong guiding msg format.')
+            logger.error('Wrong msg format')
+            await self.fm.nats_conn.journ_pub.error('Wrong guiding msg format.')
             await self.fm.nats_conn.rpc_response(response='wrong_msg_format', status='error', rpc=rpc)
 
             # process_fits Lock

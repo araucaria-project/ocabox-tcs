@@ -101,12 +101,20 @@ class NATSTestServer:
                 "nats-server not found. Install with: brew install nats-server"
             )
 
-        # Wait for server to become ready
+        # Wait for server to become ready.
+        #
+        # ``allow_reconnect=False`` is what makes the ``timeout`` below
+        # mean anything: nats-py's default reconnect budget is 60
+        # attempts × 2 s, so a single ``connect()`` against a
+        # not-yet-listening port blocks for ~2 minutes and the loop
+        # condition is never re-evaluated. This is the reason the
+        # launcher-harness test files appeared to hang with an idle
+        # event loop.
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
                 nc = NATS()
-                await nc.connect(self.url)
+                await nc.connect(self.url, allow_reconnect=False, connect_timeout=1)
                 await nc.close()
                 logger.info(f"NATS server ready at {self.url}")
                 break
@@ -131,7 +139,10 @@ class NATSTestServer:
         """
         nc = NATS()
         try:
-            await nc.connect(self.url)
+            # Short-lived admin connection — bound the reconnect budget
+            # so a misbehaving server surfaces as a fast error instead of
+            # a two-minute stall (see start()).
+            await nc.connect(self.url, allow_reconnect=False, connect_timeout=2)
             js = nc.jetstream()
 
             # Check if 'test' stream exists
@@ -216,10 +227,21 @@ async def nats_server() -> AsyncGenerator[NATSTestServer, None]:
     server = NATSTestServer(port=4222, host="localhost")
     spawned_server = False
 
-    # Try to connect to existing server
+    # Try to connect to existing server.
+    #
+    # ``allow_reconnect=False`` is load-bearing: this is a *probe*, and a
+    # failed probe is the normal path (nothing listening on 4222). With
+    # nats-py's default reconnect budget — 60 attempts × 2 s — the probe
+    # spends ~2 minutes retrying before we ever fall back to spawning our
+    # own server, once per test. That is the whole reason
+    # ``pytest tests/unit`` used to appear to hang for >10 minutes with
+    # an idle event loop, and why it looked intermittent (it vanishes
+    # whenever a local broker happens to be running). ``connect_timeout``
+    # bounds each TCP attempt, not the retry loop, so it cannot fix this
+    # on its own.
     try:
         nc = NATS()
-        await nc.connect(server.url, connect_timeout=2)
+        await nc.connect(server.url, connect_timeout=2, allow_reconnect=False)
         await nc.close()
         logger.info(f"Using existing NATS server at {server.url}")
 
@@ -236,7 +258,7 @@ async def nats_server() -> AsyncGenerator[NATSTestServer, None]:
     # Purge test stream to ensure clean state for each test
     try:
         nc = NATS()
-        await nc.connect(server.url)
+        await nc.connect(server.url, allow_reconnect=False, connect_timeout=2)
         js = nc.jetstream()
         await js.purge_stream("test")
         logger.debug("Purged 'test' stream for clean test state")

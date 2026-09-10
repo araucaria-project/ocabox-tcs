@@ -1,6 +1,6 @@
 """Display formatting for TCS CLI using Rich library."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.text import Text
@@ -184,7 +184,7 @@ def _format_timestamp(dt: datetime | None) -> tuple[str, str]:
     iso_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Relative time
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     delta = now - dt
     total_seconds = delta.total_seconds()
 

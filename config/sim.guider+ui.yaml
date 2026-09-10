@@ -1,0 +1,122 @@
+# Local simulation regime — guider with synthetic frames + thumbnail
+# server hosting the Angular UI. Runs entirely against localhost NATS,
+# no TIC, no real camera. Useful for UI development and for testing
+# graceful degradation when external dependencies are missing.
+#
+# Run:
+#   poetry run tcsd --config config/sim.guider+ui.yaml
+#
+# What you get:
+#   - guiding_svc.guider.sim-guider — synthesises 512×512 Poisson noise
+#     frames with an injected Gaussian PSF that jitters sub-pixel
+#     around the sensor centre. Method defaults to fiber_photocentroid
+#     so the FL2 fiber-mode UI surface is exercised; switch via the
+#     method radio in the UI to test single_star.
+#   - thumbnail_svc.server.sim — serves the UI dist on / and the
+#     thumbnail directory on /thumbs.
+#
+# Browser: http://localhost:8090/
+
+nats:
+  host: localhost
+  port: 4222
+
+services:
+
+  - type: guiding_svc.guider
+    variant: sim-guider
+    telescope_id: sim
+    subject_prefix: svc
+    service_name: guider
+    poll_interval_s: 1.0
+
+    # No observatory bootstrap — sim camera doesn't need ocaboxapi.
+    # ``enable_observatory: false`` skips the LiveDocument open, so the
+    # service starts cleanly even when no TIC config has been published
+    # to NATS. Same code path that protects production against transient
+    # TIC absence.
+    tic_conn:
+      enable_observatory: false
+      service_mode: false
+
+    cameras:
+      - id: simcam
+        backend:
+          type: sim
+          protocol:
+            type: file_sim
+            sensor_shape: [512, 512]
+            seed: 42
+            readout_delay_s: 0.05
+        pipelines:
+          - id: mon
+            mode: monitoring
+            # Default to fiber_photocentroid so the UI's fiber overlays
+            # are visible from the first paint. Operator switches to
+            # ``single_star`` via the method radio to test that too.
+            method: fiber_photocentroid
+
+            exp_time: 0.5
+            gain: null
+            binning: 1
+
+            # Reticle at sensor centre — sim PSF jitters around (256, 256).
+            central_point: [256.0, 256.0]
+            wide_search_radius_px: 100
+            search_reg_px: 25
+            stacking_count: 1
+            corrections_avg_no: 5
+
+            method_params:
+              # Hole radius ~ PSF sigma so the jittering star spends
+              # most of its time inside the dead zone — exercises the
+              # "no correction in hole" path. Bump to 1.5–2 to see the
+              # ramp kick in.
+              fiber_radius_px: 3.0
+              analysis_radius_px: 18.0
+              adu_sigma_threshold: 3.0
+              hole_zone_factor: 2.0
+              saturation_adu: 62000.0
+
+            # No pulse_guide model — there's no mount to pulse. Enforcer
+            # falls back to log-only, the rest of the pipeline keeps
+            # running, the operator sees corrections in the UI without
+            # any physical motion.
+
+            save_raw_fits: false
+            save_stacked_fits: false
+            save_raw_thumbnails: false
+            save_stacked_thumbnails: false
+
+            thumbnails:
+              enabled: true
+              output_dir: /tmp/sim_guider_thumbs
+              # Sim sensor is small; preserve full resolution.
+              size: [512, 512]
+              every_n: 1
+              latest_link: true
+              quality: 85
+              max_files: 100
+
+  - type: thumbnail_svc.server
+    variant: sim
+    bind: 0.0.0.0
+    port: 8090
+    public_host: localhost
+    # ``base_url_path: /thumbs`` makes the discovery metric publish
+    # ``http://localhost:8090/thumbs`` as the base URL — UI then
+    # concatenates frame paths against that.
+    base_url_path: /thumbs
+    # ``/`` serves the SPA's index.html; make sure the UI has been
+    # built (``npx ng build --configuration development`` or
+    # ``... production``) before launching this config.
+    index_file: /Users/mka/projects/astro/ocabox-guider-ui/dist/ocabox-guider-ui/browser/index.html
+    cache_max_age_s: 1
+    cors_origin: "*"
+
+    # Specific prefix first; aiohttp resolves longest-match-wins.
+    roots:
+      - prefix: /thumbs
+        directory: /tmp/sim_guider_thumbs
+      - prefix: /
+        directory: /Users/mka/projects/astro/ocabox-guider-ui/dist/ocabox-guider-ui/browser
