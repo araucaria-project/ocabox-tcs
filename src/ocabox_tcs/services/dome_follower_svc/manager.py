@@ -51,7 +51,7 @@ class Manager:
         self.svc_logger.info(f'Starting communication.')
         self.nats_conn = NatsConn(manager=self)
         self.tic_conn = TicConn(manager=self)
-        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.variant)
+        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.telescope_id)
         await self.nats_conn.connect()
         await self.tic_conn.get_obs_cfg()
         await self.nats_conn.start_responders()
@@ -186,7 +186,9 @@ class Manager:
                     dome_az = await self.tic_conn.dome.aget_az()
                     mount_az = await self.tic_conn.mount.aget_az()
                     mount_slewing = await self.tic_conn.mount.aget_slewing()
-                    mount_tracking = await self.tic_conn.mount.aget_tracking()
+                    mount_parked = await self.tic_conn.mount.aget_atpark()
+                    # is_access = await self.tic_conn.access.aget_is_access()
+                    # mount_tracking = await self.tic_conn.mount.aget_tracking()
                     await self.calc_dome_speed(dome_az=dome_az)
                     self.dome_az_last = dome_az
                 except OcaboxServerError as e:
@@ -206,7 +208,7 @@ class Manager:
                     )
                     return
 
-            if dome_slewing is False and mount_slewing is False and mount_tracking is True:
+            if dome_slewing is False and mount_slewing is False and mount_parked is False:
                 dome_target_az = await self.dome_target_az(mount_az=mount_az)
                 if dome_target_az is None:
                     self.svc_logger.error(f'Can not calculate dome target az')

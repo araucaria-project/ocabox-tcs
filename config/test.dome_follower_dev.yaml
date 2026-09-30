@@ -1,0 +1,24 @@
+nats:
+  host: 192.168.8.140
+  port: 4222
+  required: true  # Block startup until NATS is available
+
+services:
+
+  - type: dome_follower_svc.dome_follower
+    log_level: INFO
+    telescope_id: dev
+    variant: dev-dome_follower
+    interval: 1  # Interval in seconds
+    turn_on_automatically: True
+    dome_speed: 25 # deg / sec
+    follow_tolerance: 3.5 # deg
+    settle_time: 3.5 # sec
+#    subject_prefix: svc #?
+#    service_name: dome_follower #?
+
+#    tic_conn: #?
+#      client_name: CliClient #?
+#      software_id: dome_follower/dev #?
+#      enable_observatory: true #?
+#      service_mode: true #?
