@@ -66,10 +66,12 @@ class NatsConn:
         self.svc_logger.info(f'Sent rpc response: follow off')
 
     async def rpc_state(self, rpc: Rpc) -> None:
-        self.svc_logger.info(f'State rpc request received')
+        self.svc_logger.debug(f'State rpc request received')
         data = {
             'response': 'State of the dome follower',
             'follow_on': self.manager.follow_on,
+            'following': self.manager.following,
+            'target_az': self.manager.target_az,
             'status': 'ok',
             'ts': dt_utcnow_array(),
             }
@@ -78,7 +80,7 @@ class NatsConn:
             'sender': self.manager.software_id  # name who send message
         }
         await rpc.response_now(data=data, meta=meta)
-        self.svc_logger.info(f'Sent rpc response: status')
+        self.svc_logger.debug(f'Sent rpc response: status')
 
     async def start_responders(self) -> None:
         await self.msg_rpc_responder(

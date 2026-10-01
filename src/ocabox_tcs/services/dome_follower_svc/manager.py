@@ -25,6 +25,8 @@ class Manager:
         self.nats_conn: Optional[NatsConn] = None
         self.tic_conn: Optional[TicConn] = None
         self.follow_on: bool = False
+        self.following: bool = False
+        self.target_az: Optional[float] = None
         self.obs_cfg: Optional[ConfigGeneral] = None
         self.client_name = client_name
         self.software_id = software_id
@@ -222,6 +224,8 @@ class Manager:
                     async with self.service.monitor.track_task('slewing'):
                         try:
                             await self.tic_conn.dome.aput_slewtoazimuth(dome_target_az)
+                            self.following = True
+                            self.target_az = round(dome_target_az, 2)
                         except OcaboxServerError as e:
                             self.svc_logger.error(f'Tic OcaboxServerError, {e}')
                             self.service.monitor.set_status(
@@ -242,3 +246,5 @@ class Manager:
                             return
                         self.service.monitor.cancel_error_status()
                         await self.dome_slew_settle(min_diff)
+                        self.following = False
+                        self.target_az = None
