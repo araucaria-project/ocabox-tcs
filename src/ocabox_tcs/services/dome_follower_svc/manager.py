@@ -248,3 +248,4 @@ class Manager:
                         await self.dome_slew_settle(min_diff)
                         self.following = False
                         self.target_az = None
+                        # TODO make waiting for target az?
