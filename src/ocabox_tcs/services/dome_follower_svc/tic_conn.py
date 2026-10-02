@@ -16,7 +16,6 @@ class TicConn:
         self.telescope: Optional[Telescope] = None
         self.dome: Optional[Dome] = None
         self.mount: Optional[Mount] = None
-        self.access_grantor: Optional[AccessGrantor] = None
         super().__init__()
 
     async def init_peripherals(self, telescope_id: str) -> None:
@@ -29,7 +28,6 @@ class TicConn:
         self.dome = self.telescope.get_dome()
         self.dome.request_special_permission = True
         self.mount = self.telescope.get_mount()
-        # self.access_grantor = self.telescope.get_access_grantor()
 
     async def get_obs_cfg(self):
         self.svc_logger.info(f'Loading client config...')

@@ -25,6 +25,8 @@ class Manager:
         self.nats_conn: Optional[NatsConn] = None
         self.tic_conn: Optional[TicConn] = None
         self.follow_on: bool = False
+        self.following: bool = False
+        self.target_az: Optional[float] = None
         self.obs_cfg: Optional[ConfigGeneral] = None
         self.client_name = client_name
         self.software_id = software_id
@@ -51,7 +53,7 @@ class Manager:
         self.svc_logger.info(f'Starting communication.')
         self.nats_conn = NatsConn(manager=self)
         self.tic_conn = TicConn(manager=self)
-        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.variant)
+        await self.tic_conn.init_peripherals(telescope_id=self.svc_config.telescope_id)
         await self.nats_conn.connect()
         await self.tic_conn.get_obs_cfg()
         await self.nats_conn.start_responders()
@@ -128,9 +130,26 @@ class Manager:
 
     async def dome_target_az(self, mount_az: float) -> Optional[float]:
         if self.mount_type == 'eq':
-            ra = await self.tic_conn.mount.aget_ra()
-            dec = await self.tic_conn.mount.aget_dec()
-            side_of_pier = await self.tic_conn.mount.aget_sideofpier()
+            try:
+                ra = await self.tic_conn.mount.aget_ra()
+                dec = await self.tic_conn.mount.aget_dec()
+                side_of_pier = await self.tic_conn.mount.aget_sideofpier()
+            except OcaboxServerError as e:
+                self.svc_logger.error(f'Tic OcaboxServerError, {e}')
+                self.service.monitor.set_status(
+                    Status.ERROR, f"Tic dome get Server Error {e}"
+                )
+                return None
+            except CommunicationTimeoutError:
+                self.svc_logger.error(f'Tic CommunicationTimeoutError')
+                self.service.monitor.set_status(Status.DEGRADED, f"Tic dome get Time out")
+                return None
+            except OcaboxAccessDenied:
+                self.svc_logger.error(f'Tic OcaboxAccessDenied')
+                self.service.monitor.set_status(
+                    Status.ERROR, f"Tic dome get Access Denied"
+                )
+                return None
             if ra is None or dec is None or side_of_pier is None:
                 return None
             eq_mount_az, info_dict = dome_eq_azimuth(
@@ -169,6 +188,9 @@ class Manager:
                     dome_az = await self.tic_conn.dome.aget_az()
                     mount_az = await self.tic_conn.mount.aget_az()
                     mount_slewing = await self.tic_conn.mount.aget_slewing()
+                    mount_parked = await self.tic_conn.mount.aget_atpark()
+                    # is_access = await self.tic_conn.access.aget_is_access()
+                    # mount_tracking = await self.tic_conn.mount.aget_tracking()
                     await self.calc_dome_speed(dome_az=dome_az)
                     self.dome_az_last = dome_az
                 except OcaboxServerError as e:
@@ -188,7 +210,7 @@ class Manager:
                     )
                     return
 
-            if dome_slewing is False and mount_slewing is False:
+            if dome_slewing is False and mount_slewing is False and mount_parked is False:
                 dome_target_az = await self.dome_target_az(mount_az=mount_az)
                 if dome_target_az is None:
                     self.svc_logger.error(f'Can not calculate dome target az')
@@ -202,6 +224,8 @@ class Manager:
                     async with self.service.monitor.track_task('slewing'):
                         try:
                             await self.tic_conn.dome.aput_slewtoazimuth(dome_target_az)
+                            self.following = True
+                            self.target_az = round(dome_target_az, 2)
                         except OcaboxServerError as e:
                             self.svc_logger.error(f'Tic OcaboxServerError, {e}')
                             self.service.monitor.set_status(
@@ -222,3 +246,6 @@ class Manager:
                             return
                         self.service.monitor.cancel_error_status()
                         await self.dome_slew_settle(min_diff)
+                        self.following = False
+                        self.target_az = None
+                        # TODO make waiting for target az?

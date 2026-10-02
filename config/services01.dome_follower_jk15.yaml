@@ -1,0 +1,25 @@
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+
+  - type: dome_follower_svc.dome_follower
+    variant: jk15-dome_follower
+
+    telescope_id: jk15
+    interval: 1  # Interval in seconds
+    turn_on_automatically: False
+    dome_speed: 25 # deg / sec
+    follow_tolerance: 3.5 # deg
+    settle_time: 3.5 # sec
+    log_level: INFO
+
+#    subject_prefix: svc
+#    service_name: dome_follower
+
+#    tic_conn:
+#      client_name: CliClient
+#      software_id: dome_follower/jk15
+#      enable_observatory: true
+#      service_mode: true

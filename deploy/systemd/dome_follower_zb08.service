@@ -1,0 +1,25 @@
+# OCA zb08 Dome Follower — symlink target for /etc/systemd/system/.
+#   sudo ln -s /home/poweruser/src/ocabox-tcs/deploy/systemd/dome_follower_zb08.service \
+#       /etc/systemd/system/dome_follower_zb08.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dome_follower_zb08
+#   sudo systemctl status dome_follower_zb08
+
+[Unit]
+Description=OCA zb08 Dome Follower
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=poweruser
+WorkingDirectory=/home/poweruser/src/ocabox-tcs
+Environment=PATH=/home/poweruser/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/poweruser/.local/bin/poetry run tcsd \
+    --config config/services01.dome_follower_zb08.yaml \
+    --no-color
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
