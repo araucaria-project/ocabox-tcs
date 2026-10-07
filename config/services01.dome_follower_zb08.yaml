@@ -11,7 +11,7 @@ services:
     interval: 1  # Interval in seconds
     turn_on_automatically: False
     dome_speed: 25 # deg / sec
-    follow_tolerance: 3.5 # deg
+    follow_tolerance: 3 # deg
     settle_time: 3.5 # sec
     log_level: INFO
 
