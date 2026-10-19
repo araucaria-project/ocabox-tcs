@@ -257,3 +257,58 @@ class TestSetpath:
         await svc._operation
         failed = operations(svc)[-1]
         assert failed['state'] == 'failed' and 'safety cutoff' in failed['message']
+
+
+class FakeObservatory:
+    """``ocaboxapi.Observatory`` as ``on_start`` uses it; ``published`` = the TIC config stream."""
+    published: dict = {}
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        FakeObservatory.instance = self
+
+    async def load_client_cfg(self):
+        pass
+
+    def get_telescopes_configuration(self):
+        return self.published
+
+    def connect(self):
+        pass
+
+    def get_telescope(self, tel):
+        return FakeTelescope()
+
+
+class TestStart:
+
+    @pytest.fixture
+    def svc(self, monkeypatch):
+        import ocaboxapi
+        import ocabox_tcs.services.optics.service as module
+        monkeypatch.setattr(ocaboxapi, 'Observatory', FakeObservatory)
+        monkeypatch.setattr(module.TicEndpoint, 'for_service',
+                            classmethod(lambda cls, svc, **kw: MagicMock(publish=AsyncMock(), start=AsyncMock())))
+        svc = OpticsService()
+        svc.svc_config = SimpleNamespace(telescope='jk15', variant='jk15', client_name='CliClient', components_file='',
+                                         config_stream='tic.config.observatory', actuate=['tertiary'], interval=1.0,
+                                         prove_timeout=60.0, keepalive=60.0)
+        svc.svc_logger = MagicMock()
+        return svc
+
+    async def test_reads_the_graph_published_by_tic(self, svc):
+        FakeObservatory.published = {'jk15': {'observatory': {'components': JK15_WITH_MOUNT}}}
+        await svc.on_start()
+        assert FakeObservatory.instance.kwargs['config_stream'] == 'tic.config.observatory'
+        assert FakeObservatory.instance.kwargs['policy'] == 'service'
+        assert set(svc.graph.detectors) == set(GRAPH.detectors)
+
+    async def test_telescope_missing_from_the_stream_stops_the_start(self, svc):
+        FakeObservatory.published = {}
+        with pytest.raises(RuntimeError, match="jk15: not in the observatory configuration from 'tic.config.observatory'"):
+            await svc.on_start()
+
+    async def test_a_graph_without_detectors_stops_the_start(self, svc):
+        FakeObservatory.published = {'jk15': {'observatory': {'components': {'telescope': {'kind': 'telescope'}}}}}
+        with pytest.raises(RuntimeError, match='no detector with `paths:`'):
+            await svc.on_start()
