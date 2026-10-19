@@ -7,10 +7,14 @@ One instance per telescope (variant = telescope id). Clients reach it through TI
 ``status.optics.<tel>.<det>.sees``      what the detector sees now (``SeesRecord`` list)
 ``status.optics.<tel>.<det>.functions`` verdict per declared function (active / settable /
                                         collision / impossible)
-``status.optics.<tel>.self.selectors``  proven selector positions (``null`` = undefined)
+``status.optics.<tel>.self.selectors``  every selector axis: position (``null`` = undefined),
+                                        origin, moving, why undefined, who declared it, label
+``status.optics.<tel>.self.declared``   positions people vouch for: ``{key: {position, by, at}}``
 ``status.optics.<tel>.self.busy``       detectors whose path must not change, and why
 ``status.optics.<tel>.self.operation``  the last path change: moving → done | failed
 ``rpc.optics.<tel>.<det>.setpath``      ``{function}``: switch so the detector can do it
+``rpc.optics.<tel>.self.declare``       ``{key, position}``: vouch for an axis no reading proves
+                                        (``position: null`` withdraws)
 ======================================  ===================================================
 
 ``setpath`` answers at once — accepted with the moves, or refused with an obcom code (4007 no such
@@ -18,27 +22,34 @@ detector/function, 4008 a busy detector's path or another switch in progress, 40
 needed or the light unavailable) — and the switch runs in the background, reported in
 ``self.operation``, like a slew. Graph: the telescope's ``components`` from the published
 observatory configuration, or ``components_file`` (a config.yaml) to try a graph before deploying.
+
+A declaration is the operator's word for what no reading can prove — the shutter opened by hand
+while its sensor reports an error. It fills only an undefined axis, is withdrawn as soon as a
+reading proves the axis again, expires after ``declaration_hours``, and is visible everywhere as
+``declared`` by whom. Only people declare: the request passes TIC's blocker like ``setpath``.
 """
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from importlib.metadata import version
 from pathlib import Path
 
 import yaml
 from datamodels.messages import Severity
-from obcom.optics import GraphInvalid, OpticalGraph, parse_graph
+from datamodels.optics import state_key
+from obcom.optics import Declaration, GraphInvalid, OpticalGraph, ProvenState, label, parse_graph, resolve_axes
 
 from ocabox_tcs.base_service import BaseBlockingPermanentService, BaseServiceConfig, config, service
 from ocabox_tcs.services.optics.actuation import ActuationError, Actuator
-from ocabox_tcs.services.optics.engine import decide, report, with_busy_holds
+from ocabox_tcs.services.optics.engine import decide, report, require_function, with_busy_holds
 from ocabox_tcs.services.optics.readings import Snapshot, TelescopeReader
 from ocabox_tcs.services.optics.sun import SunAltitude
 from ocabox_tcs.tic_endpoint import Call, Refusal, TicEndpoint
 
-#: ocabox-common with ``Hold(position=None)`` — a selector held at an unknown position
-REQUIRED_OCABOX_COMMON = (1, 7, 1)
+#: ocabox-common with labels, causes and declarations (1.8.0) and ``Hold(position=None)`` (1.7.1)
+REQUIRED_OCABOX_COMMON = (1, 8, 0)
 
 
 @config('optics')
@@ -52,6 +63,7 @@ class OpticsServiceConfig(BaseServiceConfig):
     keepalive: float = 60.0  #: seconds between repeats of published status
     client_name: str = 'CliClient'  #: ocabox client section of the observatory configuration
     config_stream: str = 'tic.config.observatory'  #: NATS stream TIC publishes the observatory configuration on
+    declaration_hours: float = 12.0  #: a declaration nobody withdrew expires after this (one night)
 
 
 @service('optics')
@@ -64,6 +76,7 @@ class OpticsService(BaseBlockingPermanentService):
         self._reader: TelescopeReader | None = None
         self._actuator: Actuator | None = None
         self._operation: asyncio.Task | None = None
+        self._declared: dict[str, dict] = {}  #: key -> {position, by, at}
 
     @property
     def telescope_id(self) -> str:
@@ -100,7 +113,9 @@ class OpticsService(BaseBlockingPermanentService):
                                   poll=self.svc_config.interval, logger=self.svc_logger)
         self.endpoint = TicEndpoint.for_service(self, keepalive=self.svc_config.keepalive)
         self.endpoint.method('setpath', self._setpath)
+        self.endpoint.method('declare', self._declare, element='self')
         await self.endpoint.publish('self', 'operation', {'state': 'idle'})
+        await self.endpoint.publish('self', 'declared', {})
         await self.endpoint.start()
         self.svc_logger.info(f'{tel}: {len(self.graph.detectors)} detectors ({", ".join(self.graph.detectors)}), '
                              f'automatic actuation of {", ".join(self.svc_config.actuate) or "nothing"}')
@@ -139,13 +154,72 @@ class OpticsService(BaseBlockingPermanentService):
     # ------------------------------------------------------------------ status
 
     async def _publish(self, snapshot: Snapshot) -> None:
-        state = with_busy_holds(self.graph, snapshot.state, snapshot.busy)
+        proven = await self._with_declarations(snapshot.state)
+        state = with_busy_holds(self.graph, proven, snapshot.busy)
         for detector, entry in report(self.graph, state, self._actuatable).items():
             await self.endpoint.publish(detector, 'sees', entry['sees'])
             await self.endpoint.publish(detector, 'functions', entry['functions'])
-        await self.endpoint.publish('self', 'selectors', {
-            key: {'position': s.position, 'moving': s.moving} for key, s in sorted(snapshot.state.selectors.items())})
+        await self.endpoint.publish('self', 'selectors', self._selectors(proven))
         await self.endpoint.publish('self', 'busy', dict(sorted(snapshot.busy.items())))
+
+    def _selectors(self, state: ProvenState) -> dict[str, dict]:
+        """Every state axis — selectors and sources (the sky, lamps); read, derived or declared — with
+        why it is undefined and its label: all a client needs to draw the path (``obcom.optics.ribbon``)."""
+        out = {}
+        for node in self.graph.nodes.values():
+            for aspect, resolved in resolve_axes(self.graph, state, node).items():
+                key = state_key(node.name, aspect)
+                reading = state.selectors.get(key)
+                out[key] = {'position': resolved.value, 'origin': resolved.origin,
+                            'moving': bool(reading and reading.moving), 'cause': resolved.cause,
+                            'by': resolved.by, 'label': label(self.graph, key)}
+        return dict(sorted(out.items()))
+
+    # ------------------------------------------------------------------ declarations
+
+    async def _with_declarations(self, state: ProvenState) -> ProvenState:
+        """``state`` with the live declarations; withdraws those a reading proves again and those
+        past ``declaration_hours``."""
+        if not self._declared:
+            return state
+        now, changed = time.time(), False
+        for key, entry in list(self._declared.items()):
+            component, _, aspect = key.partition('.')
+            read = resolve_axes(self.graph, state, self.graph.node(component)).get(aspect or None)
+            if read is not None and read.value is not None:
+                self.svc_logger.info(f'{label(self.graph, key)} reads {read.value} again: '
+                                     f'declaration {entry["position"]} by {entry["by"]} withdrawn')
+            elif now - entry['at'] > self.svc_config.declaration_hours * 3600:
+                self.svc_logger.info(f'{label(self.graph, key)}: declaration {entry["position"]} by {entry["by"]} expired')
+            else:
+                continue
+            del self._declared[key]
+            changed = True
+        if changed:
+            await self.endpoint.publish('self', 'declared', self._declared)
+        return replace(state, declared={k: Declaration(e['position'], e['by']) for k, e in self._declared.items()})
+
+    async def _declare(self, call: Call):
+        key, position = call.parameters.get('key'), call.parameters.get('position')
+        axes = {state_key(n, a.name): a.vocabulary for n in self.graph.selectors for a in self.graph.node(n).axes}
+        if key not in axes:
+            raise Refusal(f'declare needs a selector key (one of: {", ".join(sorted(axes))})', code=4007)
+        who = call.caller.name if call.caller else 'unknown'
+        if position is None:
+            withdrawn = self._declared.pop(key, None)
+            self.svc_logger.info(f'{who}: declaration of {label(self.graph, key)} withdrawn ({withdrawn and withdrawn["position"]})')
+        else:
+            if position not in axes[key]:
+                raise Refusal(f'{label(self.graph, key)} has no position {position!r} (positions: {", ".join(axes[key])})', code=4007)
+            read = resolve_axes(self.graph, (await self._reader.read()).state, self.graph.node(key.partition('.')[0]))
+            proven = read.get(key.partition('.')[2] or None)
+            if proven is not None and proven.value is not None:
+                raise Refusal(f'{label(self.graph, key)} reads {proven.value}: a reading needs no declaration')
+            self._declared[key] = {'position': position, 'by': who, 'at': time.time()}
+            self.svc_logger.info(f'{who}: declares {label(self.graph, key)} {position}')
+        await self.endpoint.publish('self', 'declared', self._declared)
+        await self._publish(await self._reader.read())
+        return {'declared': dict(self._declared)}
 
     # ------------------------------------------------------------------ setpath
 
@@ -153,10 +227,13 @@ class OpticsService(BaseBlockingPermanentService):
         function = call.parameters.get('function')
         if not isinstance(function, str):
             raise Refusal("setpath needs the parameter 'function' (e.g. object, dark, flat)", code=4007)
+        require_function(self.graph, call.element, function)
+        snapshot = await self._reader.read()
+        proven = await self._with_declarations(snapshot.state)
+        # checked after the last await: two concurrent requests can never both start a switch
         if self._operation is not None and not self._operation.done():
             raise Refusal('another light-path change is in progress', code=4008, severity=Severity.TEMPORARY)
-        snapshot = await self._reader.read()
-        state = with_busy_holds(self.graph, snapshot.state, snapshot.busy)
+        state = with_busy_holds(self.graph, proven, snapshot.busy)
         moves = decide(self.graph, state, call.element, function, self._actuatable)
         if moves:
             who = call.caller.name if call.caller else None

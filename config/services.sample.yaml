@@ -63,7 +63,8 @@ services:
   # - type: optics
   #   variant: jk15                   # the telescope id (or set `telescope:`)
   #   interval: 1.0                   # s between readings, also TIC data tolerance
-  #   actuate: [tertiary]             # state keys the service may move; others are refused as manual
+  #   actuate: [tertiary, covercalibrator, covercalibrator.calibrator]  # state keys the service may move
+  #   declaration_hours: 12.0         # an operator's declaration nobody withdrew expires after this
   #   prove_timeout: 60.0             # s for a commanded move to be proven by a reading
   #   components_file: ""             # config.yaml to try a graph before it is published
   #   client_name: CliClient          # ocabox client section of the observatory configuration

@@ -22,8 +22,7 @@ from typing import Mapping
 
 from datamodels.messages import Severity
 from datamodels.optics import Active, Collision, Impossible, Settable, Verdict, state_key
-from obcom.optics import Hold, OpticalGraph, ProvenState, check, resolve_axes, sees
-from obcom.optics.check import UnknownFunction
+from obcom.optics import Hold, OpticalGraph, ProvenState, check, label, resolve_axes, sees
 
 from ocabox_tcs.tic_endpoint import Refusal
 
@@ -73,7 +72,7 @@ def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: st
         manual = sorted(k for k in result.moves if k not in actuatable)
         if manual:  # unreachable while every selector outside ``actuatable`` is held; never move one anyway
             return Impossible(kind='impossible', undefined_at=tuple(manual),
-                              reason=f'{", ".join(manual)}: position unknown, and not moved by the optics service')
+                              reason=f'{", ".join(label(graph, k) for k in manual)}: not moved by the optics service')
     return result
 
 
@@ -91,25 +90,31 @@ def report(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str]) 
     return out
 
 
+def require_function(graph: OpticalGraph, detector: str, function: str) -> None:
+    """Refuse (4007) a request for a detector or function the graph does not declare — before
+    anything else, so a typo is never answered "busy, retry later"."""
+    if detector not in graph.detectors:
+        raise Refusal(f'{detector!r} is not a detector of this telescope (detectors: {", ".join(graph.detectors)})', code=4007)
+    declared = graph.node(detector).paths or {}
+    if function not in declared:
+        raise Refusal(f'{detector} declares no function {function!r} (declared: {", ".join(declared)})', code=4007)
+
+
 def decide(graph: OpticalGraph, state: ProvenState, detector: str, function: str,
            actuatable: frozenset[str]) -> dict[str, str]:
     """The moves of actuatable selectors that make ``detector`` do ``function`` — empty when it
     already does — or a :class:`Refusal` that says why not, with the code a client can act on.
     ``state`` should already carry the busy holds."""
-    if detector not in graph.detectors:
-        raise Refusal(f'{detector!r} is not a detector of this telescope (detectors: {", ".join(graph.detectors)})', code=4007)
-    try:
-        result = verdict(graph, state, detector, function, actuatable)
-    except UnknownFunction as e:
-        raise Refusal(str(e), code=4007)
+    require_function(graph, detector, function)
+    result = verdict(graph, state, detector, function, actuatable)
     if isinstance(result, Active):
         return {}
     if isinstance(result, Settable):
         return dict(result.moves)
     if isinstance(result, Collision):
         if result.holder == MANUAL:
-            raise Refusal(f'{detector}.{function} needs {result.selector} → {result.required} (now {result.held}): '
-                          f'not moved by the optics service, set it with its own controls first')
+            raise Refusal(f'{detector} {function} needs {label(graph, result.selector)} {result.required} '
+                          f'(it is {result.held}): not moved by the optics service, set it with its own controls first')
         raise Refusal(result.reason, code=4008, severity=Severity.TEMPORARY)
     if isinstance(result, Impossible):
         raise Refusal(result.reason)

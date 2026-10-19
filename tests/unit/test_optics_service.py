@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from ocaboxapi import Camera, CoverCalibrator, Dome, Mount
 from ocaboxapi.tertiary import Tertiary
-from obcom.optics import ProvenState, parse_graph
+from obcom.optics import ProvenState, parse_graph, published_values, ribbon
 from obcom.optics.conformance import JK15_WITH_MOUNT
 
 from ocabox_tcs.services.optics.actuation import ActuationError, Actuator
@@ -50,7 +50,7 @@ class TestDecide:
     def test_manual_move_is_refused_with_the_move_spelled_out(self):
         with pytest.raises(Refusal) as e:
             decide(GRAPH, night(tertiary='andor'), 'camera', 'domeflat', M3)
-        assert e.value.code == 4009 and 'dome → flat' in e.value.message and 'own controls' in e.value.message
+        assert e.value.code == 4009 and 'needs dome flat (it is open)' in e.value.message and 'own controls' in e.value.message
 
     def test_busy_detector_path_is_a_temporary_refusal_naming_it(self):
         state = with_busy_holds(GRAPH, night(), {'guider_beso': 'exposing'})
@@ -71,7 +71,7 @@ class TestDecide:
                                   sun_alt_deg=-30, dome_shutter_open=True, dome_az_deg=120.0, mount_az_deg=10.0, mount_alt_deg=60.0)
         with pytest.raises(Refusal) as e:
             decide(GRAPH, state, 'camera', 'domeflat', M3)
-        assert e.value.code == 4009 and 'dome → flat' in e.value.message
+        assert e.value.code == 4009 and 'camera domeflat needs dome flat (it is open)' in e.value.message
 
     def test_undefined_m3_proves_nothing(self):
         state = ProvenState.build({'dome': 'open', 'covercalibrator': 'open', 'covercalibrator.calibrator': 'off',
@@ -96,7 +96,8 @@ class TestBrokenShutter:
     def test_sky_cannot_be_proven_and_is_refused_naming_the_dome(self):
         functions = report(GRAPH, broken_shutter(), M3)['camera']['functions']
         assert functions['object']['kind'] == 'impossible'
-        assert 'dome is held at an unknown position by its own controls' in functions['object']['reason']
+        assert functions['object']['reason'].startswith('dome: position unknown (shutter state unknown), cannot be moved'
+                                                        ' — held by its own controls')
         with pytest.raises(Refusal) as e:
             decide(GRAPH, broken_shutter(), 'camera', 'object', M3)
         assert e.value.code == 4009 and 'dome' in e.value.message
@@ -118,7 +119,8 @@ class TestReport:
         assert functions['dark_strict'] == {'kind': 'settable', 'see': 'dark', 'positions': {'tertiary': 'beso'},
                                             'moves': {'tertiary': 'beso'}}
         assert functions['domeflat']['kind'] == 'collision' and functions['domeflat']['holder'] == MANUAL
-        assert "dome is held at 'open' by its own controls" in functions['domeflat']['reason']
+        assert functions['domeflat']['reason'] == ('flatscreen needs dome flat, it is open — held by its own controls '
+                                                   '(not moved by the optics service)')
 
     @pytest.mark.parametrize('state', [night(), night(tertiary='andor'), night(covercalibrator='close'), broken_shutter(),
                                        with_busy_holds(GRAPH, night(tertiary='andor'), {'guider_beso': 'exposing'})])
@@ -146,7 +148,16 @@ class FakeComponent:
         assert not unknown, f'{spec.__name__} has no {sorted(unknown)}'
         self.values = values
         self.request_special_permission = False
-        self.aput_selectnasmythport = AsyncMock(side_effect=self._select)
+        effects = {  # commands of the real class, answered the way the device would end up reading
+            'aput_selectnasmythport': self._select,
+            'aput_opencover': lambda: self.values.update(coverstate=3),
+            'aput_closecover': lambda: self.values.update(coverstate=1),
+            'aput_calibratoroff': lambda: self.values.update(calibratorstate=1),
+            'aput_calibratoron': lambda brightness: self.values.update(calibratorstate=3),
+        }
+        for command, effect in effects.items():
+            if hasattr(spec, command):
+                setattr(self, command, AsyncMock(side_effect=effect))
 
     async def aget_value(self, attribute, time_of_data_tolerance=None):
         value = self.values[attribute]
@@ -154,7 +165,7 @@ class FakeComponent:
             raise value
         return value
 
-    async def _select(self, port):
+    def _select(self, port):
         self.values['tertiarystatus'] = {'NasmythPort': port, 'Moving': False}
 
 
@@ -225,13 +236,30 @@ class TestActuation:
         tel.c['tertiary'].aput_selectnasmythport = AsyncMock()  # TIC accepts, M3 never arrives
         with pytest.raises(ActuationError) as e:
             await Actuator(tel, GRAPH, reader(tel), prove_timeout=0.05, poll=0.01).apply({'tertiary': 'andor'})
-        assert 'tertiary reads beso, wanted andor' in str(e.value)
+        assert 'M3 reads beso, wanted andor' in str(e.value)
 
-    async def test_no_actuator_for_a_kind(self):
+    async def test_closes_the_mirror_covers_and_proves_it(self):
         tel = FakeTelescope()
-        with pytest.raises(ActuationError) as e:
-            await Actuator(tel, GRAPH, reader(tel)).apply({'covercalibrator': 'close'})
-        assert "no actuator for kind 'covercalibrator'" in str(e.value)
+        await Actuator(tel, GRAPH, reader(tel), prove_timeout=2, poll=0.01).apply({'covercalibrator': 'close'})
+        tel.c['covercalibrator'].aput_closecover.assert_awaited_once()
+        assert tel.c['covercalibrator'].request_special_permission
+
+    async def test_switches_the_calibration_lamp_off(self):
+        tel = FakeTelescope()
+        tel.c['covercalibrator'].values['calibratorstate'] = 3
+        await Actuator(tel, GRAPH, reader(tel), prove_timeout=2, poll=0.01).apply({'covercalibrator.calibrator': 'off'})
+        tel.c['covercalibrator'].aput_calibratoroff.assert_awaited_once()
+
+    async def test_never_lights_the_lamp_at_a_guessed_brightness(self):
+        tel = FakeTelescope()
+        with pytest.raises(ActuationError, match='no calibrator_brightness configured'):
+            await Actuator(tel, GRAPH, reader(tel)).apply({'covercalibrator.calibrator': 'on'})
+        tel.c['covercalibrator'].aput_calibratoron.assert_not_awaited()
+
+    async def test_the_dome_is_no_optical_lever(self):
+        tel = FakeTelescope()
+        with pytest.raises(ActuationError, match="dome → flat: no actuator for kind 'dome'"):
+            await Actuator(tel, GRAPH, reader(tel)).apply({'dome': 'flat'})
 
 
 # ---------------------------------------------------------------------------------------- service
@@ -275,6 +303,25 @@ class TestSetpath:
             await svc._setpath(Call('camera', 'setpath', {'function': 'object'}, None, 5))
         assert e.value.code == 4008
         svc._operation.cancel()
+
+    async def test_unknown_function_is_4007_even_during_a_switch(self):
+        svc = service(FakeTelescope(port=1))
+        svc._operation = asyncio.get_running_loop().create_future()
+        with pytest.raises(Refusal) as e:
+            await svc._setpath(Call('camera', 'setpath', {'function': 'nonexistent'}, None, 5))
+        assert e.value.code == 4007 and "declares no function 'nonexistent'" in e.value.message
+        svc._operation.cancel()
+
+    async def test_concurrent_requests_start_one_switch(self):
+        tel = FakeTelescope(port=1)
+        svc = service(tel)
+        results = await asyncio.gather(*(svc._setpath(Call('camera', 'setpath', {'function': 'object'}, None, 5))
+                                         for _ in range(3)), return_exceptions=True)
+        accepted = [r for r in results if isinstance(r, dict)]
+        refused = [r for r in results if isinstance(r, Refusal)]
+        assert len(accepted) == 1 and len(refused) == 2 and all(r.code == 4008 for r in refused)
+        await svc._operation
+        assert tel.c['tertiary'].aput_selectnasmythport.await_count == 1
 
     async def test_function_parameter_required(self):
         with pytest.raises(Refusal) as e:
@@ -350,3 +397,102 @@ class TestStart:
         FakeObservatory.published = {'jk15': {'observatory': {'components': {'telescope': {'kind': 'telescope'}}}}}
         with pytest.raises(RuntimeError, match='no detector with `paths:`'):
             await svc.on_start()
+
+
+# ---------------------------------------------------------------------------------------- causes
+
+class TestCauses:
+
+    async def test_a_broken_shutter_is_named_as_the_shutter(self):
+        tel = FakeTelescope(port=2)
+        tel.c['dome'].values['shutterstatus'] = 4
+        snap = await reader(tel).read()
+        assert snap.state.causes['dome'] == 'shutter reports Error (ShutterState 4)'
+
+    async def test_a_faulted_m3_says_so(self):
+        tel = FakeTelescope(port=2)
+        tel.c['tertiary'].values['tertiarystatus'] = {'NasmythPort': 2, 'Moving': False, 'ErrorRaised': True}
+        snap = await reader(tel).read()
+        assert snap.state.selectors['tertiary'].position is None
+        assert snap.state.causes['tertiary'] == 'controller reports an error (ErrorRaised)'
+
+    async def test_a_failed_read_explains_every_axis_of_the_component(self):
+        tel = FakeTelescope(port=2)
+        tel.c['covercalibrator'].values['coverstate'] = TimeoutError('TIC did not answer')
+        snap = await reader(tel).read()
+        assert snap.state.causes['covercalibrator'] == 'not read (TimeoutError: TIC did not answer)'
+        assert snap.state.causes['covercalibrator.calibrator'] == 'not read (TimeoutError: TIC did not answer)'
+
+
+# ---------------------------------------------------------------------------------------- declarations
+
+def caller(name='mka'):
+    return SimpleNamespace(name=name)
+
+
+class TestDeclarations:
+
+    def broken_shutter_service(self):
+        tel = FakeTelescope(port=2)
+        tel.c['dome'].values['shutterstatus'] = 4
+        svc = service(tel)
+        svc.svc_config.declaration_hours = 12.0
+        return svc, tel
+
+    async def test_the_operator_vouches_for_the_dome_and_object_becomes_active(self):
+        svc, _ = self.broken_shutter_service()
+        await svc._publish(await svc._reader.read())
+        assert published(svc, 'camera', 'functions')['object']['kind'] == 'impossible'
+        answer = await svc._declare(Call('self', 'declare', {'key': 'dome', 'position': 'open'}, caller(), 5))
+        assert answer['declared']['dome']['position'] == 'open' and answer['declared']['dome']['by'] == 'mka'
+        assert published(svc, 'camera', 'functions')['object']['kind'] == 'active'
+        dome = published(svc, 'self', 'selectors')['dome']
+        assert (dome['position'], dome['origin'], dome['by']) == ('open', 'declared', 'mka')
+        assert dome['cause'] == 'shutter reports Error (ShutterState 4)' and dome['label'] == 'dome'
+
+    async def test_published_axes_draw_the_same_path_as_the_service_sees(self):
+        svc, _ = self.broken_shutter_service()
+        snapshot = await svc._reader.read()
+        await svc._publish(snapshot)
+        axes = published(svc, 'self', 'selectors')
+        assert axes['sky']['origin'] == 'derived'  # sources too: a client draws where the light starts
+        positions = {key: entry['position'] for key, entry in axes.items()}
+        assert ribbon(svc.graph, published_values(positions), 'camera') == ribbon(svc.graph, snapshot.state, 'camera')
+
+    async def test_a_reading_withdraws_the_declaration(self):
+        svc, tel = self.broken_shutter_service()
+        await svc._declare(Call('self', 'declare', {'key': 'dome', 'position': 'open'}, caller(), 5))
+        tel.c['dome'].values['shutterstatus'] = 0  # the sensor works again
+        await svc._publish(await svc._reader.read())
+        assert published(svc, 'self', 'declared') == {}
+        assert published(svc, 'self', 'selectors')['dome']['origin'] == 'derived'
+
+    async def test_a_declaration_expires(self):
+        svc, _ = self.broken_shutter_service()
+        await svc._declare(Call('self', 'declare', {'key': 'dome', 'position': 'open'}, caller(), 5))
+        svc._declared['dome']['at'] -= 13 * 3600
+        await svc._publish(await svc._reader.read())
+        assert published(svc, 'self', 'declared') == {}
+
+    async def test_withdrawn_on_request(self):
+        svc, _ = self.broken_shutter_service()
+        await svc._declare(Call('self', 'declare', {'key': 'dome', 'position': 'open'}, caller(), 5))
+        await svc._declare(Call('self', 'declare', {'key': 'dome', 'position': None}, caller(), 5))
+        assert published(svc, 'self', 'declared') == {}
+
+    async def test_what_a_reading_proves_needs_no_declaration(self):
+        svc = service(FakeTelescope(port=2))
+        with pytest.raises(Refusal, match='M3 reads andor: a reading needs no declaration'):
+            await svc._declare(Call('self', 'declare', {'key': 'tertiary', 'position': 'beso'}, caller(), 5))
+
+    async def test_unknown_key_or_position(self):
+        svc, _ = self.broken_shutter_service()
+        for parameters in ({'key': 'sky', 'position': 'open'}, {'key': 'dome', 'position': 'ajar'}):
+            with pytest.raises(Refusal) as e:
+                await svc._declare(Call('self', 'declare', parameters, caller(), 5))
+            assert e.value.code == 4007
+
+
+def published(svc, element, item):
+    """The last value the service published for ``element.item``."""
+    return [c.args[2] for c in svc.endpoint.publish.await_args_list if c.args[:2] == (element, item)][-1]
