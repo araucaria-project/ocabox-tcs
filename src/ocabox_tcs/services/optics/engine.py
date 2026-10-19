@@ -31,20 +31,19 @@ from ocabox_tcs.tic_endpoint import Refusal
 MANUAL = 'its own controls (not moved by the optics service)'
 
 
-def proven_positions(graph: OpticalGraph, state: ProvenState) -> dict[str, str]:
-    """Every selector axis with a proven position — read ones and derived ones (the dome's
-    open/flat/closed comes from shutter and pointing, not from a telemetry key)."""
+def selector_positions(graph: OpticalGraph, state: ProvenState) -> dict[str, str | None]:
+    """Every selector axis and its proven position, ``None`` when undefined — read ones and derived
+    ones (the dome's open/flat/closed comes from shutter and pointing, not from a telemetry key)."""
     return {state_key(name, aspect): resolved.value
             for name in graph.selectors
-            for aspect, resolved in resolve_axes(graph, state, graph.node(name)).items()
-            if resolved.value is not None}
+            for aspect, resolved in resolve_axes(graph, state, graph.node(name)).items()}
 
 
 def with_busy_holds(graph: OpticalGraph, state: ProvenState, busy: Mapping[str, str]) -> ProvenState:
-    """``state`` with every proven selector on the live path of a ``busy`` detector (name → why:
-    exposing, state unknown) held there."""
+    """``state`` with every selector on the live path of a ``busy`` detector (name → why: exposing,
+    state unknown) held where it is — at an unknown position when undefined."""
     holds = dict(state.holds)
-    positions = proven_positions(graph, state)
+    positions = selector_positions(graph, state)
     for detector, why in sorted(busy.items()):
         on_path = {component for record in sees(graph, state, detector) for component in (record.terminal, *record.via)}
         for key, position in positions.items():
@@ -54,9 +53,10 @@ def with_busy_holds(graph: OpticalGraph, state: ProvenState, busy: Mapping[str, 
 
 
 def with_manual_holds(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str]) -> ProvenState:
-    """``state`` with every proven selector outside ``actuatable`` held where it is."""
+    """``state`` with every selector outside ``actuatable`` held where it is — at an unknown
+    position when undefined (a broken dome shutter): the solver then routes around it."""
     holds = dict(state.holds)
-    for key, position in proven_positions(graph, state).items():
+    for key, position in selector_positions(graph, state).items():
         if key not in actuatable:
             holds.setdefault(key, Hold(position=position, holder=MANUAL))
     return replace(state, holds=holds)
@@ -71,7 +71,7 @@ def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: st
     result = check(graph, with_manual_holds(graph, state, actuatable), detector, function)
     if isinstance(result, Settable):
         manual = sorted(k for k in result.moves if k not in actuatable)
-        if manual:  # an undefined selector cannot be held: its move is still not the service's to make
+        if manual:  # unreachable while every selector outside ``actuatable`` is held; never move one anyway
             return Impossible(kind='impossible', undefined_at=tuple(manual),
                               reason=f'{", ".join(manual)}: position unknown, and not moved by the optics service')
     return result
