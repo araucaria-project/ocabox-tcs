@@ -1,0 +1,16 @@
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+
+  # Optical path of jk15, reached by clients through TIC (jk15.optics.*): what each detector sees,
+  # the verdict of its functions, setpath. The graph comes from the published observatory config.
+  - type: optics
+    variant: jk15
+    telescope: jk15
+    interval: 1.0             # s between readings
+    actuate: [tertiary]       # only M3 is moved; any other move is refused (4009) for the operator to make
+    prove_timeout: 60.0       # s for a commanded move to be proven by a reading
+    client_name: CliClient
+    log_level: INFO
