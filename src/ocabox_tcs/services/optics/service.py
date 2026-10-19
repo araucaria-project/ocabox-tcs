@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from importlib.metadata import version
 from pathlib import Path
 
 import yaml
@@ -35,6 +36,9 @@ from ocabox_tcs.services.optics.engine import decide, report, with_busy_holds
 from ocabox_tcs.services.optics.readings import Snapshot, TelescopeReader
 from ocabox_tcs.services.optics.sun import SunAltitude
 from ocabox_tcs.tic_endpoint import Call, Refusal, TicEndpoint
+
+#: ocabox-common with ``Hold(position=None)`` — a selector held at an unknown position
+REQUIRED_OCABOX_COMMON = (1, 7, 1)
 
 
 @config('optics')
@@ -71,6 +75,11 @@ class OpticsService(BaseBlockingPermanentService):
 
     async def on_start(self):
         from ocaboxapi import Observatory
+
+        installed = version('ocabox-common')
+        if tuple(int(part) for part in installed.split('.')[:3]) < REQUIRED_OCABOX_COMMON:
+            raise RuntimeError(f'ocabox-common {installed} is too old for the optics service '
+                               f'(needs >= {".".join(map(str, REQUIRED_OCABOX_COMMON))}): poetry update')
 
         tel = self.telescope_id
         observatory = Observatory(client_name=self.svc_config.client_name, software_id=f'optics/{tel}',

@@ -20,6 +20,14 @@ GRAPH = parse_graph(JK15_WITH_MOUNT, telescope='jk15')
 M3 = frozenset({'tertiary'})
 
 
+def broken_shutter(**positions):
+    """jk15 on 2026-10-19: the shutter reports an error (ShutterStatus 4), so the derived dome is
+    undefined; the operator opened the cover by hand."""
+    base = {'covercalibrator': 'open', 'covercalibrator.calibrator': 'off', 'tertiary': 'andor'}
+    return ProvenState.build({**base, **positions}, sun_alt_deg=-30, dome_shutter_open=None,
+                             dome_az_deg=180.0, mount_az_deg=0.0, mount_alt_deg=45.0)
+
+
 def night(**positions):
     base = {'dome': 'open', 'covercalibrator': 'open', 'covercalibrator.calibrator': 'off', 'tertiary': 'beso'}
     return ProvenState.build({**base, **positions}, sun_alt_deg=-30, dome_shutter_open=True)
@@ -77,6 +85,23 @@ class TestDecide:
         assert state.holds['dome'].holder == MANUAL
 
 
+class TestBrokenShutter:
+
+    def test_dark_goes_around_the_unknown_dome(self):
+        functions = report(GRAPH, broken_shutter(), M3)['camera']['functions']
+        for function in ('dark', 'zero', 'dark_strict'):
+            assert functions[function]['kind'] == 'settable', function
+            assert functions[function]['moves'] == {'tertiary': 'beso'}, function
+
+    def test_sky_cannot_be_proven_and_is_refused_naming_the_dome(self):
+        functions = report(GRAPH, broken_shutter(), M3)['camera']['functions']
+        assert functions['object']['kind'] == 'impossible'
+        assert 'dome is held at an unknown position by its own controls' in functions['object']['reason']
+        with pytest.raises(Refusal) as e:
+            decide(GRAPH, broken_shutter(), 'camera', 'object', M3)
+        assert e.value.code == 4009 and 'dome' in e.value.message
+
+
 class TestReport:
 
     def test_sees_and_function_verdicts_per_detector(self):
@@ -95,7 +120,7 @@ class TestReport:
         assert functions['domeflat']['kind'] == 'collision' and functions['domeflat']['holder'] == MANUAL
         assert "dome is held at 'open' by its own controls" in functions['domeflat']['reason']
 
-    @pytest.mark.parametrize('state', [night(), night(tertiary='andor'), night(covercalibrator='close'),
+    @pytest.mark.parametrize('state', [night(), night(tertiary='andor'), night(covercalibrator='close'), broken_shutter(),
                                        with_busy_holds(GRAPH, night(tertiary='andor'), {'guider_beso': 'exposing'})])
     def test_published_verdict_and_setpath_never_disagree(self, state):
         for detector, entry in report(GRAPH, state, M3).items():
@@ -313,6 +338,12 @@ class TestStart:
     async def test_telescope_missing_from_the_stream_stops_the_start(self, svc):
         FakeObservatory.published = {}
         with pytest.raises(RuntimeError, match="jk15: not in the observatory configuration from 'tic.config.observatory'"):
+            await svc.on_start()
+
+    async def test_old_ocabox_common_stops_the_start(self, svc, monkeypatch):
+        import ocabox_tcs.services.optics.service as module
+        monkeypatch.setattr(module, 'version', lambda package: '1.7.0')
+        with pytest.raises(RuntimeError, match='ocabox-common 1.7.0 is too old'):
             await svc.on_start()
 
     async def test_a_graph_without_detectors_stops_the_start(self, svc):
