@@ -339,6 +339,7 @@ class TestDomeFollowLogic:
         manager.tic_conn = MagicMock()
         manager.tic_conn.dome = MagicMock()
         manager.tic_conn.mount = MagicMock()
+        manager.tic_conn.mount.aget_atpark = AsyncMock(return_value=False)  # following needs an unparked mount
 
         # Set initial follow parameters
         manager.follow_tolerance = 3.0
@@ -426,6 +427,25 @@ class TestDomeFollowLogic:
         manager_with_mocks.tic_conn.dome.aget_az = AsyncMock(return_value=180.0)
         manager_with_mocks.tic_conn.mount.aget_az = AsyncMock(return_value=190.0)
         manager_with_mocks.tic_conn.mount.aget_slewing = AsyncMock(return_value=True)
+
+        await manager_with_mocks.dome_follow()
+
+        # Should not trigger slew
+        manager_with_mocks.tic_conn.dome.aput_slewtoazimuth.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    async def test_dome_follow_skips_when_mount_parked(self, manager_with_mocks):
+        """Test dome_follow doesn't trigger slew when the mount is parked."""
+        manager_with_mocks.follow_on = True
+
+        # Mock TIC responses - misaligned, but the mount is parked
+        manager_with_mocks.tic_conn.dome.aget_slewing = AsyncMock(return_value=False)
+        manager_with_mocks.tic_conn.dome.aget_az = AsyncMock(return_value=180.0)
+        manager_with_mocks.tic_conn.mount.aget_az = AsyncMock(return_value=190.0)
+        manager_with_mocks.tic_conn.mount.aget_slewing = AsyncMock(return_value=False)
+        manager_with_mocks.tic_conn.mount.aget_atpark = AsyncMock(return_value=True)
+        manager_with_mocks.tic_conn.dome.aput_slewtoazimuth = AsyncMock()
 
         await manager_with_mocks.dome_follow()
 
