@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from ocaboxapi import Camera, CoverCalibrator, Dome, Mount
+from ocaboxapi.tertiary import Tertiary
 from obcom.optics import ProvenState, parse_graph
 from obcom.optics.conformance import JK15_WITH_MOUNT
 
@@ -111,7 +113,12 @@ class TestReport:
 # ---------------------------------------------------------------------------------------- fakes
 
 class FakeComponent:
-    def __init__(self, values):
+    """A component of ``spec`` (its ocaboxapi class): reading an attribute the real class does not
+    have fails the test, so the reader cannot drift from the device API (``az`` vs ``azimuth``)."""
+
+    def __init__(self, spec, values):
+        unknown = set(values) - set(spec.param)
+        assert not unknown, f'{spec.__name__} has no {sorted(unknown)}'
         self.values = values
         self.request_special_permission = False
         self.aput_selectnasmythport = AsyncMock(side_effect=self._select)
@@ -129,13 +136,13 @@ class FakeComponent:
 class FakeTelescope:
     def __init__(self, port=1, moving=False, camerastate=0, guider_beso_state=0):
         self.c = {
-            'tertiary': FakeComponent({'tertiarystatus': {'NasmythPort': port, 'Moving': moving}}),
-            'covercalibrator': FakeComponent({'coverstate': 3, 'calibratorstate': 1}),
-            'dome': FakeComponent({'shutterstatus': 0, 'az': 120.0}),
-            'mount': FakeComponent({'az': 10.0, 'alt': 60.0}),
-            'camera': FakeComponent({'camerastate': camerastate}),
-            'guider': FakeComponent({'camerastate': 0}),
-            'guider_beso': FakeComponent({'camerastate': guider_beso_state}),
+            'tertiary': FakeComponent(Tertiary, {'tertiarystatus': {'NasmythPort': port, 'Moving': moving}}),
+            'covercalibrator': FakeComponent(CoverCalibrator, {'coverstate': 3, 'calibratorstate': 1}),
+            'dome': FakeComponent(Dome, {'shutterstatus': 0, 'azimuth': 120.0}),
+            'mount': FakeComponent(Mount, {'azimuth': 10.0, 'altitude': 60.0}),
+            'camera': FakeComponent(Camera, {'camerastate': camerastate}),
+            'guider': FakeComponent(Camera, {'camerastate': 0}),
+            'guider_beso': FakeComponent(Camera, {'camerastate': guider_beso_state}),
         }
 
     def __getattr__(self, name):
