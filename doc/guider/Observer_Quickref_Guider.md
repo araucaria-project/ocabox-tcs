@@ -134,7 +134,7 @@ The link is also available from the OCM landing page:
 
 ## 5. Standard workflow
 
-Method **`single`** (default), starting in `monitoring`:
+### Method **`single`** (default), starting in `monitoring`:
 
 1. **Left-click the target star** in the frame view — the click must
    land **inside the wide-search circle** (the large circle around
@@ -195,6 +195,7 @@ This sequence covers a standard observing night.
     | Green line | Drawn only in `guiding`, from the star to its actual target (anchor or reticle) — when merely holding position it collapses to nothing. |
     | Large circle around reticle | Wide-search limit — clicks and re-acquisition work only inside. |
     | Small squares (key ++d++) | All candidates the detector found this frame. |
+    | Amber dashed ring ◌ (in the magnifier) | The **measured reticle target** — the fibre entrance as measured in the image (§5). The gap to the reticle is what `refine reticle` removes. |
 
     If the green circle is not on the intended star, the loop is not
     guiding on that star — re-select before proceeding.
@@ -227,9 +228,9 @@ and the controls change meaning accordingly:
   the residual light (the halo around the hole), which legitimately
   sits near the hole rim — do not expect it to sit on a stellar core.
 - Light that falls **into** the hole disappears from the detector —
-  a well-injected star shows only a faint ring. Corrections inside
-  the hole radius are suppressed (dead zone), so a centred star is
-  left alone.
+  a well-injected star shows only a faint ring. A narrow dead zone
+  leaves a well-centred star alone; small star–fibre offsets outside
+  it are actively corrected rather than tolerated.
 - The **reticle magnifier inset** (close-up of the injection region)
   has its own toggle button in the zoom-control stack and works in
   every method; it switches on automatically the first time you enter
@@ -239,14 +240,59 @@ and the controls change meaning accordingly:
 
 Intended use: first park the star on the fibre with `single` +
 `drop → reticle`, then switch to `fiber` to track the integrated
-light. Fine-tuning of the hole-compensation parameters
-(`hole zone factor`) is still ongoing — if convergence looks odd on
-your night, note the conditions (seeing!) and report.
+light. Fine-tuning of the fibre-tracking behaviour is still ongoing —
+if convergence looks odd on your night, note the conditions (seeing!)
+and report.
 
 !!! tip "Close-up view during manual work"
     The reticle magnifier works in any method and any mode — toggle
     it from the zoom controls whenever you need the injection-region
     close-up (no need to switch methods just for the view).
+
+### Measured fibre entrance and `refine reticle`
+
+The reticle marks where the fibre entrance is *supposed* to be — a
+calibrated constant. The guider also measures where the entrance
+*actually* is: whenever light falls on it (a star parked on it, or
+the field illuminated), the entrance shows up as a dark disk inside
+a bright halo, and a detector measures its position on every frame.
+The measurement runs in **every mode and with every method** — it is
+already being prepared while you guide with `single`, before any
+switch to `fiber`.
+
+- **`refine reticle`** (TARGET row, next to `drop → reticle`) moves
+  the reticle onto the measured entrance in one click. It is disabled
+  by default and enables itself only when the measurement is
+  trustworthy — several consistent frames, sufficient signal, offset
+  within a safety band. When enabled, the label shows the offset it
+  would apply (e.g. `refine reticle 3.4 px`). The tooltip always
+  explains the current state: *"no reticle-target measurement — put
+  a bright source on the reticle"*, *"measuring… (3/5 frames)"*,
+  *"no light at the reticle — illuminate it or park a star on it"*,
+  *"light is one-sided — centre a source on the reticle"*, *"ready:
+  move reticle 3.4 px onto the measured hole"*.
+- On click the service re-checks against the freshest measurement
+  and **may refuse with a reason** if it has gone stale — refusal is
+  normal behaviour, not an error; wait for the button to re-arm and
+  click again.
+- **In the magnifier**, when a measurement exists, an amber dashed
+  ring of the fibre-hole radius marks the measured entrance (legend:
+  "◌ measured reticle target"). The gap between the amber ring and
+  the reticle is exactly what `refine reticle` removes. The
+  reticle-radius marker itself is drawn as an outline, so the pixels
+  being judged stay visible.
+- ++h++ (reticle home) is **not** affected by refining — it still
+  returns to the configured calibration, so home remains the safe
+  way back, and drift accumulated over refinements stays visible.
+
+!!! tip "When throughput seems poor, or after large temperature changes"
+    The fibre entrance moves on the sensor with temperature, so the
+    calibrated reticle position goes stale. Park a bright star on
+    the reticle (or press `drop → reticle` while guiding), open the
+    magnifier, wait for `refine reticle` to arm, and click.
+    Iterating once or twice converges. If the automatic measurement
+    keeps refusing, the right-click adjustment (§6) remains the
+    manual fallback.
 
 ### Method `multi`
 
@@ -285,10 +331,13 @@ Mouse:
 - **Left-click** *(single)* — lock onto a star near the click. The
   mount is not moved until `guiding` is engaged.
 - **Right-click** — move the target reticle to the clicked position.
-  This is the sanctioned in-night adjustment for when the fibre image
+  This is the manual in-night adjustment for when the fibre image
   has shifted on the sensor (dome temperature changes can move it,
   even within a night): place the reticle on the actual fibre
-  position, then work normally. In `guiding` the current lock is
+  position, then work normally. When the entrance is visible in the
+  image, prefer **`refine reticle`** (§5) — it measures the position
+  instead of relying on the eye; right-click remains the fallback
+  when the automatic measurement refuses. In `guiding` the current lock is
   kept — the new reticle position takes effect as target on the next
   `drop → reticle`. If the shift is persistent, report the new
   coordinates so the calibrated home gets updated (see the
@@ -298,8 +347,11 @@ Mouse:
 !!! info "++h++ (home) returns the reticle to the *calibrated* position"
     ++h++ restores the reticle to the calibrated default from the
     service configuration — useful after an accidental right-click.
-    Mind the flip side: if the fibre genuinely moved and you adjusted
-    the reticle deliberately, ++h++ throws that adjustment away. And
+    Refinements are treated the same way: `refine reticle` (§5) never
+    changes this home position, so ++h++ always leads back to the
+    calibration. Mind the flip side: if the fibre genuinely moved and
+    you adjusted the reticle deliberately (by right-click or refine),
+    ++h++ throws that adjustment away. And
     if the calibration itself is stale (fibre moved, maintainer not
     yet informed), home restores a *wrong* position — report shifts
     promptly.
@@ -424,10 +476,12 @@ parks, or syncs.
 | A click on a star selects nothing | Star outside the wide-search circle (§5). |
 | No thumbnails in UI | Thumbnail HTTP base in the Connection panel. |
 | `drop → reticle` greyed out | Requires `single` + `guiding` + `acquired = yes`. |
+| `refine reticle` greyed out, or refuses on click | The tooltip always states why (no light on the reticle, still measuring, one-sided light, offset outside the safety band). A refusal on click means the measurement went stale between arming and clicking — normal behaviour; wait for the button to re-arm. |
 | No detection candidates | exp_time too low / sparse field — or method is `fiber` (no candidates by design); switch to `single`. |
 | In `fiber`, green circle sits near the hole rim, not on the star | Normal — it marks the photocentroid of the residual halo (§5), not a stellar core. Low ADU (a few counts) with **no star near the fibre** means the gate sees noise-level light — check the field. |
 | Star locked but drift grows | Switch to `monitoring`, contact the maintainer (pulse-model calibration). |
-| Camera `unavailable` / NRE / `Camera appears FROZEN` in status | Guider-camera server on `jk15-ccd` needs maintainer attention. Do **not** run any `*@jk15-beso` command (§7 — that is the spectrograph science camera). |
+| Images stop refreshing in `monitoring`/`guiding`, status _degraded_ | Usually a lost USB connection to the guider camera. Observer-executable recovery (USB port restart, then driver reload): [Guider camera does not produce images](troubleshooting.md#guider-camera-does-not-produce-images). The guider resumes by itself once the camera is back. |
+| Camera `unavailable` / NRE / `Camera appears FROZEN` in status | Try the USB recovery procedure above first; if it does not help, the guider-camera server on `jk15-ccd` needs maintainer attention. Do **not** run any `*@jk15-beso` command (§7 — that is the spectrograph science camera). |
 
 ??? note "Fibre-entrance recalibration after the guider camera was moved (maintainer-coordinated)"
     The reticle position (`central_point`) is a calibrated constant:
@@ -442,18 +496,23 @@ parks, or syncs.
        hole is visible as a dark spot on a bright background
        (`monitoring`, adjust exp_time until the background is bright
        but unsaturated).
-    2. Zoom into the hole region and **right-click the hole centre** —
-       this is the recommended way to determine the new position: it
-       places the reticle exactly where you clicked, and the reticle
-       readout in the status bar then shows the measured coordinates
-       (more reliable than reading the cursor position by eye). A
-       screenshot of the zoomed hole with the reticle on it helps.
+    2. Open the reticle magnifier and use **`refine reticle`** (§5) —
+       this is the preferred way to determine the new position: with
+       the hole outlined against the bright background the automatic
+       measurement is at its most reliable. Wait for the button to
+       arm and click; iterating once or twice converges. If the
+       measurement refuses (tooltip explains why), fall back to
+       zooming into the hole region and **right-clicking the hole
+       centre**. Either way the reticle readout in the status bar
+       then shows the measured coordinates (more reliable than
+       reading the cursor position by eye). A screenshot of the
+       zoomed hole with the reticle on it helps.
     3. **Send the coordinates + screenshot to the maintainer**
        (address below) — do not edit the service configuration
        yourselves. The maintainer updates `central_point`, and the
        calibrated "home" position of the reticle follows.
 
-    The same right-click doubles as the **temporary fix**: with the
+    The same adjustment doubles as the **temporary fix**: with the
     reticle on the true hole position you can simply continue
     observing — `drop → reticle` and the fiber view now target the
     correct spot for the rest of the night. Two things to remember
@@ -478,6 +537,10 @@ parks, or syncs.
   `monitoring` (frames + solver, **no pulses**), `guiding` (active
   corrections).
 - **Reticle** — fixed marker at the fibre entrance (`central_point`).
+- **Measured reticle target** — the fibre-entrance position measured
+  in the image (dark disk inside a bright halo); shown in the
+  magnifier as an amber dashed ring ◌; the destination of
+  `refine reticle` (§5).
 - **Anchor** — the pixel position the loop holds the star at. Created
   on selection; moved onto the reticle by `drop → reticle`.
 - **Acquired** — the solver confirms a guide signal at the expected

@@ -40,25 +40,44 @@ Signature (all four at once):
 Guider-side protection (v1.3.3+): `FrameDeduplicator` drops the stale
 frames, logs `Camera appears FROZEN`, solver starves, no pulses.
 
-## Recovery — what we now KNOW (tested 2026-07-30)
+## Recovery — escalation ladder (verdicts from live incidents)
 
-**There is no gentle path out of this wedge.** Escalation ladder with
-verdicts:
+1. **USB port restart + RS reload (RDP on jk15-ccd)** — the gentlest
+   sequence that has actually cleared the wedge (verified 2026-08-04:
+   `imageready` path and exposure timing fully restored, no host
+   reboot). Steps: in *USB Device Tree Viewer* restart the port (or
+   restart the device) hosting the ASI, then restart the ASCOM Remote
+   Server application. A port restart **alone** is not enough — after
+   it the camera cycled faster but the wedge symptoms remained
+   (exposures ~10× nominal, flag never asserting); the RS reload is
+   the part that completes the recovery.
+   **Cooling hazard**: the sequence reliably comes back with the
+   **Andor cooler OFF** — immediately verify `camera/0/ccdtemperature`
+   and `cooleron`, and re-apply the setpoint (**−50**, confirmed live:
+   equilibrium ≈ −49.8 °C; an earlier note here said −60, wrongly).
+   Operator-friendly path from zenith/nadir:
+   `oca jk15 camera settemperature -- -50` (monitor with
+   `oca jk15 camera temperature --monitor`).
+   Note: instead of restarting the RS application, opening **Setup →
+   exit** in the RS window reloads all drivers in place — same effect
+   and the same Andor-cooling hazard, one less window to manage. The
+   observer manual (`troubleshooting.md`, "Guider camera does not
+   produce images") documents this flow for observers via DWservice.
+2. ~~`PUT connected=false` → `connected=true` on Camera[1] only~~ —
+   **DO NOT USE on a wedged camera.** Tested (2026-07-30): disconnect
+   OK; reconnect blocks the whole RS for ~40 s (USB claim); the
+   **first `startexposure` after reconnect crashed the entire Remote
+   Server**, taking the Andor down with it. Device-scoped in API,
+   process-wide in blast radius.
+3. **Restart the ASCOM Remote Server alone** (without the USB step) —
+   remedy for RS-level faults; same Andor-cooling caveat as rung 1.
+4. If the wedge survives rungs 1/3: host reboot at a service window;
+   consider removing the phantom Camera[2] profile while there.
 
-1. ~~`PUT connected=false` → `connected=true` on Camera[1] only~~ —
-   **DO NOT USE on a wedged camera.** Tested: disconnect OK; reconnect
-   blocks the whole RS for ~40 s (USB claim); the **first
-   `startexposure` after reconnect crashed the entire Remote Server**,
-   taking the Andor down with it. Device-scoped in API, process-wide
-   in blast radius.
-2. **Restart the ASCOM Remote Server on jk15-ccd** (RDP, restart the
-   RS application) — the actual remedy. Plan it: the Andor drops off
-   Alpaca for the duration; immediately after restart verify
-   `camera/0/ccdtemperature`, `cooleron`, `setccdtemperature` (−60)
-   and re-apply the setpoint if the driver came back with cooling off.
-3. If the wedge survives an RS restart: USB re-enumeration / host
-   reboot at a service window; consider removing the phantom
-   Camera[2] profile while there.
+Quick verdict after any attempt: one probe exposure on Camera[1] and
+watch `camerastate`/`imageready` — healthy means state 2 for roughly
+the exposure time and `imageready=true` within ~1 s after; wedged means
+state 2 stretched to ~10× nominal and the flag never asserting.
 
 Related hazard (2026-07-30): on **jk15-tcu**, a single JSON
 `imagearray` GET on Camera[1] **crashed that RS** (mount/dome drivers
