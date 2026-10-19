@@ -47,6 +47,7 @@ class OpticsServiceConfig(BaseServiceConfig):
     components_file: str = ''  #: config.yaml to read the graph from instead of the published config
     keepalive: float = 60.0  #: seconds between repeats of published status
     client_name: str = 'CliClient'  #: ocabox client section of the observatory configuration
+    config_stream: str = 'tic.config.observatory'  #: NATS stream TIC publishes the observatory configuration on
 
 
 @service('optics')
@@ -72,10 +73,15 @@ class OpticsService(BaseBlockingPermanentService):
         from ocaboxapi import Observatory
 
         tel = self.telescope_id
-        observatory = Observatory(client_name=self.svc_config.client_name, software_id=f'optics/{tel}')
+        observatory = Observatory(client_name=self.svc_config.client_name, software_id=f'optics/{tel}',
+                                  config_stream=self.svc_config.config_stream, policy='service')
         await observatory.load_client_cfg()
+        telescopes = observatory.get_telescopes_configuration()
+        if tel not in telescopes:
+            raise RuntimeError(f'{tel}: not in the observatory configuration from {self.svc_config.config_stream!r} '
+                               f'(telescopes: {", ".join(telescopes) or "none — is the stream published?"})')
         observatory.connect()
-        published = observatory.get_telescopes_configuration().get(tel, {}).get('observatory', {})
+        published = telescopes[tel].get('observatory', {})
         self.graph = self._load_graph(tel, published)
         telescope = observatory.get_telescope(tel)
 
@@ -97,11 +103,14 @@ class OpticsService(BaseBlockingPermanentService):
         else:
             source, components = 'the published observatory configuration', published.get('components', {})
         try:
-            return parse_graph(components, telescope=tel)
+            graph = parse_graph(components, telescope=tel)
         except GraphInvalid as e:
             for error in e.errors:
                 self.svc_logger.error(f'{tel} optics [{error.code}] {error.message}')
             raise RuntimeError(f'{tel}: the optical graph in {source} is invalid ({len(e.errors)} problems)') from e
+        if not graph.detectors:
+            raise RuntimeError(f'{tel}: no detector with `paths:` in {source} — nothing to serve')
+        return graph
 
     async def run_service(self):
         while self.is_running:
