@@ -1,0 +1,25 @@
+# OCA jk15 Optics (optical path) — symlink target for /etc/systemd/system/.
+#   sudo ln -s /home/poweruser/src/ocabox-tcs/deploy/systemd/optics_jk15.service \
+#       /etc/systemd/system/optics_jk15.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now optics_jk15
+#   sudo systemctl status optics_jk15
+
+[Unit]
+Description=OCA jk15 Optics (optical path)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=poweruser
+WorkingDirectory=/home/poweruser/src/ocabox-tcs
+Environment=PATH=/home/poweruser/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/poweruser/.local/bin/poetry run tcsd \
+    --config config/services01.optics_jk15.yaml \
+    --no-color
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

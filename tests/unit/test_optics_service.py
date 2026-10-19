@@ -40,7 +40,7 @@ class TestDecide:
     def test_manual_move_is_refused_with_the_move_spelled_out(self):
         with pytest.raises(Refusal) as e:
             decide(GRAPH, night(tertiary='andor'), 'camera', 'domeflat', M3)
-        assert e.value.code == 4009 and 'dome → flat' in e.value.message and 'by hand' in e.value.message
+        assert e.value.code == 4009 and 'dome → flat' in e.value.message and 'own controls' in e.value.message
 
     def test_busy_detector_path_is_a_temporary_refusal_naming_it(self):
         state = with_busy_holds(GRAPH, night(), {'guider_beso': 'exposing'})
@@ -78,11 +78,34 @@ class TestDecide:
 class TestReport:
 
     def test_sees_and_function_verdicts_per_detector(self):
-        r = report(GRAPH, night())
+        r = report(GRAPH, night(), M3)
         assert set(r) == set(GRAPH.detectors)
         assert r['camera']['sees'] == [{'class': 'dark', 'terminal': 'tertiary', 'via': ['derotator', 'pickoff', 'filterwheel']}]
         assert r['camera']['functions']['object']['kind'] == 'settable'
         assert r['guider_beso']['sees'][0]['class'] == 'sky.science'
+
+    def test_verdicts_announce_what_setpath_does(self):
+        # dark_strict: the closed cover comes first physically, but the service moves only M3 —
+        # the panel must announce M3 → beso, and domeflat as the operator's move, not a SET PATH
+        functions = report(GRAPH, night(tertiary='andor'), M3)['camera']['functions']
+        assert functions['dark_strict'] == {'kind': 'settable', 'see': 'dark', 'positions': {'tertiary': 'beso'},
+                                            'moves': {'tertiary': 'beso'}}
+        assert functions['domeflat']['kind'] == 'collision' and functions['domeflat']['holder'] == MANUAL
+        assert "dome is held at 'open' by its own controls" in functions['domeflat']['reason']
+
+    @pytest.mark.parametrize('state', [night(), night(tertiary='andor'), night(covercalibrator='close'),
+                                       with_busy_holds(GRAPH, night(tertiary='andor'), {'guider_beso': 'exposing'})])
+    def test_published_verdict_and_setpath_never_disagree(self, state):
+        for detector, entry in report(GRAPH, state, M3).items():
+            for function, published in entry['functions'].items():
+                try:
+                    moves = decide(GRAPH, state, detector, function, M3)
+                except Refusal as e:
+                    assert published['kind'] in ('collision', 'impossible'), (detector, function, e)
+                    assert e.code == (4008 if published.get('holder') not in (None, MANUAL) else 4009)
+                else:
+                    assert published['kind'] in ('active', 'settable'), (detector, function)
+                    assert moves == published.get('moves', {})
 
 
 # ---------------------------------------------------------------------------------------- fakes

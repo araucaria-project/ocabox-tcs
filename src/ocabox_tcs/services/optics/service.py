@@ -64,6 +64,10 @@ class OpticsService(BaseBlockingPermanentService):
     def telescope_id(self) -> str:
         return self.svc_config.telescope or self.svc_config.variant
 
+    @property
+    def _actuatable(self) -> frozenset[str]:
+        return frozenset(self.svc_config.actuate)
+
     async def on_start(self):
         from ocaboxapi import Observatory
 
@@ -118,7 +122,7 @@ class OpticsService(BaseBlockingPermanentService):
 
     async def _publish(self, snapshot: Snapshot) -> None:
         state = with_busy_holds(self.graph, snapshot.state, snapshot.busy)
-        for detector, entry in report(self.graph, state).items():
+        for detector, entry in report(self.graph, state, self._actuatable).items():
             await self.endpoint.publish(detector, 'sees', entry['sees'])
             await self.endpoint.publish(detector, 'functions', entry['functions'])
         await self.endpoint.publish('self', 'selectors', {
@@ -135,7 +139,7 @@ class OpticsService(BaseBlockingPermanentService):
             raise Refusal('another light-path change is in progress', code=4008, severity=Severity.TEMPORARY)
         snapshot = await self._reader.read()
         state = with_busy_holds(self.graph, snapshot.state, snapshot.busy)
-        moves = decide(self.graph, state, call.element, function, frozenset(self.svc_config.actuate))
+        moves = decide(self.graph, state, call.element, function, self._actuatable)
         if moves:
             who = call.caller.name if call.caller else None
             self._operation = asyncio.create_task(self._operate(call.element, function, moves, who),

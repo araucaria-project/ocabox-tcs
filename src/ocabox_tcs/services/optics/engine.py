@@ -10,7 +10,10 @@ solver's own ordered fallbacks and collision reasons do the work:
 - **Automatic actuation is an allowlist.** Selectors the configuration does not enable (only
   ``tertiary`` to start with) are held at their proven position, so the solver prefers an
   alternative the service can realise (``dark_strict``: M3 away rather than the closed cover) and
-  a function that has none is refused with the manual move spelled out: 4009.
+  a function that has none is refused with the move the operator has to make spelled out: 4009.
+
+The published verdicts and ``setpath`` come from one function, :func:`verdict`, so what a client
+is shown is exactly what the service would do.
 """
 from __future__ import annotations
 
@@ -18,14 +21,14 @@ from dataclasses import replace
 from typing import Mapping
 
 from datamodels.messages import Severity
-from datamodels.optics import Active, Collision, Impossible, Settable, state_key
+from datamodels.optics import Active, Collision, Impossible, Settable, Verdict, state_key
 from obcom.optics import Hold, OpticalGraph, ProvenState, check, resolve_axes, sees
 from obcom.optics.check import UnknownFunction
 
 from ocabox_tcs.tic_endpoint import Refusal
 
-#: holder of a selector the service may not move
-MANUAL = 'manual operation (not enabled for automatic actuation)'
+#: holder of a selector the service may not move: the operator moves it with its own controls
+MANUAL = 'its own controls (not moved by the optics service)'
 
 
 def proven_positions(graph: OpticalGraph, state: ProvenState) -> dict[str, str]:
@@ -59,16 +62,31 @@ def with_manual_holds(graph: OpticalGraph, state: ProvenState, actuatable: froze
     return replace(state, holds=holds)
 
 
-def report(graph: OpticalGraph, state: ProvenState) -> dict[str, dict]:
-    """Per detector: what it sees now and the verdict of each declared function (physical
-    feasibility — manual moves are shown as moves, busy detectors as collisions)."""
+def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: str,
+            actuatable: frozenset[str]) -> Verdict:
+    """The verdict of ``detector.function`` as the service would act on it: selectors outside
+    ``actuatable`` are held where they are, so *settable* means "``setpath`` makes these moves" and
+    a move the operator has to make is a collision held by :data:`MANUAL`. ``state`` should already
+    carry the busy holds."""
+    result = check(graph, with_manual_holds(graph, state, actuatable), detector, function)
+    if isinstance(result, Settable):
+        manual = sorted(k for k in result.moves if k not in actuatable)
+        if manual:  # an undefined selector cannot be held: its move is still not the service's to make
+            return Impossible(kind='impossible', undefined_at=tuple(manual),
+                              reason=f'{", ".join(manual)}: position unknown, and not moved by the optics service')
+    return result
+
+
+def report(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str]) -> dict[str, dict]:
+    """Per detector: what it sees now and the :func:`verdict` of each declared function."""
     out = {}
     for detector in graph.detectors:
         node = graph.node(detector)
         records = sorted(sees(graph, state, detector), key=lambda r: (r.light_class, r.terminal, r.via))
         out[detector] = {
             'sees': [r.model_dump(mode='json', by_alias=True) for r in records],
-            'functions': {f: check(graph, state, detector, f).model_dump(mode='json') for f in (node.paths or {})},
+            'functions': {f: verdict(graph, state, detector, f, actuatable).model_dump(mode='json')
+                          for f in (node.paths or {})},
         }
     return out
 
@@ -81,22 +99,18 @@ def decide(graph: OpticalGraph, state: ProvenState, detector: str, function: str
     if detector not in graph.detectors:
         raise Refusal(f'{detector!r} is not a detector of this telescope (detectors: {", ".join(graph.detectors)})', code=4007)
     try:
-        verdict = check(graph, with_manual_holds(graph, state, actuatable), detector, function)
+        result = verdict(graph, state, detector, function, actuatable)
     except UnknownFunction as e:
         raise Refusal(str(e), code=4007)
-    if isinstance(verdict, Active):
+    if isinstance(result, Active):
         return {}
-    if isinstance(verdict, Settable):
-        manual = {k: v for k, v in verdict.moves.items() if k not in actuatable}
-        if manual:  # an undefined selector cannot be held: never move what the service may not move
-            spelled = ', '.join(f'{k} → {v}' for k, v in sorted(manual.items()))
-            raise Refusal(f'{detector}.{function} needs {spelled}: not enabled for automatic actuation, set it by hand')
-        return dict(verdict.moves)
-    if isinstance(verdict, Collision):
-        if verdict.holder == MANUAL:
-            raise Refusal(f'{detector}.{function} needs {verdict.selector} → {verdict.required} '
-                          f'(now {verdict.held}): not enabled for automatic actuation, set it by hand')
-        raise Refusal(verdict.reason, code=4008, severity=Severity.TEMPORARY)
-    if isinstance(verdict, Impossible):
-        raise Refusal(verdict.reason)
-    raise Refusal(f'{detector}.{function}: unexpected verdict {verdict.kind}', code=2002)
+    if isinstance(result, Settable):
+        return dict(result.moves)
+    if isinstance(result, Collision):
+        if result.holder == MANUAL:
+            raise Refusal(f'{detector}.{function} needs {result.selector} → {result.required} (now {result.held}): '
+                          f'not moved by the optics service, set it with its own controls first')
+        raise Refusal(result.reason, code=4008, severity=Severity.TEMPORARY)
+    if isinstance(result, Impossible):
+        raise Refusal(result.reason)
+    raise Refusal(f'{detector}.{function}: unexpected verdict {result.kind}', code=2002)
