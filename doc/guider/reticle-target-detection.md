@@ -64,7 +64,7 @@ the operator, exposed as `hole_candidate.reason`:
 | Fewer than `min_samples` consistent frames | `measuring… (3/5 frames)` |
 | Cross-frame scatter above `max_scatter_px` | `unstable measurement (scatter 2.1 px)` |
 | Offset below `refine_min_offset_px` | `already centred — nothing to refine` |
-| Offset above `refine_max_offset_px` | `offset 24.0 px exceeds the 20 px safety limit — verify by eye and right-click instead` |
+| Offset above `refine_max_offset_px` | `offset 14.0 px exceeds the 10 px safety limit — verify by eye and right-click instead` |
 
 Two of these carry most of the weight and are worth understanding before
 changing them.
