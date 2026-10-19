@@ -84,7 +84,7 @@ class TelescopeReader:
 
         async def dome(name: str) -> None:
             component = self._tel.get_dome(name)
-            shutter, az = await asyncio.gather(self._get(component, 'shutterstatus'), self._get(component, 'az'))
+            shutter, az = await asyncio.gather(self._get(component, 'shutterstatus'), self._get(component, 'azimuth'))
             if shutter in SHUTTER_STATE:
                 environment['dome_shutter_open'] = SHUTTER_STATE[shutter]
             environment['dome_az_deg'] = az
@@ -92,7 +92,7 @@ class TelescopeReader:
         async def mount(name: str) -> None:
             component = self._tel.get_mount(name)
             environment['mount_az_deg'], environment['mount_alt_deg'] = await asyncio.gather(
-                self._get(component, 'az'), self._get(component, 'alt'))
+                self._get(component, 'azimuth'), self._get(component, 'altitude'))
 
         async def camera(name: str) -> None:
             busy[name] = 'state unknown'  # until proven idle: an unread camera may be exposing
