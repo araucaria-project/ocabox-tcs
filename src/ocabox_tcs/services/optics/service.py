@@ -201,9 +201,10 @@ class OpticsService(BaseBlockingPermanentService):
 
     async def _declare(self, call: Call):
         key, position = call.parameters.get('key'), call.parameters.get('position')
-        axes = {state_key(n, a.name): a.vocabulary for n in self.graph.selectors for a in self.graph.node(n).axes}
+        # every published axis: selectors, and sources with a state of their own (a lamp switched on by hand)
+        axes = {state_key(node.name, a.name): a.vocabulary for node in self.graph.nodes.values() for a in node.axes}
         if key not in axes:
-            raise Refusal(f'declare needs a selector key (one of: {", ".join(sorted(axes))})', code=4007)
+            raise Refusal(f'declare needs a state key (one of: {", ".join(sorted(axes))})', code=4007)
         who = call.caller.name if call.caller else 'unknown'
         if position is None:
             withdrawn = self._declared.pop(key, None)
