@@ -50,7 +50,7 @@ class TestDecide:
     def test_manual_move_is_refused_with_the_move_spelled_out(self):
         with pytest.raises(Refusal) as e:
             decide(GRAPH, night(tertiary='andor'), 'camera', 'domeflat', M3)
-        assert e.value.code == 4009 and 'needs dome flat (it is open)' in e.value.message and 'own controls' in e.value.message
+        assert e.value.code == 4009 and 'needs dome flat, it is open: set it with its own controls' in e.value.message and 'domeflat' in e.value.message
 
     def test_busy_detector_path_is_a_temporary_refusal_naming_it(self):
         state = with_busy_holds(GRAPH, night(), {'guider_beso': 'exposing'})
@@ -71,7 +71,7 @@ class TestDecide:
                                   sun_alt_deg=-30, dome_shutter_open=True, dome_az_deg=120.0, mount_az_deg=10.0, mount_alt_deg=60.0)
         with pytest.raises(Refusal) as e:
             decide(GRAPH, state, 'camera', 'domeflat', M3)
-        assert e.value.code == 4009 and 'camera domeflat needs dome flat (it is open)' in e.value.message
+        assert e.value.code == 4009 and 'camera domeflat needs dome flat, it is open' in e.value.message
 
     def test_undefined_m3_proves_nothing(self):
         state = ProvenState.build({'dome': 'open', 'covercalibrator': 'open', 'covercalibrator.calibrator': 'off',
@@ -96,8 +96,7 @@ class TestBrokenShutter:
     def test_sky_cannot_be_proven_and_is_refused_naming_the_dome(self):
         functions = report(GRAPH, broken_shutter(), M3)['camera']['functions']
         assert functions['object']['kind'] == 'impossible'
-        assert functions['object']['reason'].startswith('dome: position unknown (shutter state unknown), cannot be moved'
-                                                        ' — held by its own controls')
+        assert functions['object']['reason'] == 'dome not known (shutter state unknown) — confirm it by hand if you know where it is'
         with pytest.raises(Refusal) as e:
             decide(GRAPH, broken_shutter(), 'camera', 'object', M3)
         assert e.value.code == 4009 and 'dome' in e.value.message
@@ -119,8 +118,8 @@ class TestReport:
         assert functions['dark_strict'] == {'kind': 'settable', 'see': 'dark', 'positions': {'tertiary': 'beso'},
                                             'moves': {'tertiary': 'beso'}}
         assert functions['domeflat']['kind'] == 'collision' and functions['domeflat']['holder'] == MANUAL
-        assert functions['domeflat']['reason'] == ('flatscreen needs dome flat, it is open — held by its own controls '
-                                                   '(not moved by the optics service)')
+        assert functions['domeflat']['reason'] == ('needs dome flat, it is open: set it with its own controls '
+                                                   '(the optics service does not move it)')
 
     @pytest.mark.parametrize('state', [night(), night(tertiary='andor'), night(covercalibrator='close'), broken_shutter(),
                                        with_busy_holds(GRAPH, night(tertiary='andor'), {'guider_beso': 'exposing'})])

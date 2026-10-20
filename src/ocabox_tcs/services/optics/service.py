@@ -48,8 +48,8 @@ from ocabox_tcs.services.optics.readings import Snapshot, TelescopeReader
 from ocabox_tcs.services.optics.sun import SunAltitude
 from ocabox_tcs.tic_endpoint import Call, Refusal, TicEndpoint
 
-#: ocabox-common with labels, causes and declarations (1.8.0) and ``Hold(position=None)`` (1.7.1)
-REQUIRED_OCABOX_COMMON = (1, 8, 0)
+#: ocabox-common with ``OpticalGraph.state_axes`` (1.9.0), labels, causes and declarations (1.8.0)
+REQUIRED_OCABOX_COMMON = (1, 9, 0)
 
 
 @config('optics')
@@ -201,8 +201,7 @@ class OpticsService(BaseBlockingPermanentService):
 
     async def _declare(self, call: Call):
         key, position = call.parameters.get('key'), call.parameters.get('position')
-        # every published axis: selectors, and sources with a state of their own (a lamp switched on by hand)
-        axes = {state_key(node.name, a.name): a.vocabulary for node in self.graph.nodes.values() for a in node.axes}
+        axes = self.graph.state_axes  # every published axis: selectors, and sources (a lamp switched on by hand)
         if key not in axes:
             raise Refusal(f'declare needs a state key (one of: {", ".join(sorted(axes))})', code=4007)
         who = call.caller.name if call.caller else 'unknown'

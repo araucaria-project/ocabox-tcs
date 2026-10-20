@@ -21,7 +21,7 @@ from dataclasses import replace
 from typing import Mapping
 
 from datamodels.messages import Severity
-from datamodels.optics import Active, Collision, Impossible, Settable, Verdict, state_key
+from datamodels.optics import Active, Collision, Impossible, Settable, Verdict, split_state_key, state_key
 from obcom.optics import Hold, OpticalGraph, ProvenState, check, label, resolve_axes, sees
 
 from ocabox_tcs.tic_endpoint import Refusal
@@ -65,15 +65,34 @@ def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: st
             actuatable: frozenset[str]) -> Verdict:
     """The verdict of ``detector.function`` as the service would act on it: selectors outside
     ``actuatable`` are held where they are, so *settable* means "``setpath`` makes these moves" and
-    a move the operator has to make is a collision held by :data:`MANUAL`. ``state`` should already
-    carry the busy holds."""
-    result = check(graph, with_manual_holds(graph, state, actuatable), detector, function)
+    a move the operator has to make is a collision held by :data:`MANUAL`, said as what to do. ``state``
+    should already carry the busy holds."""
+    held = with_manual_holds(graph, state, actuatable)
+    result = _operators_part(graph, held, check(graph, held, detector, function))
     if isinstance(result, Settable):
         manual = sorted(k for k in result.moves if k not in actuatable)
         if manual:  # unreachable while every selector outside ``actuatable`` is held; never move one anyway
             return Impossible(kind='impossible', undefined_at=tuple(manual),
                               reason=f'{", ".join(label(graph, k) for k in manual)}: not moved by the optics service')
     return result
+
+
+def _operators_part(graph: OpticalGraph, state: ProvenState, result: Verdict) -> Verdict:
+    """``result`` told as what the operator does when only they can: set a part the service does not
+    move with its own controls, or confirm by hand where a part is that no sensor reads."""
+    if isinstance(result, Collision) and result.holder == MANUAL:
+        return result.model_copy(update={'reason': f'needs {label(graph, result.selector)} {result.required}, it is {result.held}: '
+                                                   f'set it with its own controls (the optics service does not move it)'})
+    if isinstance(result, Impossible) and result.unavailable is None and result.undefined_at \
+            and all(getattr(state.holds.get(key), 'holder', None) == MANUAL for key in result.undefined_at):
+        unknown = '; '.join(f'{label(graph, key)} not known ({_cause(graph, state, key)})' for key in result.undefined_at)
+        return result.model_copy(update={'reason': f'{unknown} — confirm it by hand if you know where it is'})
+    return result
+
+
+def _cause(graph: OpticalGraph, state: ProvenState, key: str) -> str:
+    component, aspect = split_state_key(key)
+    return resolve_axes(graph, state, graph.node(component))[aspect].cause or 'no reading'
 
 
 def report(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str]) -> dict[str, dict]:
@@ -113,8 +132,7 @@ def decide(graph: OpticalGraph, state: ProvenState, detector: str, function: str
         return dict(result.moves)
     if isinstance(result, Collision):
         if result.holder == MANUAL:
-            raise Refusal(f'{detector} {function} needs {label(graph, result.selector)} {result.required} '
-                          f'(it is {result.held}): not moved by the optics service, set it with its own controls first')
+            raise Refusal(f'{detector} {function} {result.reason}')
         raise Refusal(result.reason, code=4008, severity=Severity.TEMPORARY)
     if isinstance(result, Impossible):
         raise Refusal(result.reason)
