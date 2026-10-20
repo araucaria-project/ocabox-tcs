@@ -485,6 +485,18 @@ class TestDeclarations:
         with pytest.raises(Refusal, match='M3 reads andor: a reading needs no declaration'):
             await svc._declare(Call('self', 'declare', {'key': 'tertiary', 'position': 'beso'}, caller(), 5))
 
+    async def test_a_lamp_switched_on_by_hand(self):
+        svc, _ = self.broken_shutter_service()
+        svc.graph = parse_graph({**JK15_WITH_MOUNT, 'thar_lamp': {'kind': 'lamp', 'light': 'lamp.thar'}}, telescope='jk15')
+        await svc._declare(Call('self', 'declare', {'key': 'thar_lamp', 'position': 'on'}, caller(), 5))
+        lamp = published(svc, 'self', 'selectors')['thar_lamp']
+        assert (lamp['position'], lamp['origin'], lamp['by']) == ('on', 'declared', 'mka')
+
+    async def test_a_derived_source_needs_no_declaration(self):
+        svc, _ = self.broken_shutter_service()
+        with pytest.raises(Refusal, match='a reading needs no declaration'):
+            await svc._declare(Call('self', 'declare', {'key': 'sky', 'position': 'day'}, caller(), 5))
+
     async def test_unknown_key_or_position(self):
         svc, _ = self.broken_shutter_service()
         for parameters in ({'key': 'sky', 'position': 'open'}, {'key': 'dome', 'position': 'ajar'}):
