@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ocabox-tcs"
-version = "1.4.4"
+version = "1.5.0"
 description = "Telescope Control Services for OCABOX Astronomical Observatory Server"
 authors = ["Mikolaj et.al.", "Claude Code <noreply@anthropic.com>"]
 readme = "README.md"
@@ -18,7 +18,7 @@ repository = "https://github.com/araucaria-project/ocabox-tcs"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-serverish = {version = "^2.0.1", extras = ["messenger"]}  # for NATS
+serverish = {version = "^2.2.1", extras = ["messenger"]}  # for NATS
 datamodels = {git = "https://github.com/araucaria-project/datamodels.git"}  # datamodels.messages: TicEndpoint contracts
 ocabox = {git = "https://github.com/araucaria-project/ocabox.git", optional = true}
 python-dotenv = "^1.0.0"  # For .env file support

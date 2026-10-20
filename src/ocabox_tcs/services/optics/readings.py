@@ -8,7 +8,9 @@ that fails proves nothing: the selector is undefined until it reads again.
 
 Alpaca codes are mapped by ``obcom.optics.telemetry`` (the single place that knows what a cover or
 shutter code means optically); the M3 port is mapped through the component's own ``positions:``,
-so a port no symbol declares (oca-problems#107) is reported as an unmapped position.
+so a port no symbol declares (oca-problems#107) is reported as an unmapped position. Whatever proves
+nothing says why, for people (``ProvenState.causes``): "shutter reports Error (ShutterState 4)",
+"not read (TimeoutError: …)", "controller reports an error (ErrorRaised)".
 """
 from __future__ import annotations
 
@@ -19,7 +21,8 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from datamodels.optics import state_key
 from obcom.optics import OpticalGraph, ProvenState
-from obcom.optics.telemetry import CALIBRATOR_STATUS, COVER_STATUS, SHUTTER_STATE
+from obcom.optics.telemetry import (CALIBRATOR_STATUS, COVER_STATUS, SHUTTER_STATE, calibrator_cause, cover_cause,
+                                    shutter_cause)
 
 #: ASCOM CameraState values during which the camera is using its light path
 CAMERA_BUSY = {2, 3, 4}  # Exposing, Reading, Download
@@ -55,12 +58,16 @@ class TelescopeReader:
         environment: dict[str, Any] = {}
         busy: dict[str, str] = {}
         failed: set[str] = set()
+        causes: dict[str, str] = {}
 
         async def guarded(name: str, read: Awaitable[None]) -> None:
             try:
                 await read
             except Exception as e:  # any failure of a read proves nothing about the component
                 failed.add(name)
+                what = 'mount not read' if name == self._mount else 'not read'
+                for key in self._keys_of(name):  # a cause the device itself gave is the more precise one
+                    causes.setdefault(key, f'{what} ({type(e).__name__}: {e})')
                 if name not in self._failing:
                     self._log.warning(f'{name}: not read ({type(e).__name__}: {e}) — undefined until it reads again')
             else:
@@ -72,6 +79,10 @@ class TelescopeReader:
             port, now_moving = status.get('NasmythPort'), bool(status.get('Moving'))
             declared = self._graph.node(name).spec.positions or {}
             positions[name] = next((symbol for symbol in declared if declared[symbol].port == port), None)
+            if status.get('ErrorRaised'):
+                positions[name], causes[name] = None, 'controller reports an error (ErrorRaised)'
+            elif positions[name] is None:
+                causes[name] = f'at nasmyth port {port}, which no position declares'
             if now_moving:
                 moving.add(name)
 
@@ -81,12 +92,17 @@ class TelescopeReader:
             aspect = state_key(name, 'calibrator')
             positions[name], positions[aspect] = COVER_STATUS.get(cover), CALIBRATOR_STATUS.get(calibrator)
             moving.update(key for key, code in ((name, cover), (aspect, calibrator)) if code == 2)
+            for key, cause in ((name, cover_cause(cover)), (aspect, calibrator_cause(calibrator))):
+                if cause is not None:
+                    causes[key] = cause
 
         async def dome(name: str) -> None:
             component = self._tel.get_dome(name)
             shutter, az = await asyncio.gather(self._get(component, 'shutterstatus'), self._get(component, 'azimuth'))
             if shutter in SHUTTER_STATE:
                 environment['dome_shutter_open'] = SHUTTER_STATE[shutter]
+            else:
+                causes[name] = shutter_cause(shutter)
             environment['dome_az_deg'] = az
 
         async def mount(name: str) -> None:
@@ -120,8 +136,15 @@ class TelescopeReader:
         sun = self._sun()
         if sun is not None:
             environment['sun_alt_deg'] = sun
-        state = ProvenState.build(positions, moving=moving, **environment)
+        state = ProvenState.build(positions, moving=moving, causes=causes, **environment)
         return Snapshot(state=state, busy=busy, failed=frozenset(failed))
+
+    def _keys_of(self, name: str) -> list[str]:
+        """The state keys a component's read proves: its axes, or — for the mount — the dome's."""
+        if name == self._mount:
+            return [n for n, node in self._graph.nodes.items() if node.spec.kind == 'dome']
+        node = self._graph.nodes.get(name)
+        return [state_key(name, axis.name) for axis in node.axes] if node is not None else []
 
     async def _get(self, component, attribute: str):
         return await component.aget_value(attribute, time_of_data_tolerance=self._tolerance)
