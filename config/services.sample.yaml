@@ -62,7 +62,9 @@ services:
   #   rpc.optics.<tel>.<detector>.setpath  {"function": "object"}
   # - type: optics
   #   variant: jk15                   # the telescope id (or set `telescope:`)
-  #   interval: 1.0                   # s between readings, also TIC data tolerance
+  #   interval: 1.0                   # T1 of the TIC subscriptions: how fresh every value is kept, s
+  #   max_age: ~                      # T2: older proves nothing (default 2*T1, at least 5 s)
+  #   recompute: 10.0                 # s between recomputations without a delivery (sky, declarations)
   #   actuate: [tertiary, covercalibrator, covercalibrator.calibrator]  # state keys the service may move
   #   declaration_hours: 12.0         # an operator's declaration nobody withdrew expires after this
   #   prove_timeout: 60.0             # s for a commanded move to be proven by a reading

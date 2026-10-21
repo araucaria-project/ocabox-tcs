@@ -1,8 +1,9 @@
 """Moving selectors through TIC — by component *kind* — and proving that they moved.
 
-Railway doctrine: *commanded ≠ proven*. A move is done only when a fresh reading shows the selector
-at the commanded position and no longer moving; until then the operation is in progress, and a
-selector that does not get there in ``prove_timeout`` fails the operation with what it reads.
+Railway doctrine: *commanded ≠ proven*. A move is done only when a delivered reading (the reader's
+TIC subscriptions) shows the selector at the commanded position and no longer moving; until then
+the operation is in progress, and a selector that does not get there in ``prove_timeout`` fails the
+operation with what it reads.
 
 The service moves with its own TIC connection and ``request_special_permission``: the human's
 permission was checked by TIC's blocker when they asked for the path. Safety cutoff still applies.
@@ -14,7 +15,6 @@ the observatory's weather protection and its flat position moves the mount — s
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 
@@ -32,9 +32,9 @@ class Actuator:
     """Commands selector moves on one telescope and proves them with ``reader``."""
 
     def __init__(self, telescope, graph: OpticalGraph, reader: TelescopeReader, prove_timeout: float = 60.0,
-                 poll: float = 1.0, logger: logging.Logger | None = None):
+                 logger: logging.Logger | None = None):
         self._tel, self._graph, self._reader = telescope, graph, reader
-        self._prove_timeout, self._poll = prove_timeout, poll
+        self._prove_timeout = prove_timeout
         self._log = logger or logging.getLogger('optics')
 
     async def apply(self, moves: dict[str, str]) -> None:
@@ -73,15 +73,17 @@ class Actuator:
 
     async def _prove(self, moves: dict[str, str]) -> None:
         deadline = time.monotonic() + self._prove_timeout
+        version = self._reader.version
         while True:
-            selectors = (await self._reader.read()).state.selectors
+            selectors = self._reader.snapshot().state.selectors
             pending = {k: v for k, v in moves.items()
                        if k not in selectors or selectors[k].moving or selectors[k].position != v}
             if not pending:
                 return
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 reads = ', '.join(f'{label(self._graph, k)} reads {selectors[k].position if k in selectors else "nothing"}'
                                   f'{" (moving)" if k in selectors and selectors[k].moving else ""}, wanted {v}'
                                   for k, v in pending.items())
                 raise ActuationError(f'not proven within {self._prove_timeout:.0f} s: {reads}')
-            await asyncio.sleep(self._poll)
+            version = await self._reader.changed(version, remaining)
