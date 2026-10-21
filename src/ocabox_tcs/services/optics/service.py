@@ -23,6 +23,12 @@ needed or the light unavailable) — and the switch runs in the background, repo
 ``self.operation``, like a slew. Graph: the telescope's ``components`` from the published
 observatory configuration, or ``components_file`` (a config.yaml) to try a graph before deploying.
 
+The telescope is followed by TIC subscriptions (:mod:`.readings`): the service declares how fresh
+it wants every value (``interval``, T1) and when it stops being the truth (``max_age``, T2), TIC
+polls each device once for all its subscribers; the status is recomputed when a value is delivered,
+and every ``recompute`` seconds for what changes without a delivery (the sky with the sun,
+declarations expiring).
+
 A declaration is the operator's word for what no reading can prove — the shutter opened by hand
 while its sensor reports an error. It fills only an undefined axis, is withdrawn as soon as a
 reading proves the axis again, expires after ``declaration_hours``, and is visible everywhere as
@@ -48,15 +54,17 @@ from ocabox_tcs.services.optics.readings import Snapshot, TelescopeReader
 from ocabox_tcs.services.optics.sun import SunAltitude
 from ocabox_tcs.tic_endpoint import Call, Refusal, TicEndpoint
 
-#: ocabox-common with ``OpticalGraph.state_axes`` (1.9.0), labels, causes and declarations (1.8.0)
-REQUIRED_OCABOX_COMMON = (1, 9, 0)
+#: ocabox-common with the dome flat at the screen whatever the shutter and ``Kind.meaning`` (1.12.0)
+REQUIRED_OCABOX_COMMON = (1, 12, 0)
 
 
 @config('optics')
 @dataclass
 class OpticsServiceConfig(BaseServiceConfig):
     telescope: str = ''  #: telescope id; default: the variant
-    interval: float = 1.0  #: seconds between readings (also the TIC data tolerance)
+    interval: float = 1.0  #: T1 of every subscription: TIC refreshes the devices this often for us, s
+    max_age: float | None = None  #: T2: a value older than this proves nothing, s (default 2·T1, at least 5)
+    recompute: float = 10.0  #: s between recomputations without a delivery (the sky, declarations expiring)
     actuate: list[str] = field(default_factory=lambda: ['tertiary'])  #: state keys the service may move
     prove_timeout: float = 60.0  #: seconds a commanded move has to be proven
     components_file: str = ''  #: config.yaml to read the graph from instead of the published config
@@ -108,9 +116,11 @@ class OpticsService(BaseBlockingPermanentService):
         telescope = observatory.get_telescope(tel)
 
         self._reader = TelescopeReader(telescope, self.graph, tolerance=self.svc_config.interval,
-                                       sun_altitude=SunAltitude.from_config(published), logger=self.svc_logger)
+                                       max_age=self.svc_config.max_age, sun_altitude=SunAltitude.from_config(published),
+                                       logger=self.svc_logger)
         self._actuator = Actuator(telescope, self.graph, self._reader, prove_timeout=self.svc_config.prove_timeout,
-                                  poll=self.svc_config.interval, logger=self.svc_logger)
+                                  logger=self.svc_logger)
+        await self._reader.start()
         self.endpoint = TicEndpoint.for_service(self, keepalive=self.svc_config.keepalive)
         self.endpoint.method('setpath', self._setpath)
         self.endpoint.method('declare', self._declare, element='self')
@@ -137,17 +147,22 @@ class OpticsService(BaseBlockingPermanentService):
         return graph
 
     async def run_service(self):
+        version = self._reader.version
         while self.is_running:
+            computed = time.monotonic()
             try:
-                await self._publish(await self._reader.read())
+                await self._publish(self._reader.snapshot())
             except Exception:
                 self.svc_logger.exception('optics refresh failed')
-            if not await self.sleep(self.svc_config.interval):
-                break
+            version = await self._reader.changed(version, self.svc_config.recompute)
+            # at most once per T1: the mount's and M3's encoders deliver noise several times a second
+            await asyncio.sleep(max(0.0, self.svc_config.interval - (time.monotonic() - computed)))
 
     async def on_stop(self):
         if self._operation is not None and not self._operation.done():
             self._operation.cancel()
+        if self._reader is not None:
+            self._reader.stop()  # also wakes run_service
         if self.endpoint is not None:
             await self.endpoint.stop()
 
@@ -211,14 +226,14 @@ class OpticsService(BaseBlockingPermanentService):
         else:
             if position not in axes[key]:
                 raise Refusal(f'{label(self.graph, key)} has no position {position!r} (positions: {", ".join(axes[key])})', code=4007)
-            read = resolve_axes(self.graph, (await self._reader.read()).state, self.graph.node(key.partition('.')[0]))
+            read = resolve_axes(self.graph, self._reader.snapshot().state, self.graph.node(key.partition('.')[0]))
             proven = read.get(key.partition('.')[2] or None)
             if proven is not None and proven.value is not None:
                 raise Refusal(f'{label(self.graph, key)} reads {proven.value}: a reading needs no declaration')
             self._declared[key] = {'position': position, 'by': who, 'at': time.time()}
             self.svc_logger.info(f'{who}: declares {label(self.graph, key)} {position}')
         await self.endpoint.publish('self', 'declared', self._declared)
-        await self._publish(await self._reader.read())
+        await self._publish(self._reader.snapshot())
         return {'declared': dict(self._declared)}
 
     # ------------------------------------------------------------------ setpath
@@ -228,7 +243,7 @@ class OpticsService(BaseBlockingPermanentService):
         if not isinstance(function, str):
             raise Refusal("setpath needs the parameter 'function' (e.g. object, dark, flat)", code=4007)
         require_function(self.graph, call.element, function)
-        snapshot = await self._reader.read()
+        snapshot = self._reader.snapshot()
         proven = await self._with_declarations(snapshot.state)
         # checked after the last await: two concurrent requests can never both start a switch
         if self._operation is not None and not self._operation.done():
@@ -252,7 +267,7 @@ class OpticsService(BaseBlockingPermanentService):
         else:
             self.svc_logger.info(f'{detector}.{function}: {moves} proven')
             await self.endpoint.publish('self', 'operation', {**operation, 'state': 'done'})
-        await self._publish(await self._reader.read())
+        await self._publish(self._reader.snapshot())
 
 
 if __name__ == '__main__':

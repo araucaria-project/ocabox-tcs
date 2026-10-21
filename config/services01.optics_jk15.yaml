@@ -9,7 +9,7 @@ services:
   - type: optics
     variant: jk15
     telescope: jk15
-    interval: 1.0             # s between readings
+    interval: 1.0             # T1: TIC refreshes every value we follow this often (one device poll for all subscribers), s
     actuate:                  # what the service moves; anything else is the operator's move (4009)
       - tertiary              # M3
       - covercalibrator       # mirror covers

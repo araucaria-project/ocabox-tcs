@@ -68,7 +68,7 @@ def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: st
     a move the operator has to make is a collision held by :data:`MANUAL`, said as what to do. ``state``
     should already carry the busy holds."""
     held = with_manual_holds(graph, state, actuatable)
-    result = _operators_part(graph, held, check(graph, held, detector, function))
+    result = _operators_part(graph, held, check(graph, held, detector, function), actuatable)
     if isinstance(result, Settable):
         manual = sorted(k for k in result.moves if k not in actuatable)
         if manual:  # unreachable while every selector outside ``actuatable`` is held; never move one anyway
@@ -77,16 +77,26 @@ def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: st
     return result
 
 
-def _operators_part(graph: OpticalGraph, state: ProvenState, result: Verdict) -> Verdict:
+def _operators_part(graph: OpticalGraph, state: ProvenState, result: Verdict, actuatable: frozenset[str]) -> Verdict:
     """``result`` told as what the operator does when only they can: set a part the service does not
-    move with its own controls, or confirm by hand where a part is that no sensor reads."""
+    move with its own controls (saying what a position nobody selects takes: the dome's flat is the
+    telescope at the screen), or confirm by hand what no sensor reads (a part's position, a lamp)."""
     if isinstance(result, Collision) and result.holder == MANUAL:
-        return result.model_copy(update={'reason': f'needs {label(graph, result.selector)} {result.required}, it is {result.held}: '
-                                                   f'set it with its own controls (the optics service does not move it)'})
+        component, aspect = split_state_key(result.selector)
+        node = graph.node(component)
+        meaning = node.kind.meaning(node.spec, graph.components, aspect, result.required)
+        needs = f'needs {label(graph, result.selector)} {result.required}'
+        if meaning is not None:
+            return result.model_copy(update={'reason': f'{needs} — {meaning}; it is {result.held} now, '
+                                                       f'the optics service does not move it'})
+        return result.model_copy(update={'reason': f'{needs}, it is {result.held}: set it with its own controls '
+                                                   f'(the optics service does not move it)'})
     if isinstance(result, Impossible) and result.unavailable is None and result.undefined_at \
             and all(getattr(state.holds.get(key), 'holder', None) == MANUAL for key in result.undefined_at):
         unknown = '; '.join(f'{label(graph, key)} not known ({_cause(graph, state, key)})' for key in result.undefined_at)
         return result.model_copy(update={'reason': f'{unknown} — confirm it by hand if you know where it is'})
+    if isinstance(result, Impossible) and result.undefined_at and not set(result.undefined_at) & actuatable:
+        return result.model_copy(update={'reason': f'{result.reason} — if you know, confirm it by hand'})
     return result
 
 
