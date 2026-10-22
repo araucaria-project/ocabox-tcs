@@ -214,7 +214,7 @@ def test_camera_info_returns_component_dict_when_available():
                         "components": {
                             "guider_beso": {
                                 "kind": "camera",
-                                "tertiary_position": 1,
+                                "camera_kind": "ccd",
                                 "device_number": 1,
                             }
                         }
@@ -226,7 +226,7 @@ def test_camera_info_returns_component_dict_when_available():
     info = tc.camera_info("guider_beso")
     assert info["kind"] == "camera"
     assert info["device_number"] == 1
-    assert info["tertiary_position"] == 1
+    assert info["camera_kind"] == "ccd"
 
 
 def test_camera_info_returns_stub_when_component_missing():
