@@ -1,0 +1,25 @@
+# OCA wk06 Optics (optical path) — symlink target for /etc/systemd/system/.
+#   sudo ln -s /home/poweruser/src/ocabox-tcs/deploy/systemd/optics_wk06.service \
+#       /etc/systemd/system/optics_wk06.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now optics_wk06
+#   sudo systemctl status optics_wk06
+
+[Unit]
+Description=OCA wk06 Optics (optical path)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=poweruser
+WorkingDirectory=/home/poweruser/src/ocabox-tcs
+Environment=PATH=/home/poweruser/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/poweruser/.local/bin/poetry run tcsd \
+    --config config/services01.optics_wk06.yaml \
+    --no-color
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
