@@ -1,0 +1,18 @@
+nats:
+  host: nats.oca.lan
+  port: 4222
+
+services:
+
+  # Optical path of wk06, reached by clients through TIC (wk06.optics.*): what each detector sees,
+  # the verdict of its functions, setpath. The graph comes from the published observatory config.
+  - type: optics
+    variant: wk06
+    telescope: wk06
+    interval: 1.0             # T1: TIC refreshes every value we follow this often (one device poll for all subscribers), s
+    actuate:                  # what the service moves; anything else is the operator's move (4009)
+      - covercalibrator       # mirror covers
+      - covercalibrator.calibrator  # their calibration lamp (switched off; on needs calibrator_brightness)
+    prove_timeout: 60.0       # s for a commanded move to be proven by a reading
+    client_name: CliClient
+    log_level: INFO
