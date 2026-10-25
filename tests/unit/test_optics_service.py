@@ -16,9 +16,11 @@ from obcom.optics import ProvenState, parse_graph, published_values, ribbon
 from obcom.optics.conformance import JK15_WITH_MOUNT
 
 from ocabox_tcs.services.optics.actuation import ActuationError, Actuator
+from ocabox_tcs.services.optics.confirmation import ConfirmPolicy
 from ocabox_tcs.services.optics.engine import MANUAL, decide, report, with_busy_holds, with_manual_holds
 from ocabox_tcs.services.optics.readings import TelescopeReader
 from ocabox_tcs.services.optics.service import OpticsService
+from ocabox_tcs.services.optics.sun import Sun
 from ocabox_tcs.tic_endpoint import Call, Refusal
 
 GRAPH = parse_graph(JK15_WITH_MOUNT, telescope='jk15')
@@ -43,14 +45,14 @@ def night(**positions):
 class TestDecide:
 
     def test_settable_returns_the_moves(self):
-        assert decide(GRAPH, night(), 'camera', 'object', M3) == {'tertiary': 'andor'}
+        assert decide(GRAPH, night(), 'camera', 'object', M3).moves == {'tertiary': 'andor'}
 
     def test_active_returns_no_moves(self):
-        assert decide(GRAPH, night(tertiary='andor'), 'camera', 'object', M3) == {}
+        assert decide(GRAPH, night(tertiary='andor'), 'camera', 'object', M3).moves == {}
 
     def test_prefers_an_alternative_the_service_can_realise(self):
         # dark_strict: closed cover at night first, M3 away second — the cover is manual
-        assert decide(GRAPH, night(tertiary='andor'), 'camera', 'dark_strict', M3) == {'tertiary': 'beso'}
+        assert decide(GRAPH, night(tertiary='andor'), 'camera', 'dark_strict', M3).moves == {'tertiary': 'beso'}
 
     def test_manual_move_is_refused_with_the_move_spelled_out(self):
         with pytest.raises(Refusal) as e:
@@ -89,7 +91,7 @@ class TestDecide:
     def test_undefined_m3_proves_nothing(self):
         state = ProvenState.build({'dome': 'open', 'covercalibrator': 'open', 'covercalibrator.calibrator': 'off',
                                    'tertiary': None}, sun_alt_deg=-30, dome_shutter_open=True)
-        assert decide(GRAPH, state, 'camera', 'object', M3) == {'tertiary': 'andor'}  # move it to a proven port
+        assert decide(GRAPH, state, 'camera', 'object', M3).moves == {'tertiary': 'andor'}  # move it to a proven port
 
     def test_holds_compose(self):
         # the andor-side guider sees the back of M3 (dark @ tertiary): taking a dark, it holds M3 only
@@ -129,7 +131,7 @@ class TestReport:
         # the panel must announce M3 → beso, and domeflat as the operator's move, not a SET PATH
         functions = report(GRAPH, night(tertiary='andor', flatscreen='on'), M3)['camera']['functions']
         assert functions['dark_strict'] == {'kind': 'settable', 'see': 'dark', 'positions': {'tertiary': 'beso'},
-                                            'moves': {'tertiary': 'beso'}}
+                                            'moves': {'tertiary': 'beso'}}  # no confirm: defaults stay off the wire
         assert functions['domeflat']['kind'] == 'collision' and functions['domeflat']['holder'] == MANUAL
         assert functions['domeflat']['reason'] == ('needs dome flat — the telescope at the flat screen: dome at 49°, '
                                                    'telescope at az 229° alt 15°; it is open now, the optics service does not move it')
@@ -140,7 +142,7 @@ class TestReport:
         for detector, entry in report(GRAPH, state, M3).items():
             for function, published in entry['functions'].items():
                 try:
-                    moves = decide(GRAPH, state, detector, function, M3)
+                    moves = decide(GRAPH, state, detector, function, M3).moves
                 except Refusal as e:
                     assert published['kind'] in ('collision', 'impossible'), (detector, function, e)
                     assert e.code == (4008 if published.get('holder') not in (None, MANUAL) else 4009)
@@ -207,6 +209,10 @@ class FakeComponent:
             'aput_closecover': lambda: self.set(coverstate=1),
             'aput_calibratoroff': lambda: self.set(calibratorstate=1),
             'aput_calibratoron': lambda brightness: self.set(calibratorstate=3),
+            'aput_tracking': lambda track: None,
+            'aput_slewtoaltaz_async': lambda az, alt: self.set(azimuth=az, altitude=alt),
+            'aput_slewtoazimuth': lambda az: self.set(azimuth=az),
+            'aput_abortslew': lambda: None,
         }
         for command, effect in effects.items():
             if hasattr(spec, command):
@@ -249,7 +255,7 @@ class FakeTelescope:
 
 async def started(tel):
     """The service's reader of ``tel``, subscribed."""
-    reader = TelescopeReader(tel, GRAPH, tolerance=1.0, sun_altitude=lambda: -30.0)
+    reader = TelescopeReader(tel, GRAPH, tolerance=1.0, sun=lambda: Sun(-30.0, rising=False))
     await reader.start()
     return reader
 
@@ -366,17 +372,34 @@ class TestActuation:
             await Actuator(tel, GRAPH, await started(tel)).apply({'covercalibrator.calibrator': 'on'})
         tel.c['covercalibrator'].aput_calibratoron.assert_not_awaited()
 
-    async def test_the_dome_is_no_optical_lever(self):
+    async def test_the_dome_goes_to_the_flat_screen_with_the_telescope(self):
+        tel = FakeTelescope(port=2)
+        await Actuator(tel, GRAPH, await started(tel)).apply({'dome': 'flat'})
+        mount, dome = tel.c['mount'], tel.c['dome']
+        mount.aput_tracking.assert_awaited_once_with(False)
+        mount.aput_slewtoaltaz_async.assert_awaited_once_with(229.0, 15.0)
+        dome.aput_slewtoazimuth.assert_awaited_once_with(49.0)
+        assert mount.request_special_permission and dome.request_special_permission
+
+    async def test_the_dome_reaches_only_the_flat_screen(self):
         tel = FakeTelescope()
-        with pytest.raises(ActuationError, match="dome → flat: no actuator for kind 'dome'"):
-            await Actuator(tel, GRAPH, await started(tel)).apply({'dome': 'flat'})
+        actuator = Actuator(tel, GRAPH, await started(tel))
+        assert actuator.reach == {'dome': frozenset({'flat'})}
+        with pytest.raises(ActuationError, match="dome → open: no actuator for kind 'dome'"):
+            await actuator.apply({'dome': 'open'})  # the shutter is weather protection: never ours
+
+    async def test_abort_stops_the_telescope_and_the_dome(self):
+        tel = FakeTelescope()
+        await Actuator(tel, GRAPH, await started(tel)).abort({'dome': 'flat'})
+        tel.c['mount'].aput_abortslew.assert_awaited_once()
+        tel.c['dome'].aput_abortslew.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------------------- service
 
 async def service(tel):
     svc = OpticsService()
-    svc.svc_config = SimpleNamespace(actuate=['tertiary'], interval=0.01)
+    svc.svc_config = SimpleNamespace(telescope='jk15', actuate=['tertiary'], interval=0.01, confirm_timeout=120.0, declaration_hours=12.0)
     svc.svc_logger = MagicMock()
     svc.graph = GRAPH
     svc._reader = await started(tel)
@@ -466,6 +489,180 @@ class TestFollowing:
             running.cancel()
 
 
+# ---------------------------------------------------------------------------------------- confirmation
+
+DOME = frozenset({'tertiary', 'covercalibrator', 'dome'})
+REACH = {'dome': frozenset({'flat'})}
+
+
+def by_day(**positions):
+    base = {'covercalibrator': 'close', 'covercalibrator.calibrator': 'off', 'tertiary': 'andor', 'flatscreen': 'on'}
+    return ProvenState.build({**base, **positions}, sun_alt_deg=20.0, sun_rising=False, dome_shutter_open=False,
+                             dome_az_deg=120.0, mount_az_deg=10.0, mount_alt_deg=60.0)
+
+
+class TestConfirmPolicy:
+
+    def test_the_floor(self):
+        policy = ConfirmPolicy()
+        assert policy.waiting(GRAPH, night(), {'dome': 'flat', 'covercalibrator': 'close', 'tertiary': 'andor'}) == ('dome',)
+        assert policy.waiting(GRAPH, by_day(), {'covercalibrator': 'open'}) == ('covercalibrator',)  # by day, both ways
+        assert policy.waiting(GRAPH, by_day(), {'covercalibrator': 'close'}) == ('covercalibrator',)
+        assert policy.waiting(GRAPH, by_day(), {'covercalibrator.calibrator': 'off'}) == ()  # no moving part
+
+    def test_an_unknown_sky_counts_as_day(self):
+        unknown = ProvenState.build({'covercalibrator': 'open'}, dome_shutter_open=True)
+        assert ConfirmPolicy().waiting(GRAPH, unknown, {'covercalibrator': 'close'}) == ('covercalibrator',)
+
+    def test_configuration_adds_never_removes(self):
+        policy = ConfirmPolicy.from_config(GRAPH, {'tertiary': 'always', 'dome': 'day'})
+        assert policy.waiting(GRAPH, night(), {'tertiary': 'andor', 'dome': 'flat'}) == ('tertiary', 'dome')
+
+    def test_configuration_errors_stop_the_start(self):
+        with pytest.raises(ValueError, match="'m9' is no state key"):
+            ConfirmPolicy.from_config(GRAPH, {'m9': 'always'})
+        with pytest.raises(ValueError, match="'sometimes' is not one of always, day"):
+            ConfirmPolicy.from_config(GRAPH, {'tertiary': 'sometimes'})
+
+
+class TestDecideWithPeople:
+
+    def test_domeflat_by_day_waits_for_the_telescope_the_dome_and_the_covers(self):
+        decision = decide(GRAPH, by_day(), 'camera', 'domeflat', DOME, ConfirmPolicy(), REACH)
+        assert decision.moves == {'dome': 'flat', 'covercalibrator': 'open'}
+        assert set(decision.waiting) == {'dome', 'covercalibrator'}
+
+    def test_the_verdict_says_it_in_advance(self):
+        functions = report(GRAPH, by_day(), DOME, ConfirmPolicy(), REACH)['camera']['functions']
+        assert functions['domeflat']['kind'] == 'settable' and set(functions['domeflat']['confirm']) == {'dome', 'covercalibrator'}
+
+    def test_the_shutter_stays_the_operators(self):
+        # object needs the dome open: out of the actuator's reach, so decided again with the dome held
+        with pytest.raises(Refusal) as e:
+            decide(GRAPH, by_day(), 'camera', 'object', DOME, ConfirmPolicy(), REACH)
+        assert e.value.code == 4009
+
+    def test_dusk_prepares_for_the_night(self):
+        dusk = night(covercalibrator='close').with_environment(sun_alt_deg=-12.0, sun_rising=False)
+        decision = decide(GRAPH, dusk, 'camera', 'object', DOME, ConfirmPolicy(), REACH)
+        assert (decision.moves, decision.waiting, decision.awaits) == ({'covercalibrator': 'open', 'tertiary': 'andor'}, (), 'sky.science')
+
+
+async def confirmable(tel, timeout=120.0):
+    """A service that moves M3, the covers and the dome (to the flat screen), the flat screen lit by
+    a person's declaration."""
+    svc = await service(tel)
+    svc.svc_config.actuate, svc.svc_config.confirm_timeout = sorted(DOME), timeout
+    svc._journal = MagicMock(warning=AsyncMock(side_effect=lambda message, **kw: SimpleNamespace(message=message, actions=kw['actions'])),
+                             publish_journal_operation=AsyncMock())
+    svc._declared = {'flatscreen': {'position': 'on', 'by': 'observer', 'at': time.time()}}
+    return svc
+
+
+def domeflat(who='observer'):
+    return Call('camera', 'setpath', {'function': 'domeflat'}, SimpleNamespace(name=who), 5)
+
+
+def answer(svc, method, operation, who='observer', **parameters):
+    return getattr(svc, f'_{method}')(Call('self', method, {'operation': operation, **parameters}, SimpleNamespace(name=who), 5))
+
+
+class TestConfirmation:
+
+    async def test_a_move_that_needs_a_person_waits_and_is_announced(self):
+        tel = FakeTelescope(port=2)
+        svc = await confirmable(tel)
+        reply = await svc._setpath(domeflat())
+        assert reply['awaiting_confirmation'] and reply['moves'] == {'dome': 'flat'} and reply['confirm'] == ['dome']
+        assert reply['says'] == ['the telescope at the flat screen: dome at 49°, telescope at az 229° alt 15°']
+        assert operations(svc)[-1]['state'] == 'awaiting_confirmation'
+        kwargs = svc._journal.warning.await_args.kwargs
+        assert kwargs['actions'] == ['confirm', 'reject']
+        assert kwargs['meta']['actions_rpc']['confirm'] == {'address': 'jk15.optics.self.confirm', 'parameters': {'operation': reply['operation']}}
+        tel.c['mount'].aput_slewtoaltaz_async.assert_not_awaited()
+        svc._clear(svc._pending)
+
+    async def test_asking_again_returns_the_waiting_change_and_others_wait(self):
+        svc = await confirmable(FakeTelescope(port=2))
+        first = await svc._setpath(domeflat())
+        assert (await svc._setpath(domeflat('someone else')))['operation'] == first['operation']
+        with pytest.raises(Refusal) as e:
+            await svc._setpath(Call('camera', 'setpath', {'function': 'dark_strict'}, None, 5))
+        assert e.value.code == 4008
+        assert svc._journal.warning.await_count == 1
+        svc._clear(svc._pending)
+
+    async def test_confirmed_it_moves_and_closes_the_journal_entry(self):
+        tel = FakeTelescope(port=2)
+        svc = await confirmable(tel)
+        operation = (await svc._setpath(domeflat()))['operation']
+        assert await answer(svc, 'confirm', operation, who='mikolaj') == {'confirmed': True, 'operation': operation, 'moves': {'dome': 'flat'}}
+        await svc._operation
+        states = [o['state'] for o in operations(svc)]
+        assert states[-2:] == ['moving', 'done'] and operations(svc)[-1]['confirmed_by'] == 'mikolaj'
+        tel.c['mount'].aput_slewtoaltaz_async.assert_awaited_once_with(229.0, 15.0)
+        assert [c.kwargs['op'] for c in svc._journal.publish_journal_operation.await_args_list] == ['update', 'close']
+        assert svc._pending is None
+
+    async def test_rejected_nothing_moves(self):
+        tel = FakeTelescope(port=2)
+        svc = await confirmable(tel)
+        operation = (await svc._setpath(domeflat()))['operation']
+        await answer(svc, 'reject', operation, reason='people in the dome')
+        last = operations(svc)[-1]
+        assert (last['state'], last['message'], last['decided_by']) == ('rejected', 'rejected by observer: people in the dome', 'observer')
+        tel.c['dome'].aput_slewtoazimuth.assert_not_awaited()
+        assert svc._pending is None and not svc._in_progress()
+
+    async def test_nobody_confirms_it_expires(self):
+        svc = await confirmable(FakeTelescope(port=2), timeout=0.05)
+        await svc._setpath(domeflat())
+        await asyncio.sleep(0.1)
+        assert operations(svc)[-1]['state'] == 'expired' and svc._pending is None
+
+    async def test_a_changed_state_supersedes_it(self):
+        tel = FakeTelescope(port=2)
+        svc = await confirmable(tel)
+        operation = (await svc._setpath(domeflat()))['operation']
+        tel.c['tertiary'].set(tertiarystatus={'NasmythPort': 1, 'Moving': False})  # someone turned M3 meanwhile
+        with pytest.raises(Refusal) as e:
+            await answer(svc, 'confirm', operation)
+        assert e.value.code == 4008 and 'ask again' in e.value.message
+        assert operations(svc)[-1]['state'] == 'superseded'
+        tel.c['mount'].aput_slewtoaltaz_async.assert_not_awaited()
+
+    async def test_only_the_waiting_change_can_be_answered(self):
+        svc = await confirmable(FakeTelescope(port=2))
+        with pytest.raises(Refusal) as e:
+            await answer(svc, 'confirm', 'nosuch')
+        assert e.value.code == 4007 and 'no light-path change waits' in e.value.message
+        operation = (await svc._setpath(domeflat()))['operation']
+        with pytest.raises(Refusal) as e:
+            await answer(svc, 'confirm', 'nosuch')
+        assert e.value.code == 4007 and operation in e.value.message
+        svc._clear(svc._pending)
+
+    async def test_abort_stops_a_running_change(self):
+        tel = FakeTelescope(port=2)
+        tel.c['mount'].aput_slewtoaltaz_async = AsyncMock()  # the telescope never gets there
+        svc = await confirmable(tel)
+        operation = (await svc._setpath(domeflat()))['operation']
+        await answer(svc, 'confirm', operation)
+        await asyncio.sleep(0.01)
+        assert await answer(svc, 'abort', operation, who='night assistant') == {'aborted': True, 'operation': operation}
+        tel.c['mount'].aput_abortslew.assert_awaited_once()
+        tel.c['dome'].aput_abortslew.assert_awaited_once()
+        last = operations(svc)[-1]
+        assert (last['state'], last['message']) == ('failed', 'aborted by night assistant')
+
+    async def test_a_move_without_people_starts_at_once(self):
+        svc = await confirmable(FakeTelescope(port=1))
+        reply = await svc._setpath(Call('camera', 'setpath', {'function': 'object'}, None, 5))
+        assert reply == {'accepted': True, 'moves': {'tertiary': 'andor'}}
+        await svc._operation
+        svc._journal.warning.assert_not_awaited()
+
+
 class FakeObservatory:
     """``ocaboxapi.Observatory`` as ``on_start`` uses it; ``published`` = the TIC config stream."""
     published: dict = {}
@@ -494,12 +691,13 @@ class TestStart:
         import ocaboxapi
         import ocabox_tcs.services.optics.service as module
         monkeypatch.setattr(ocaboxapi, 'Observatory', FakeObservatory)
+        monkeypatch.setattr(module, 'get_journalpublisher', lambda subject: MagicMock(subject=subject))
         monkeypatch.setattr(module.TicEndpoint, 'for_service',
                             classmethod(lambda cls, svc, **kw: MagicMock(publish=AsyncMock(), start=AsyncMock())))
         svc = OpticsService()
         svc.svc_config = SimpleNamespace(telescope='jk15', variant='jk15', client_name='CliClient', components_file='',
                                          config_stream='tic.config.observatory', actuate=['tertiary'], interval=1.0, max_age=None,
-                                         prove_timeout=60.0, keepalive=60.0)
+                                         prove_timeout=60.0, keepalive=60.0, confirm={}, confirm_timeout=120.0)
         svc.svc_logger = MagicMock()
         return svc
 

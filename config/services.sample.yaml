@@ -60,14 +60,17 @@ services:
   # needs the `optics` extra). Clients reach it through TIC (ocabox-server TreeNatsService):
   #   status.optics.<tel>.<detector>.{sees,functions}, status.optics.<tel>.self.{selectors,busy,operation}
   #   rpc.optics.<tel>.<detector>.setpath  {"function": "object"}
+  #   rpc.optics.<tel>.self.{confirm,reject,abort}  {"operation": "<id>"}; journal tic.journal.<tel>.optics
   # - type: optics
   #   variant: jk15                   # the telescope id (or set `telescope:`)
   #   interval: 1.0                   # T1 of the TIC subscriptions: how fresh every value is kept, s
   #   max_age: ~                      # T2: older proves nothing (default 2*T1, at least 5 s)
   #   recompute: 10.0                 # s between recomputations without a delivery (sky, declarations)
-  #   actuate: [tertiary, covercalibrator, covercalibrator.calibrator]  # state keys the service may move
+  #   actuate: [tertiary, covercalibrator, covercalibrator.calibrator, dome]  # state keys the service may move (dome: to the flat screen only)
   #   declaration_hours: 12.0         # an operator's declaration nobody withdrew expires after this
-  #   prove_timeout: 60.0             # s for a commanded move to be proven by a reading
+  #   prove_timeout: 60.0             # s for a commanded move to be proven by a reading (longer when slew_timeout says so)
+  #   confirm: {}                     # moves that wait for a person beyond the floor (dome always, covers by day): {key: always | day}
+  #   confirm_timeout: 120.0          # s such a move waits for a person before it expires
   #   components_file: ""             # config.yaml to try a graph before it is published
   #   client_name: CliClient          # ocabox client section of the observatory configuration
 

@@ -11,19 +11,26 @@ solver's own ordered fallbacks and collision reasons do the work:
   ``tertiary`` to start with) are held at their proven position, so the solver prefers an
   alternative the service can realise (``dark_strict``: M3 away rather than the closed cover) and
   a function that has none is refused with the move the operator has to make spelled out: 4009.
+  An enabled selector the actuator reaches only some positions of (the dome: to the flat screen,
+  never the shutter) is held as well whenever the solver would need another one.
+- **Some moves wait for a person** (:mod:`.confirmation`): a settable verdict names them in
+  ``confirm``, and ``setpath`` starts them only once a person has confirmed.
+- **Light that comes by itself** (the sky at dusk) makes a function *not yet* possible; ``setpath``
+  then makes the moves that prepare the path for it.
 
 The published verdicts and ``setpath`` come from one function, :func:`verdict`, so what a client
 is shown is exactly what the service would do.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from datamodels.messages import Severity
 from datamodels.optics import Active, Collision, Impossible, Settable, Verdict, split_state_key, state_key
 from obcom.optics import Hold, OpticalGraph, ProvenState, check, label, resolve_axes, sees
 
+from ocabox_tcs.services.optics.confirmation import ConfirmPolicy
 from ocabox_tcs.tic_endpoint import Refusal
 
 #: holder of a selector the service may not move: the operator moves it with its own controls
@@ -61,19 +68,53 @@ def with_manual_holds(graph: OpticalGraph, state: ProvenState, actuatable: froze
     return replace(state, holds=holds)
 
 
+#: no confirmation beyond the floor, every actuatable selector reached at every position
+_NO_POLICY = ConfirmPolicy()
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What ``setpath`` does: the moves (none when the detector already does the function), the
+    moves among them that wait for a person, and the light still to come they prepare for."""
+
+    moves: dict[str, str]
+    waiting: tuple[str, ...] = ()
+    awaits: str | None = None
+
+
+def _moves_of(result: Verdict) -> Mapping[str, str]:
+    if isinstance(result, Settable):
+        return result.moves
+    if isinstance(result, Impossible):
+        return result.prepare
+    return {}
+
+
 def verdict(graph: OpticalGraph, state: ProvenState, detector: str, function: str,
-            actuatable: frozenset[str]) -> Verdict:
+            actuatable: frozenset[str], policy: ConfirmPolicy = _NO_POLICY,
+            reach: Mapping[str, frozenset[str]] | None = None) -> Verdict:
     """The verdict of ``detector.function`` as the service would act on it: selectors outside
     ``actuatable`` are held where they are, so *settable* means "``setpath`` makes these moves" and
-    a move the operator has to make is a collision held by :data:`MANUAL`, said as what to do. ``state``
-    should already carry the busy holds."""
-    held = with_manual_holds(graph, state, actuatable)
-    result = _operators_part(graph, held, check(graph, held, detector, function), actuatable)
+    a move the operator has to make is a collision held by :data:`MANUAL`, said as what to do.
+    ``reach`` limits an actuatable selector to the positions its actuator can make (the dome: only
+    to the flat screen) — a route needing another one is decided again with it held, so the solver
+    takes an alternative or says what the operator does. A settable verdict names in ``confirm`` the
+    moves that wait for a person (``policy``). ``state`` should already carry the busy holds."""
+    reach = reach or {}
+    movable = actuatable
+    while True:
+        held = with_manual_holds(graph, state, movable)
+        result = _operators_part(graph, held, check(graph, held, detector, function), movable)
+        out_of_reach = {k for k, v in _moves_of(result).items() if k in reach and v not in reach[k]}
+        if not out_of_reach:
+            break
+        movable = movable - out_of_reach
     if isinstance(result, Settable):
-        manual = sorted(k for k in result.moves if k not in actuatable)
+        manual = sorted(k for k in result.moves if k not in movable)
         if manual:  # unreachable while every selector outside ``actuatable`` is held; never move one anyway
             return Impossible(kind='impossible', undefined_at=tuple(manual),
                               reason=f'{", ".join(label(graph, k) for k in manual)}: not moved by the optics service')
+        return result.model_copy(update={'confirm': policy.waiting(graph, state, result.moves)})
     return result
 
 
@@ -105,7 +146,8 @@ def _cause(graph: OpticalGraph, state: ProvenState, key: str) -> str:
     return resolve_axes(graph, state, graph.node(component))[aspect].cause or 'no reading'
 
 
-def report(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str]) -> dict[str, dict]:
+def report(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str], policy: ConfirmPolicy = _NO_POLICY,
+           reach: Mapping[str, frozenset[str]] | None = None) -> dict[str, dict]:
     """Per detector: what it sees now and the :func:`verdict` of each declared function."""
     out = {}
     for detector in graph.detectors:
@@ -113,7 +155,8 @@ def report(graph: OpticalGraph, state: ProvenState, actuatable: frozenset[str]) 
         records = sorted(sees(graph, state, detector), key=lambda r: (r.light_class, r.terminal, r.via))
         out[detector] = {
             'sees': [r.model_dump(mode='json', by_alias=True) for r in records],
-            'functions': {f: verdict(graph, state, detector, f, actuatable).model_dump(mode='json')
+            # defaults left out: a client fills them in, and one older than a field meets it only when it is used
+            'functions': {f: verdict(graph, state, detector, f, actuatable, policy, reach).model_dump(mode='json', exclude_defaults=True)
                           for f in (node.paths or {})},
         }
     return out
@@ -130,16 +173,20 @@ def require_function(graph: OpticalGraph, detector: str, function: str) -> None:
 
 
 def decide(graph: OpticalGraph, state: ProvenState, detector: str, function: str,
-           actuatable: frozenset[str]) -> dict[str, str]:
-    """The moves of actuatable selectors that make ``detector`` do ``function`` — empty when it
-    already does — or a :class:`Refusal` that says why not, with the code a client can act on.
-    ``state`` should already carry the busy holds."""
+           actuatable: frozenset[str], policy: ConfirmPolicy = _NO_POLICY,
+           reach: Mapping[str, frozenset[str]] | None = None) -> Decision:
+    """What ``setpath`` does for ``detector.function``: the moves of actuatable selectors — none
+    when it already does it — and which of them wait for a person; for light still to come (the sky
+    at dusk) the moves that prepare the path. Otherwise a :class:`Refusal` that says why not, with
+    the code a client can act on. ``state`` should already carry the busy holds."""
     require_function(graph, detector, function)
-    result = verdict(graph, state, detector, function, actuatable)
+    result = verdict(graph, state, detector, function, actuatable, policy, reach)
     if isinstance(result, Active):
-        return {}
+        return Decision({})
     if isinstance(result, Settable):
-        return dict(result.moves)
+        return Decision(dict(result.moves), tuple(result.confirm))
+    if isinstance(result, Impossible) and result.awaits is not None:
+        return Decision(dict(result.prepare), policy.waiting(graph, state, result.prepare), result.awaits)
     if isinstance(result, Collision):
         if result.holder == MANUAL:
             raise Refusal(f'{detector} {function} {result.reason}')

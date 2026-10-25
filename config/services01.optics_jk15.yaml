@@ -14,6 +14,8 @@ services:
       - tertiary              # M3
       - covercalibrator       # mirror covers
       - covercalibrator.calibrator  # their calibration lamp (switched off; on needs calibrator_brightness)
+      - dome                  # only to the flat screen (the telescope and the dome slew there); never the shutter
     prove_timeout: 60.0       # s for a commanded move to be proven by a reading
+    confirm_timeout: 120.0    # s a move that needs a person (telescope + dome to the screen; covers by day) waits
     client_name: CliClient
     log_level: INFO
