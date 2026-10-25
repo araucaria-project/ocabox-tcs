@@ -469,9 +469,8 @@ class OpticsService(BaseBlockingPermanentService):
         if self._journal is None or entry is None:
             return
         try:
-            entry.message, entry.actions = message, []
-            await self._journal.publish_journal_operation(entry, op='update')
-            await self._journal.publish_journal_operation(entry, op='close')
+            entry.message, entry.actions = message, []  # no actions left: the conversation is over
+            await self._journal.publish_journal_operation(entry, op='change')
         except Exception:
             self.svc_logger.exception('optics journal: the outcome was not published')
 

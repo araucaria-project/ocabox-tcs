@@ -1,7 +1,9 @@
 """Optics service: decisions (pure), kind-driven readings, proven actuation, setpath — on the jk15
 graph of the reference solver's conformance fixtures and a fake telescope."""
 import asyncio
+import json
 import time
+from importlib.resources import files
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -548,6 +550,10 @@ class TestDecideWithPeople:
         assert (decision.moves, decision.waiting, decision.awaits) == ({'covercalibrator': 'open', 'tertiary': 'andor'}, (), 'sky.science')
 
 
+#: what serverish's journal schema accepts as ``op`` — the fake publisher above takes anything
+JOURNAL_OPS = set(json.loads(files('serverish').joinpath('schema/journal.schema.json').read_text())['properties']['op']['enum'])
+
+
 async def confirmable(tel, timeout=120.0):
     """A service that moves M3, the covers and the dome (to the flat screen), the flat screen lit by
     a person's declaration."""
@@ -601,7 +607,8 @@ class TestConfirmation:
         states = [o['state'] for o in operations(svc)]
         assert states[-2:] == ['moving', 'done'] and operations(svc)[-1]['confirmed_by'] == 'mikolaj'
         tel.c['mount'].aput_slewtoaltaz_async.assert_awaited_once_with(229.0, 15.0)
-        assert [c.kwargs['op'] for c in svc._journal.publish_journal_operation.await_args_list] == ['update', 'close']
+        ops = [c.kwargs['op'] for c in svc._journal.publish_journal_operation.await_args_list]
+        assert ops == ['change'] and set(ops) <= JOURNAL_OPS
         assert svc._pending is None
 
     async def test_rejected_nothing_moves(self):
