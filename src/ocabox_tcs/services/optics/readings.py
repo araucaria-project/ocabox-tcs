@@ -32,6 +32,8 @@ from obcom.optics import OpticalGraph, ProvenState
 from obcom.optics.telemetry import (CALIBRATOR_STATUS, COVER_STATUS, SHUTTER_STATE, calibrator_cause, cover_cause,
                                     shutter_cause)
 
+from ocabox_tcs.services.optics.sun import Sun
+
 #: ASCOM CameraState values during which the camera is using its light path
 CAMERA_BUSY = {2, 3, 4}  # Exposing, Reading, Download
 TERTIARY_KINDS = {'tertiaryOCA', 'tertiary'}
@@ -65,12 +67,12 @@ class TelescopeReader:
     """Follows the optical state of one telescope (an ``ocaboxapi.Telescope``) by subscriptions."""
 
     def __init__(self, telescope, graph: OpticalGraph, tolerance: float = 1.0, max_age: float | None = None,
-                 sun_altitude: Callable[[], float | None] | None = None, logger: logging.Logger | None = None):
+                 sun: Callable[[], Sun | None] | None = None, logger: logging.Logger | None = None):
         self._tel = telescope
         self._graph = graph
         self._tolerance = tolerance
         self._max_age = max_age
-        self._sun = sun_altitude or (lambda: None)
+        self._sun = sun or (lambda: None)
         self._log = logger or logging.getLogger('optics')
         mounts = [name for name, spec in graph.components.items() if spec.kind == 'telescope']
         self._mount = mounts[0] if mounts else None
@@ -220,7 +222,7 @@ class TelescopeReader:
 
         sun = self._sun()
         if sun is not None:
-            environment['sun_alt_deg'] = sun
+            environment['sun_alt_deg'], environment['sun_rising'] = sun.alt_deg, sun.rising
         state = ProvenState.build(positions, moving=moving, causes=causes, **environment)
         return Snapshot(state=state, busy=busy, failed=frozenset(failed))
 
