@@ -1,21 +1,20 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from serverish.base import MessengerNotPersisted
+from serverish.base import MessengerNotConnected, MessengerNotPersisted
 from serverish.messenger import Messenger
 
 from ocabox_tcs.services.guiding_svc.nats_conn import NatsConn
 
 
-async def test_connected_messenger_with_no_streams_still_checks_persistence(monkeypatch):
-    messenger = MagicMock(is_open=False)
-    messenger.connection.health_status = {"is_connected": True}
+@pytest.mark.parametrize("is_open", [True, False])
+def test_availability_follows_messenger(monkeypatch, is_open):
+    messenger = MagicMock(is_open=is_open)
     monkeypatch.setattr("ocabox_tcs.services.guiding_svc.nats_conn.Messenger", lambda: messenger)
-    monkeypatch.setattr(Messenger, "is_persistent", AsyncMock(return_value=False))
     conn = NatsConn(manager=MagicMock(), instance="jk15.cam_test")
 
-    with pytest.raises(RuntimeError, match="oca_nats_config"):
-        await conn.state_publisher("cam_test", "mon")
+    assert conn.is_available is is_open
+    messenger.connection.health_status.__getitem__.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -23,7 +22,6 @@ async def test_connected_messenger_with_no_streams_still_checks_persistence(monk
     [
         ("state_publisher", ("cam_test", "mon"), "pipeline.mon.state"),
         ("events_publisher", ("cam_test", "mon"), "pipeline.mon.events"),
-        ("journal_publisher", ("cam_test", "mon"), "pipeline.mon.journal"),
         ("thumbnail_notification_publisher", ("cam_test",), "frame.thumbnail.ready"),
     ],
 )
@@ -46,7 +44,6 @@ async def test_publishers_require_persistence(monkeypatch, method, args, subject
     [
         ("state_publisher", ("cam_test", "mon")),
         ("events_publisher", ("cam_test", "mon")),
-        ("journal_publisher", ("cam_test", "mon")),
         ("thumbnail_notification_publisher", ("cam_test",)),
     ],
 )
@@ -60,3 +57,24 @@ async def test_publisher_open_reports_missing_persistence(monkeypatch, method, a
     assert isinstance(exc.value.__cause__, MessengerNotPersisted)
     assert exc.value.__cause__.subject in str(exc.value)
     assert not conn._publishers
+
+
+async def test_journal_publisher_keeps_non_raising_defaults(monkeypatch):
+    monkeypatch.setattr(NatsConn, "is_available", property(lambda self: True))
+    check = AsyncMock(return_value=False)
+    monkeypatch.setattr(Messenger, "is_persistent", check)
+    conn = NatsConn(manager=MagicMock(), instance="jk15.cam_test")
+
+    publisher = await conn.journal_publisher("cam_test", "mon")
+    assert publisher.subject == "svc.publish.guider.jk15.cam_test.pipeline.mon.journal"
+    assert publisher.is_open
+    assert not publisher.persistent
+    assert not publisher.raise_on_publish_error
+    check.assert_not_awaited()
+    monkeypatch.setattr(
+        publisher, "_publish_with_ack_retries", AsyncMock(side_effect=MessengerNotConnected("offline"))
+    )
+    message = await publisher.publish(data={"message": "test"})
+    assert "error" in message["meta"]["tags"]
+    await conn.close()
+    assert not publisher.is_open

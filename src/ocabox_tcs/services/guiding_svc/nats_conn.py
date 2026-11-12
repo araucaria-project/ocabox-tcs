@@ -77,8 +77,7 @@ class NatsConn:
     @property
     def is_available(self) -> bool:
         try:
-            messenger = Messenger()
-            return messenger.is_open or messenger.connection.health_status["is_connected"]
+            return Messenger().is_open
         except Exception:  # noqa: BLE001
             return False
 
@@ -253,10 +252,9 @@ class NatsConn:
     async def journal_publisher(self, cam_id: str, pipe_id: str) -> Any | None:
         if not self.is_available:
             return None
-        publisher = get_journalpublisher(self.publish_subject(pipe_id, "journal"))
-        publisher.persistent = True
-        publisher.raise_on_publish_error = True
-        return await self._open_publisher(publisher)
+        return await self._open_publisher(
+            get_journalpublisher(self.publish_subject(pipe_id, "journal"))
+        )
 
     async def events_publisher(self, cam_id: str, pipe_id: str) -> Any | None:
         if not self.is_available:
