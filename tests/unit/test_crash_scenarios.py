@@ -19,6 +19,9 @@ from tests.helpers.config_generator import (
 from tests.helpers.launcher_harness import ProcessHarness, ServiceScenario
 
 
+pytestmark = pytest.mark.nats
+
+
 @pytest.mark.asyncio
 async def test_crash_no_restart(nats_server):
     """Test service crash with no restart policy.

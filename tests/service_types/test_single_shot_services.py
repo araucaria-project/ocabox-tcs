@@ -14,6 +14,9 @@ from tests.helpers.assertions import assert_service_started, assert_service_stop
 from tests.helpers.wait_helpers import wait_for_event
 
 
+pytestmark = pytest.mark.nats
+
+
 @pytest.mark.asyncio
 async def test_single_shot_successful_execution(nats_server, nats_client):
     """Test single-shot service executes successfully and terminates.

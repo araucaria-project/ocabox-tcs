@@ -20,6 +20,9 @@ from tests.helpers.config_generator import ConfigGenerator, create_simple_config
 from tests.helpers.launcher_harness import ProcessHarness, ServiceScenario
 
 
+pytestmark = pytest.mark.nats
+
+
 @pytest.mark.asyncio
 async def test_simple_service_startup_shutdown(nats_server):
     """Test basic service startup and graceful shutdown.

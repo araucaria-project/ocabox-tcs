@@ -18,6 +18,9 @@ from tests.helpers.assertions import (
 from tests.helpers.wait_helpers import wait_for_event
 
 
+pytestmark = pytest.mark.nats
+
+
 @pytest.mark.asyncio
 async def test_permanent_service_stays_running(nats_server, nats_client):
     """Test that permanent service stays running.

@@ -64,11 +64,12 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# By default, skip tests marked as 'manual' (require external services)
-# To run manual tests: pytest -m manual
-addopts = "-m 'not manual'"
+# By default, skip tests requiring NATS or manually started external services.
+# To run NATS tests: pytest -m nats; to run manual tests: pytest -m manual
+addopts = "-m 'not manual and not nats'"
 markers = [
     "manual: marks tests that require external services (deselect with '-m \"not manual\"')",
+    "nats: requires a JetStream-enabled NATS server or the nats-server executable",
 ]
 
 [tool.black]
