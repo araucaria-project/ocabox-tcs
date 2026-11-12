@@ -117,8 +117,12 @@ class GuiderManager:
 
         # 3. Cameras + pipelines
         cameras_cfg = cfg_dict.get("cameras") or []
-        for cam_cfg in cameras_cfg:
-            await self._build_camera(cam_cfg)
+        try:
+            for cam_cfg in cameras_cfg:
+                await self._build_camera(cam_cfg)
+        except Exception:
+            await self.on_stop()
+            raise
 
         self.svc_logger.info(
             "GuiderManager started: %d camera(s), %d pipeline(s)",

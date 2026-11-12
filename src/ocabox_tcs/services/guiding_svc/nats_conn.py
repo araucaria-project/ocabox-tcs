@@ -77,7 +77,8 @@ class NatsConn:
     @property
     def is_available(self) -> bool:
         try:
-            return Messenger().is_open
+            messenger = Messenger()
+            return messenger.is_open or messenger.connection.health_status["is_connected"]
         except Exception:  # noqa: BLE001
             return False
 
@@ -100,7 +101,10 @@ class NatsConn:
                 self.svc_logger.warning("NatsConn: responder close failed: %s", e)
         self._responders.clear()
         for publisher in self._publishers:
-            await publisher.close()
+            try:
+                await publisher.close()
+            except Exception as e:  # noqa: BLE001
+                self.svc_logger.warning("NatsConn: publisher close failed: %s", e)
         self._publishers.clear()
 
     # ------------------------------------------------------------------

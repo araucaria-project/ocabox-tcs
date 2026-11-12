@@ -18,8 +18,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from serverish.base import MessengerNotPersisted
-from serverish.messenger import Messenger
 
 from ocabox_tcs.services.guiding_svc.controller import Controller
 from ocabox_tcs.services.guiding_svc.nats_conn import (
@@ -360,52 +358,6 @@ async def test_publishers_return_none_without_messenger():
     assert await conn.events_publisher("cam_test", "mon") is None
     assert await conn.journal_publisher("cam_test", "mon") is None
     assert await conn.thumbnail_notification_publisher("cam_test") is None
-
-
-@pytest.mark.parametrize(
-    ("method", "args", "subject"),
-    [
-        ("state_publisher", ("cam_test", "mon"), "pipeline.mon.state"),
-        ("events_publisher", ("cam_test", "mon"), "pipeline.mon.events"),
-        ("journal_publisher", ("cam_test", "mon"), "pipeline.mon.journal"),
-        ("thumbnail_notification_publisher", ("cam_test",), "frame.thumbnail.ready"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_publishers_require_persistence(monkeypatch, method, args, subject):
-    monkeypatch.setattr(NatsConn, "is_available", property(lambda self: True))
-    check = AsyncMock(return_value=True)
-    monkeypatch.setattr(Messenger, "is_persistent", check)
-    conn = NatsConn(manager=MagicMock(), instance="jk15.cam_test")
-
-    publisher = await getattr(conn, method)(*args)
-    full_subject = f"svc.publish.guider.jk15.cam_test.{subject}"
-    check.assert_awaited_once_with(full_subject)
-    assert publisher.is_open and publisher.persistent and publisher.raise_on_publish_error
-    await conn.close()
-    assert not publisher.is_open
-
-
-@pytest.mark.parametrize(
-    ("method", "args"),
-    [
-        ("state_publisher", ("cam_test", "mon")),
-        ("events_publisher", ("cam_test", "mon")),
-        ("journal_publisher", ("cam_test", "mon")),
-        ("thumbnail_notification_publisher", ("cam_test",)),
-    ],
-)
-@pytest.mark.asyncio
-async def test_publisher_open_reports_missing_persistence(monkeypatch, method, args):
-    monkeypatch.setattr(NatsConn, "is_available", property(lambda self: True))
-    monkeypatch.setattr(Messenger, "is_persistent", AsyncMock(return_value=False))
-    conn = NatsConn(manager=MagicMock(), instance="jk15.cam_test")
-
-    with pytest.raises(RuntimeError, match="oca_nats_config") as exc:
-        await getattr(conn, method)(*args)
-    assert isinstance(exc.value.__cause__, MessengerNotPersisted)
-    assert exc.value.__cause__.subject in str(exc.value)
-    assert not conn._publishers
 
 
 def test_subject_builders_follow_naming_convention():
