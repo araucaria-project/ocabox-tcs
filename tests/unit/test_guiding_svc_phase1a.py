@@ -354,10 +354,10 @@ async def test_publishers_return_none_without_messenger():
     manager = MagicMock()
     manager.svc_logger = logging.getLogger("test")
     conn = NatsConn(manager=manager, instance="jk15.cam_test")
-    assert conn.state_publisher("cam_test", "mon") is None
-    assert conn.events_publisher("cam_test", "mon") is None
-    assert conn.journal_publisher("cam_test", "mon") is None
-    assert conn.thumbnail_notification_publisher("cam_test") is None
+    assert await conn.state_publisher("cam_test", "mon") is None
+    assert await conn.events_publisher("cam_test", "mon") is None
+    assert await conn.journal_publisher("cam_test", "mon") is None
+    assert await conn.thumbnail_notification_publisher("cam_test") is None
 
 
 def test_subject_builders_follow_naming_convention():

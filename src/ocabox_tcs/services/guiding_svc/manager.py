@@ -117,8 +117,12 @@ class GuiderManager:
 
         # 3. Cameras + pipelines
         cameras_cfg = cfg_dict.get("cameras") or []
-        for cam_cfg in cameras_cfg:
-            await self._build_camera(cam_cfg)
+        try:
+            for cam_cfg in cameras_cfg:
+                await self._build_camera(cam_cfg)
+        except Exception:
+            await self.on_stop()
+            raise
 
         self.svc_logger.info(
             "GuiderManager started: %d camera(s), %d pipeline(s)",
@@ -315,7 +319,7 @@ class GuiderManager:
             return IrisProtocol(**protocol_cfg)
         raise ValueError(f"Unknown protocol type {kind!r}")
 
-    def _build_thumbnail_emitter(
+    async def _build_thumbnail_emitter(
         self,
         cam_id: str,
         pipe_id: str,
@@ -337,7 +341,7 @@ class GuiderManager:
             return None
         in_q: asyncio.Queue = asyncio.Queue(maxsize=int(thumb_cfg.get("queue_depth", 2)))
         publisher = (
-            self.nats_conn.thumbnail_notification_publisher(cam_id)
+            await self.nats_conn.thumbnail_notification_publisher(cam_id)
             if self.nats_conn is not None
             else None
         )
@@ -478,7 +482,7 @@ class GuiderManager:
             if self.tic_conn is not None
             else None
         )
-        thumbnail_emitter = self._build_thumbnail_emitter(
+        thumbnail_emitter = await self._build_thumbnail_emitter(
             cam_id, pipe_id, pipe_cfg.get("thumbnails") or {}
         )
         # Per-method parameter defaults for runtime method swaps. The
@@ -520,9 +524,9 @@ class GuiderManager:
         # Register RPCs and wire publishers (no-op when Messenger isn't open).
         if self.nats_conn is not None:
             await self.nats_conn.register_pipeline_rpcs(cam_id, pipe_id, controller)
-            controller.state_publisher = self.nats_conn.state_publisher(cam_id, pipe_id)
-            controller.events_publisher = self.nats_conn.events_publisher(cam_id, pipe_id)
-            controller.journal_publisher = self.nats_conn.journal_publisher(cam_id, pipe_id)
+            controller.state_publisher = await self.nats_conn.state_publisher(cam_id, pipe_id)
+            controller.events_publisher = await self.nats_conn.events_publisher(cam_id, pipe_id)
+            controller.journal_publisher = await self.nats_conn.journal_publisher(cam_id, pipe_id)
             controller.sender_id = f"{cam_id}.{pipe_id}"
             # Wire the Enforcer's event hook into the controller's
             # ``_publish_event`` so per-pulse chart annotations appear

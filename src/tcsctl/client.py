@@ -40,8 +40,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from nats.js.errors import NotFoundError
 from serverish.base import dt_from_array
+from serverish.base.exceptions import MessengerJetStreamError, MessengerReaderConfigError
 from serverish.messenger import Messenger
 from serverish.messenger.msg_reader import MsgReader
 
@@ -49,6 +49,10 @@ from ocabox_tcs.monitoring import Status
 
 
 logger = logging.getLogger(__name__)
+
+
+def _missing_reader(error: MessengerReaderConfigError | MessengerJetStreamError) -> bool:
+    return isinstance(error, MessengerReaderConfigError) or error.code == 404
 
 
 @dataclass
@@ -444,10 +448,12 @@ class ServiceControlClient:
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_registry: {msg_count} messages in {elapsed:.3f}s")
-            except NotFoundError:
-                logger.warning(
-                    f"Registry stream not found (prefix: {self.subject_prefix}), skipping"
-                )
+            except (MessengerReaderConfigError, MessengerJetStreamError) as e:
+                if _missing_reader(e):
+                    logger.warning(f"Registry stream not found or reader rejected "
+                                   f"(prefix: {self.subject_prefix}), skipping: {e}")
+                else:
+                    logger.error(f"Error reading registry: {e}")
             except Exception as e:
                 logger.error(f"Error reading registry: {e}")
 
@@ -504,8 +510,12 @@ class ServiceControlClient:
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_status: {msg_count} messages in {elapsed:.3f}s")
-            except NotFoundError:
-                logger.warning(f"Status stream not found (prefix: {self.subject_prefix}), skipping")
+            except (MessengerReaderConfigError, MessengerJetStreamError) as e:
+                if _missing_reader(e):
+                    logger.warning(f"Status stream not found or reader rejected "
+                                   f"(prefix: {self.subject_prefix}), skipping: {e}")
+                else:
+                    logger.error(f"Error reading status: {e}")
             except Exception as e:
                 logger.error(f"Error reading status: {e}")
 
@@ -550,10 +560,12 @@ class ServiceControlClient:
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_heartbeats: {msg_count} messages in {elapsed:.3f}s")
-            except NotFoundError:
-                logger.warning(
-                    f"Heartbeat stream not found (prefix: {self.subject_prefix}), skipping"
-                )
+            except (MessengerReaderConfigError, MessengerJetStreamError) as e:
+                if _missing_reader(e):
+                    logger.warning(f"Heartbeat stream not found or reader rejected "
+                                   f"(prefix: {self.subject_prefix}), skipping: {e}")
+                else:
+                    logger.error(f"Error reading heartbeats: {e}")
             except Exception as e:
                 logger.error(f"Error reading heartbeats: {e}")
 
@@ -596,9 +608,9 @@ class ServiceControlClient:
 
                 elapsed = time.time() - start_time
                 logger.debug(f"read_crash_restart: {msg_count} messages in {elapsed:.3f}s")
-            except NotFoundError:
-                # No crashes (stream not found is OK)
-                pass
+            except (MessengerReaderConfigError, MessengerJetStreamError) as e:
+                if not _missing_reader(e):
+                    logger.error(f"Error reading crash events: {e}")
             except Exception as e:
                 logger.error(f"Error reading crash events: {e}")
 
