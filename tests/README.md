@@ -95,14 +95,38 @@ tests/
 
 ### Running Tests
 
-Run all tests:
+Run tests without external services (the default excludes `nats` and `manual`):
 ```bash
 poetry run pytest
 ```
 
-Run specific test file:
+The launcher lifecycle, crash, event, and service-type tests use the `nats` marker,
+including the three launcher test modules currently under `tests/unit/`.
+They require a JetStream-enabled server on `localhost:4222`, or a `nats-server`
+executable on `PATH` so the fixture can spawn one. The fixture creates and purges
+the `test` stream; do not point these tests at a production broker.
+
+Run NATS integration tests:
 ```bash
-poetry run pytest tests/unit/test_basic_lifecycle.py
+poetry run pytest -m nats
+```
+
+Run both default and NATS tests (still excluding manual RPC tests):
+```bash
+poetry run pytest -m "not manual"
+```
+
+Pull-request CI runs the default suite without NATS and the `nats` group in
+independent jobs. The latter starts a NATS Docker container with JetStream enabled.
+Both jobs install the development dependencies and all extras with
+`poetry install --all-extras` (the development group is installed by default).
+This includes the public `ocabox`
+dependency and its observatory packages, including `pyaraucaria` from Git.
+Test versions come from `pyproject.toml`, and collection errors fail the run.
+
+Run a specific NATS test file:
+```bash
+poetry run pytest tests/unit/test_basic_lifecycle.py -m nats
 ```
 
 Run with verbose output:
@@ -112,7 +136,7 @@ poetry run pytest -v
 
 Run specific test:
 ```bash
-poetry run pytest tests/unit/test_basic_lifecycle.py::test_simple_service_startup_shutdown -v
+poetry run pytest tests/unit/test_basic_lifecycle.py::test_simple_service_startup_shutdown -m nats -v
 ```
 
 ### Writing Tests

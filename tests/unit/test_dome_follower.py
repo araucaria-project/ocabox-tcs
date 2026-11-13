@@ -532,7 +532,7 @@ class TestErrorHandling:
 
         # Mock TIC to raise access denied
         manager_with_errors.tic_conn.dome.aget_slewing = AsyncMock(
-            side_effect=OcaboxAccessDenied()
+            side_effect=OcaboxAccessDenied("Access denied")
         )
 
         await manager_with_errors.dome_follow()

@@ -30,6 +30,9 @@ from tests.helpers.wait_helpers import (
 )
 
 
+pytestmark = pytest.mark.nats
+
+
 @pytest.mark.asyncio
 async def test_service_start_events(nats_server, nats_client):
     """Test that service publishes correct START events.

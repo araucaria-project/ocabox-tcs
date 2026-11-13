@@ -8,6 +8,7 @@ import asyncio
 import logging
 import signal
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -184,7 +185,7 @@ class ProcessHarness(LauncherHarness):
 
         # Build command
         cmd = [
-            "poetry", "run", "tcs_process",
+            sys.executable, "-m", "ocabox_tcs.launchers.process",
             "--config", str(self.config_path)
         ]
 
