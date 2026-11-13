@@ -119,7 +119,8 @@ poetry run pytest -m "not manual"
 Pull-request CI runs the default suite without NATS and the `nats` group in
 independent jobs. The latter starts a NATS Docker container with JetStream enabled.
 Both jobs install the development dependencies and all extras with
-`poetry install --all-extras --with dev`. This includes the public `ocabox`
+`poetry install --all-extras` (the development group is installed by default).
+This includes the public `ocabox`
 dependency and its observatory packages, including `pyaraucaria` from Git.
 Test versions come from `pyproject.toml`, and collection errors fail the run.
 

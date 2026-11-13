@@ -25,7 +25,7 @@ jobs:
       - name: Install Poetry
         run: python -m pip install poetry==2.3.3
       - name: Install dependencies
-        run: poetry install --all-extras --with dev --no-interaction
+        run: poetry install --all-extras --no-interaction
       - name: Run tests without NATS
         if: matrix.group == 'offline'
         run: poetry run pytest
@@ -34,8 +34,4 @@ jobs:
         run: docker run --detach --name nats --publish 4222:4222 nats:2.10-alpine --jetstream
       - name: Run NATS integration tests
         if: matrix.group == 'nats'
-        run: >-
-          poetry run pytest -m nats tests/service_types
-          tests/unit/test_basic_lifecycle.py
-          tests/unit/test_crash_scenarios.py
-          tests/unit/test_event_verification.py
+        run: poetry run pytest -m nats
