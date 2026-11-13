@@ -118,11 +118,10 @@ poetry run pytest -m "not manual"
 
 Pull-request CI runs the default suite without NATS and the `nats` group in
 independent jobs. The latter starts a NATS Docker container with JetStream enabled.
-CI continues past collection errors to run the remaining tests, but still reports
-those errors as failures. Observatory-specific tests also require the optional
-observatory packages; missing dependencies are not silently ignored.
-The offline CI job installs a pinned Git revision of `pyaraucaria` for the
-star-detection tests, whose FFS API is newer than the published PyPI release.
+Both jobs install the development dependencies and all extras with
+`poetry install --all-extras --with dev`. This includes the public `ocabox`
+dependency and its observatory packages, including `pyaraucaria` from Git.
+Test versions come from `pyproject.toml`, and collection errors fail the run.
 
 Run a specific NATS test file:
 ```bash
