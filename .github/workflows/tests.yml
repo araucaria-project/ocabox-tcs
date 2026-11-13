@@ -26,6 +26,11 @@ jobs:
         run: >-
           python -m pip install -e ".[cli,guider]"
           "pytest>=7.4,<8" "pytest-asyncio>=0.21,<0.22"
+      - name: Install star-detection test dependency
+        if: matrix.group == 'offline'
+        run: >-
+          python -m pip install
+          "pyaraucaria @ git+https://github.com/araucaria-project/pyaraucaria.git@b0414263064739df7cb2e0e01db010c13a5a600c"
       - name: Run tests without NATS
         if: matrix.group == 'offline'
         run: python -m pytest --continue-on-collection-errors

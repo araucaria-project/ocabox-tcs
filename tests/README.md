@@ -121,6 +121,8 @@ independent jobs. The latter starts a NATS Docker container with JetStream enabl
 CI continues past collection errors to run the remaining tests, but still reports
 those errors as failures. Observatory-specific tests also require the optional
 observatory packages; missing dependencies are not silently ignored.
+The offline CI job installs a pinned Git revision of `pyaraucaria` for the
+star-detection tests, whose FFS API is newer than the published PyPI release.
 
 Run a specific NATS test file:
 ```bash

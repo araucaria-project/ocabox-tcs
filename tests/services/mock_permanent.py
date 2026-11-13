@@ -73,7 +73,8 @@ class MockPermanentService(BaseBlockingPermanentService):
                 self.svc_logger.info(f"Reached work_count limit ({self.svc_config.work_count}), stopping")
                 break
 
-            await self.sleep(self.svc_config.work_interval)
+            if not await self.sleep(self.svc_config.work_interval):
+                break
 
     def healthcheck(self) -> Status:
         """Custom healthcheck with configurable status."""
